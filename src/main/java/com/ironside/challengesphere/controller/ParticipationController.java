@@ -1,4 +1,4 @@
-package com.ironside.challengesphere.api.controller;
+package com.ironside.challengesphere.controller;
 
 import com.ironside.challengesphere.api.response.MessageResponse;
 import com.ironside.challengesphere.api.response.ParticipantResponse;

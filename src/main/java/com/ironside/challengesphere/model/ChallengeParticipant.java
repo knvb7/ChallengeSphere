@@ -9,12 +9,12 @@ import lombok.Setter;
 import java.time.OffsetDateTime;
 
 @Entity
-@Table(name = "challenge_participants", 
-       uniqueConstraints = @UniqueConstraint(columnNames = {"user_id", "challenge_id"}),
-       indexes = {
-           @Index(name = "idx_participants_user", columnList = "user_id"),
-           @Index(name = "idx_participants_challenge", columnList = "challenge_id")
-       })
+//@Table(name = "challenge_participants",
+//       uniqueConstraints = @UniqueConstraint(columnNames = {"user_id", "challenge_id"}),
+//       indexes = {
+//           @Index(name = "idx_participants_user", columnList = "user_id"),
+//           @Index(name = "idx_participants_challenge", columnList = "challenge_id")
+//       })
 @Getter
 @Setter
 @NoArgsConstructor

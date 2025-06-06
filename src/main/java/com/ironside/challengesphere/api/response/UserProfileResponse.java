@@ -16,8 +16,8 @@ public class UserProfileResponse {
     private boolean active;
     private UserRole role;
     private String profilePicUrl;
-    private int followersCount;
-    private int followingCount;
+    private Long followersCount;
+    private Long followingCount;
     private Instant createdAt;
     private Instant updatedAt;
 }

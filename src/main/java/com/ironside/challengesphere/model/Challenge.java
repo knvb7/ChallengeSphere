@@ -12,10 +12,10 @@ import java.time.LocalDate;
 import java.time.OffsetDateTime;
 
 @Entity
-@Table(name = "challenges", indexes = {
-        @Index(name = "idx_challenges_type", columnList = "challenge_type"),
-        @Index(name = "idx_challenges_invite_code", columnList = "invite_code")
-})
+//@Table(name = "challenges", indexes = {
+//        @Index(name = "idx_challenges_type", columnList = "challenge_type"),
+//        @Index(name = "idx_challenges_invite_code", columnList = "invite_code")
+//})
 @Getter
 @Setter
 @NoArgsConstructor

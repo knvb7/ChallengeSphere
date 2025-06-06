@@ -30,4 +30,8 @@ public interface UserService {
      * @return list of user profiles sorted by achievement metrics
      */
     List<UserProfileResponse> getLeaderboard();
+
+    void unfollowUser(Long userId, Long targetUserId);
+
+    void followUser(Long userId, Long targetUserId);
 }

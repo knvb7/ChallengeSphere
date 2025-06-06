@@ -1,4 +1,4 @@
-package com.ironside.challengesphere.api.controller;
+package com.ironside.challengesphere.controller;
 
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.RequestMapping;

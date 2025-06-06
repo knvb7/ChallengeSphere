@@ -11,7 +11,7 @@ import java.time.OffsetDateTime;
 
 @Entity
 @Table(name = "users", indexes = {
-        @Index(name = "idx_users_email", columnList = "email")
+        @Index(name = "idx_users_email", columnList = "email_id")
 })
 @Getter
 @Setter
@@ -26,7 +26,7 @@ public class User {
     @Column(name = "username", nullable = false, unique = true, length = 50)
     private String username;
 
-    @Column(name = "email", nullable = false, unique = true, length = 100)
+    @Column(name = "email_id", nullable = false, unique = true, length = 100)
     private String emailId;
 
     @Column(name = "password_hash", nullable = false, length = 255)
@@ -40,6 +40,12 @@ public class User {
     
     @Column(name = "bio", length = 500)
     private String bio;
+
+    @Column(name = "phone_number")
+    private String phoneNumber;
+
+    @Column(name = "active")
+    private boolean active = true;
     
     @Column(name = "profile_pic_url")
     private String profilePicUrl;

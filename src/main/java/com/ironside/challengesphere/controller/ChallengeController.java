@@ -1,4 +1,4 @@
-package com.ironside.challengesphere.api.controller;
+package com.ironside.challengesphere.controller;
 
 import com.ironside.challengesphere.api.request.ChallengeRequest;
 import com.ironside.challengesphere.api.response.ChallengeResponse;
@@ -60,7 +60,7 @@ public class ChallengeController {
         
         User currentUser = authService.getCurrentUser();
         
-        // Check if user is the creator
+        // Check if the user is the creator
         if (!challengeService.isUserChallengeCreator(currentUser.getUserId(), challengeId)) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN)
                     .body(new MessageResponse("Error: Only the challenge creator can update it"));

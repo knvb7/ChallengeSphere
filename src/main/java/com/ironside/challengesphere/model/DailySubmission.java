@@ -10,12 +10,12 @@ import java.time.LocalDate;
 import java.time.OffsetDateTime;
 
 @Entity
-@Table(name = "daily_submissions", 
-       uniqueConstraints = @UniqueConstraint(columnNames = {"participant_id", "submission_date"}),
-       indexes = {
-           @Index(name = "idx_submissions_participant", columnList = "participant_id"),
-           @Index(name = "idx_submissions_date", columnList = "submission_date")
-       })
+//@Table(name = "daily_submissions",
+//       uniqueConstraints = @UniqueConstraint(columnNames = {"participant_id", "submission_date"}),
+//       indexes = {
+//           @Index(name = "idx_submissions_participant", columnList = "participant_id"),
+//           @Index(name = "idx_submissions_date", columnList = "submission_date")
+//       })
 @Getter
 @Setter
 @NoArgsConstructor
