@@ -16,7 +16,7 @@ public class UserRegistrationRequest {
 
     @Email(message = "Please provide a valid email address")
     @NotBlank(message = "Email is required")
-    private String email;
+    private String emailId;
 
     @NotBlank(message = "Password is required")
     @Size(min = 8, message = "Password must be at least 8 characters long")
@@ -37,4 +37,7 @@ public class UserRegistrationRequest {
     // Role assignment is handled by the system, not the user
     // This prevents role escalation vulnerabilities
     private UserRole role;
+
+    @Pattern(regexp = "^[0-9]{10,15}$", message = "Phone number must be between 10 and 15 digits")
+    private String phoneNumber;
 }

@@ -45,8 +45,8 @@ public class User {
     private String phoneNumber;
 
     @Column(name = "active")
-    private boolean active = true;
-    
+    private int active = 1;
+
     @Column(name = "profile_pic_url")
     private String profilePicUrl;
     

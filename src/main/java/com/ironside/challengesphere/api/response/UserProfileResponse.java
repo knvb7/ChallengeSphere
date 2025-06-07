@@ -13,7 +13,7 @@ public class UserProfileResponse {
     private String fullName;
     private String location;
     private String bio;
-    private boolean active;
+    private int active;
     private UserRole role;
     private String profilePicUrl;
     private Long followersCount;
