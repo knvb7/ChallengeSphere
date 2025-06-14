@@ -10,6 +10,8 @@ import com.ironside.challengesphere.repository.UserRepository;
 import com.ironside.challengesphere.service.UserService;
 import jakarta.persistence.EntityNotFoundException;
 import lombok.RequiredArgsConstructor;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -22,6 +24,7 @@ import java.util.List;
 @Service
 @RequiredArgsConstructor
 public class UserServiceImpl implements UserService {
+    private final Logger logger = LogManager.getLogger(UserServiceImpl.class);
 
     @Autowired
     private UserRepository userRepository;
@@ -95,10 +98,10 @@ public class UserServiceImpl implements UserService {
     }
 
     @Override
-    public List<UserProfileResponse> getLeaderboard() {
+    public List<UserProfileResponse> getLeaderboard(Long challengeId) {
         // This would normally include complex queries to determine user rankings
         // For now, just return all users as a basic implementation
-        List<User> users = userRepository.findAll();
+        List<User> users = userRepository.findAllBy();
         List<UserProfileResponse> leaderboard = new ArrayList<>();
 
         for (User user : users) {

@@ -1,7 +1,7 @@
 package com.ironside.challengesphere.api.response;
 
 import lombok.Data;
-import java.time.OffsetDateTime;
+import java.sql.Timestamp;
 
 @Data
 public class ChallengeResponse {
@@ -9,8 +9,11 @@ public class ChallengeResponse {
     private String title;
     private String description;
     private Long creatorUserId;
-    private OffsetDateTime createdAt;
-    private OffsetDateTime updatedAt;
+    private Timestamp createdAt;
+    private Timestamp updatedAt;
     private boolean active;
+    private String shareCode;
+    private Timestamp endDate;
+    private int numberOfDays;
+    private String reminderTime;
 }
-

@@ -17,7 +17,7 @@ public class ChallengeSphereException extends BaseException {
         logger.error("Message is : {} , Status is : {}", message, status);
         this.setStatus(status);
         this.setResponseMessage(message);
-        this.setApiError(createApiError(message, null));
+        this.setApiError(createApiError(message));
     }
 
     public ChallengeSphereException(String errorMessage, HttpStatus status, Logger logger, Throwable ex){
@@ -25,13 +25,13 @@ public class ChallengeSphereException extends BaseException {
         this.setStatus(status);
         this.setE(ex);
         this.setResponseMessage(errorMessage);
-        this.setApiError(createApiError(errorMessage, null));
+        this.setApiError(createApiError(errorMessage));
     }
 
     public HttpStatus getStatus(){
         return status;
     }
-    private ApiError createApiError(String message, String debugMessage) {
-        return new ApiError(Timestamp.from(Instant.now()), message, debugMessage, 0);
+    private ApiError createApiError(String message) {
+        return new ApiError(Timestamp.from(Instant.now()), message, null, 0);
     }
 }
