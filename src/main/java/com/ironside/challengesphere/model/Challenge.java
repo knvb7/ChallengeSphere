@@ -1,54 +1,54 @@
 package com.ironside.challengesphere.model;
 
 import jakarta.persistence.*;
-import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
-
+import java.time.LocalDate;
 import java.sql.Timestamp;
-import java.time.Instant;
-import java.time.OffsetDateTime;
 
 @Entity
 @Table(name = "challenges")
 @Data
 @NoArgsConstructor
-@AllArgsConstructor
 public class Challenge {
+
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(nullable = false)
+    @Column(name = "hashtags")
+    private String hashtags;
+
+    @Column(name = "categories")
+    private String categories;
+
+    @Column(name = "title", nullable = false, length = 255)
     private String title;
 
-    @Column(length = 10000)
+    @Column(name = "description", nullable = false)
     private String description;
 
-    @Column(nullable = false)
-    private Long creatorUserId;
+    @Column(name = "benefits")
+    private String benefits;
 
-    @Column(nullable = false)
-    private Long ownerUserId; // current owner/admin of the challenge
+    @Column(name = "private", columnDefinition = "BOOLEAN DEFAULT FALSE")
+    private Boolean isPrivate = false;
 
-    @Column(nullable = false)
-    private Timestamp createdAt = Timestamp.from(Instant.now());
+    @Column(name = "start_date", nullable = false)
+    private LocalDate startDate;
 
-    @Column(nullable = false)
-    private Timestamp updatedAt = Timestamp.from(Instant.now());
+    @Column(name = "active", columnDefinition = "BOOLEAN DEFAULT TRUE")
+    private Boolean active = true;
 
-    @Column(nullable = false)
-    private boolean active = true;
+    @Column(name = "created_at", columnDefinition = "TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP")
+    private Timestamp createdAt;
 
-    @Column(unique = true, nullable = false, length = 16)
-    private String shareCode;
+    @Column(name = "creator_id", nullable = false)
+    private Long creatorId;
 
-    @Column(nullable = false)
-    private Timestamp endDate;
+    @Column(name = "current_owner_id", nullable = false)
+    private Long currentOwnerId;
 
-    @Column(nullable = false)
-    private int numberOfDays;
-
-    @Column(length = 10)
-    private String reminderTime;
+    @Column(name = "number_of_days", nullable = false)
+    private Integer numberOfDays;
 }

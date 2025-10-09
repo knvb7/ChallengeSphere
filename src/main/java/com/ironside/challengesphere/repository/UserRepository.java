@@ -2,35 +2,48 @@ package com.ironside.challengesphere.repository;
 
 import com.ironside.challengesphere.model.User;
 import org.springframework.data.jpa.repository.JpaRepository;
-import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
-import java.time.OffsetDateTime;
+import java.util.List;
 import java.util.Optional;
 
 @Repository
 public interface UserRepository extends JpaRepository<User, Long> {
-    Optional<User> findByEmailId(String emailId);
-    
-    Optional<User> findByUsername(String username);
-    
-    boolean existsByEmailId(String emailId);
-    
-    Optional<User> findByPhoneNumber(String phoneNumber);
 
-    boolean existsByPhoneNumber(String phoneNumber);
+    @Query(value = "SELECT * FROM users WHERE username = :username", nativeQuery = true)
+    Optional<User> findByUsername(@Param("username") String username);
+
+    @Query(value = "SELECT * FROM users WHERE email_id = :emailId", nativeQuery = true)
+    Optional<User> findByEmailId(@Param("emailId") String emailId);
+
+    @Query(value = "SELECT * FROM users WHERE phone = :phone", nativeQuery = true)
+    Optional<User> findByPhone(@Param("phone") String phone);
 
     @Query(value = "SELECT CASE WHEN COUNT(*) > 0 THEN TRUE ELSE FALSE END " +
-            "FROM users " +
-            "WHERE username = :username OR email_id = :emailId OR phone_number = :phoneNumber",
-            nativeQuery = true)
-    boolean existsByUsernameOrEmailOrPhoneNumber(@Param("username") String username,
-                                                 @Param("emailId") String emailId,
-                                                 @Param("phoneNumber") String phoneNumber);    boolean existsByUsername(String username);
-    
-    @Modifying
-    @Query("UPDATE User u SET u.lastLoginAt = :loginTime WHERE u.userId = :userId")
-    void updateLastLoginTime(Long userId, OffsetDateTime loginTime);
+           "FROM users WHERE username = :username OR email_id = :emailId OR phone = :phone",
+           nativeQuery = true)
+    boolean existsByUsernameOrEmailIdOrPhone(@Param("username") String username,
+                                             @Param("emailId") String emailId,
+                                             @Param("phone") String phone);
+
+    @Query(value = "SELECT * FROM users WHERE active = true", nativeQuery = true)
+    List<User> findAllActiveUsers();
+
+    @Query(value = "SELECT * FROM users WHERE premium_user = 1", nativeQuery = true)
+    List<User> findAllPremiumUsers();
+
+    @Query(value = "SELECT * FROM users WHERE username ILIKE %:searchTerm% OR email_id ILIKE %:searchTerm%",
+           nativeQuery = true)
+    List<User> searchUsersByUsernameOrEmail(@Param("searchTerm") String searchTerm);
+
+    @Query(value = "UPDATE users SET active = :active WHERE id = :id", nativeQuery = true)
+    void updateUserActiveStatus(@Param("id") Long id, @Param("active") Boolean active);
+
+    @Query(value = "UPDATE users SET followers = followers + :increment WHERE id = :id", nativeQuery = true)
+    void updateFollowersCount(@Param("id") Long id, @Param("increment") Integer increment);
+
+    @Query(value = "UPDATE users SET following = following + :increment WHERE id = :id", nativeQuery = true)
+    void updateFollowingCount(@Param("id") Long id, @Param("increment") Integer increment);
 }

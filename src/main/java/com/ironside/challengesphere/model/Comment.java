@@ -1,35 +1,36 @@
 package com.ironside.challengesphere.model;
 
 import jakarta.persistence.*;
-import lombok.*;
-
+import lombok.Data;
+import lombok.NoArgsConstructor;
 import java.sql.Timestamp;
-import java.time.Instant;
+import java.util.UUID;
 
 @Entity
 @Table(name = "comments")
 @Data
-@Builder
 @NoArgsConstructor
-@AllArgsConstructor
 public class Comment {
+
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "media_id", nullable = false)
-    private Media media;
+    @Column(name = "post_id", nullable = false)
+    private UUID postId;
 
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "user_id", nullable = false)
-    private User user;
+    @Column(name = "user_id", nullable = false)
+    private Long userId;
 
-    @Column(nullable = false, length = 1000)
+    @Column(name = "content", nullable = false)
     private String content;
 
+    @Column(name = "created_at", columnDefinition = "TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP")
     private Timestamp createdAt;
 
-    @Column(nullable = false)
-    private boolean active = true;
+    @Column(name = "updated_at", columnDefinition = "TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP")
+    private Timestamp updatedAt;
+
+    @Column(name = "active", columnDefinition = "BOOLEAN DEFAULT TRUE")
+    private Boolean active = true;
 }

@@ -1,6 +1,5 @@
 package com.ironside.challengesphere.security;
 
-import com.ironside.challengesphere.model.User;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.Setter;

@@ -1,8 +1,6 @@
 package com.ironside.challengesphere.security;
 
 import com.ironside.challengesphere.exception.ChallengeSphereException;
-import com.ironside.challengesphere.model.User;
-import com.ironside.challengesphere.repository.UserRepository;
 import com.ironside.challengesphere.security.oauth2.OAuth2UserInfo;
 import com.ironside.challengesphere.security.oauth2.OAuth2UserInfoFactory;
 import lombok.RequiredArgsConstructor;

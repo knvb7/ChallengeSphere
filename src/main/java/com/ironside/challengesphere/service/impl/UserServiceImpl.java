@@ -1,217 +1,369 @@
 package com.ironside.challengesphere.service.impl;
 
-import com.ironside.challengesphere.api.request.UserUpdateRequest;
-import com.ironside.challengesphere.api.request.UserRegistrationRequest;
-import com.ironside.challengesphere.api.response.UserProfileResponse;
-import com.ironside.challengesphere.model.Following;
+import com.ironside.challengesphere.api.request.ToggleActivateUserRequest;
+import com.ironside.challengesphere.api.request.FollowActionRequest;
+import com.ironside.challengesphere.api.request.GetFollowersFollowingRequest;
+import com.ironside.challengesphere.api.request.GetUserPayload;
+import com.ironside.challengesphere.api.request.UpdateUserRequest;
+import com.ironside.challengesphere.api.response.ToggleUserActivationResponse;
+import com.ironside.challengesphere.api.response.FollowActionResponse;
+import com.ironside.challengesphere.api.response.FollowersFollowingResponse;
+import com.ironside.challengesphere.exception.ChallengeSphereException;
+import com.ironside.challengesphere.model.Follow;
 import com.ironside.challengesphere.model.User;
-import com.ironside.challengesphere.repository.FollowingRepository;
+import com.ironside.challengesphere.repository.FollowRepository;
 import com.ironside.challengesphere.repository.UserRepository;
 import com.ironside.challengesphere.service.UserService;
-import jakarta.persistence.EntityNotFoundException;
-import lombok.RequiredArgsConstructor;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpStatus;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.sql.Timestamp;
-import java.time.Instant;
-import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
+import java.util.stream.Collectors;
 
 @Service
-@RequiredArgsConstructor
 public class UserServiceImpl implements UserService {
-    private final Logger logger = LogManager.getLogger(UserServiceImpl.class);
+    private static final Logger logger = LogManager.getLogger(UserServiceImpl.class);
 
     @Autowired
     private UserRepository userRepository;
 
     @Autowired
-    private FollowingRepository followingRepository;
+    private FollowRepository followRepository;
 
     @Override
-    public UserProfileResponse getUserProfile(Long userId) {
-        User user = userRepository.findById(userId)
-                .orElseThrow(() -> new EntityNotFoundException("User not found with id: " + userId));
+    public User getUser(GetUserPayload getUserPayload) throws ChallengeSphereException {
+        Long userId = getUserPayload.getUserId();
+        String emailId = getUserPayload.getEmailId();
+        String phone = getUserPayload.getPhone();
+        String username = getUserPayload.getUsername();
+        logger.info("Retrieving user with parameters - userId: {}, emailId: {}, phone: {}, username: {}",
+                userId, emailId, phone, username);
 
-        return mapToUserProfileResponse(user);
-    }
+        try {
+            if (userId != null) {
+                logger.debug("Searching by userId: {}", userId);
+                Optional<User> user = userRepository.findById(userId);
+                if (user.isPresent()) {
+                    logger.info("User found by userId: {}", userId);
+                    return user.get();
+                }
+            }
 
-    private UserProfileResponse mapToUserProfileResponse(User user) {
-        UserProfileResponse response = new UserProfileResponse();
-        response.setUserId(user.getUserId());
-        response.setUsername(user.getUsername());
-        response.setEmail(user.getEmailId());
-        response.setFullName(user.getFullName());
-        response.setLocation(user.getLocation());
-        response.setBio(user.getBio());
-        response.setActive(user.getActive()); // Set active as int (0/1)
-        response.setRole(user.getRole());
-        response.setProfilePicUrl(user.getProfilePicUrl());
+            if (emailId != null && !emailId.trim().isEmpty()) {
+                logger.debug("Searching by emailId: {}", emailId);
+                Optional<User> user = userRepository.findByEmailId(emailId.trim());
+                if (user.isPresent()) {
+                    logger.info("User found by emailId: {}", emailId);
+                    return user.get();
+                }
+            }
 
-        // These would normally be calculated from database queries
-        Long followers = followingRepository.findFollowersCount(user.getUserId());
-        Long following = followingRepository.findFollowedByCount(user.getUserId());
-        response.setFollowersCount(followers);
-        response.setFollowingCount(following);
+            if (phone != null && !phone.trim().isEmpty()) {
+                logger.debug("Searching by phone: {}", phone);
+                Optional<User> user = userRepository.findByPhone(phone.trim());
+                if (user.isPresent()) {
+                    logger.info("User found by phone: {}", phone);
+                    return user.get();
+                }
+            }
 
-        // Convert OffsetDateTime to Instant for the response
-        if (user.getCreatedAt() != null) {
-            response.setCreatedAt(user.getCreatedAt().toInstant());
-        }
-        response.setUpdatedAt(java.time.Instant.now()); // This would be set from the user entity in a real app
+            if (username != null && !username.trim().isEmpty()) {
+                logger.debug("Searching by username: {}", username);
+                Optional<User> user = userRepository.findByUsername(username.trim());
+                if (user.isPresent()) {
+                    logger.info("User found by username: {}", username);
+                    return user.get();
+                }
+            }
 
-        return response;
-    }
-
-
-    @Override
-    @Transactional
-    public UserProfileResponse updateUserProfile(Long userId, UserUpdateRequest updateRequest) {
-        User user = userRepository.findById(userId)
-                .orElseThrow(() -> new EntityNotFoundException("User not found with id: " + userId));
-
-        // Update fields if they are provided in the request
-        if (updateRequest.getFullName() != null) {
-            user.setFullName(updateRequest.getFullName());
-        }
-        if (updateRequest.getLocation() != null) {
-            user.setLocation(updateRequest.getLocation());
-        }
-        if (updateRequest.getBio() != null) {
-            user.setBio(updateRequest.getBio());
-        }
-        if (updateRequest.getLanguagePreference() != null) {
-            user.setLanguagePreference(updateRequest.getLanguagePreference());
-        }
-        if (updateRequest.getPreferredTone() != null) {
-            user.setPreferredTone(updateRequest.getPreferredTone());
+            logger.warn("User not found with any of the provided parameters - userId: {}, emailId: {}, phone: {}, username: {}",
+                    userId, emailId, phone, username);
+        } catch (Exception e) {
+            logger.error("Error retrieving user with parameters - userId: {}, emailId: {}, phone: {}, username: {}. Error: {}",
+                    userId, emailId, phone, username, e.getMessage(), e);
         }
 
-        // Save updated user
-        User savedUser = userRepository.save(user);
-
-        return mapToUserProfileResponse(savedUser);
+        throw new ChallengeSphereException("User not found with provided parameters", HttpStatus.NOT_FOUND, logger);
     }
 
     @Override
-    public List<UserProfileResponse> getLeaderboard(Long challengeId) {
-        // This would normally include complex queries to determine user rankings
-        // For now, just return all users as a basic implementation
-        List<User> users = userRepository.findAllBy();
-        List<UserProfileResponse> leaderboard = new ArrayList<>();
+    public User updateUserDetails(UpdateUserRequest updateUserRequest) throws ChallengeSphereException {
+        Long userId = updateUserRequest.getUserId();
+        logger.info("Updating user details for userId: {} with emailId: {}, phone: {}, username: {}",
+                   userId, updateUserRequest.getEmailId(), updateUserRequest.getPhone(), updateUserRequest.getUsername());
 
-        for (User user : users) {
-            UserProfileResponse profile = mapToUserProfileResponse(user);
-            leaderboard.add(profile);
+        try {
+            User user = userRepository.findById(userId)
+                    .orElseThrow(() -> new ChallengeSphereException(
+                            "User not found with id: " + userId,
+                            HttpStatus.NOT_FOUND,
+                            logger
+                    ));
+
+            if (updateUserRequest.getEmailId() != null) {
+                user.setEmailId(updateUserRequest.getEmailId().trim());
+                logger.debug("Updated emailId for user {}", userId);
+            }
+            if (updateUserRequest.getPhone() != null) {
+                user.setPhone(updateUserRequest.getPhone().trim());
+                logger.debug("Updated phone for user {}", userId);
+            }
+            if (updateUserRequest.getUsername() != null) {
+                user.setUsername(updateUserRequest.getUsername().trim());
+                logger.debug("Updated username for user {}", userId);
+            }
+            //TODO: Might need to hash the password here before saving
+            if (updateUserRequest.getHashedPassword() != null) {
+                user.setHashedPassword(updateUserRequest.getHashedPassword());
+                logger.debug("Updated hashedPassword for user {}", userId);
+            }
+            if (updateUserRequest.getGenuinenessScore() != null) {
+                user.setGenuinenessScore(updateUserRequest.getGenuinenessScore());
+                logger.debug("Updated genuinenessScore for user {}", userId);
+            }
+            if (updateUserRequest.getActive() != null) {
+                user.setActive(updateUserRequest.getActive());
+                logger.debug("Updated active for user {}", userId);
+            }
+            if (updateUserRequest.getChallengesCreated() != null) {
+                user.setChallengesCreated(updateUserRequest.getChallengesCreated());
+                logger.debug("Updated challengesCreated for user {}", userId);
+            }
+            if (updateUserRequest.getChallengesAccepted() != null) {
+                user.setChallengesAccepted(updateUserRequest.getChallengesAccepted());
+                logger.debug("Updated challengesAccepted for user {}", userId);
+            }
+            if (updateUserRequest.getProfilePicUrl() != null) {
+                user.setProfilePicUrl(updateUserRequest.getProfilePicUrl());
+                logger.debug("Updated profilePicUrl for user {}", userId);
+            }
+            if (updateUserRequest.getPremiumUser() != null) {
+                user.setPremiumUser(updateUserRequest.getPremiumUser());
+                logger.debug("Updated premiumUser for user {}", userId);
+            }
+            if (updateUserRequest.getNotifications() != null) {
+                user.setNotifications(updateUserRequest.getNotifications());
+                logger.debug("Updated notifications for user {}", userId);
+            }
+            if (updateUserRequest.getBio() != null) {
+                user.setBio(updateUserRequest.getBio());
+                logger.debug("Updated bio for user {}", userId);
+            }
+
+            User updatedUser = userRepository.save(user);
+            logger.info("Successfully updated user details for userId: {}", userId);
+            return updatedUser;
+
+        } catch (ChallengeSphereException e) {
+            throw e;
+        } catch (Exception e) {
+            logger.error("Error updating user details for userId: {}: {}", userId, e.getMessage(), e);
+            throw new ChallengeSphereException(
+                    "Failed to update user details",
+                    HttpStatus.INTERNAL_SERVER_ERROR,
+                    logger
+            );
         }
-
-        return leaderboard;
     }
 
     @Override
-    @Transactional
-    public void toggleFollow(Long userId, Long targetUserId) {
-        if (userId.equals(targetUserId)) {
-            throw new IllegalArgumentException("You cannot follow/unfollow yourself.");
+    public FollowActionResponse followAction(FollowActionRequest followActionRequest) throws ChallengeSphereException {
+        Long followerId = followActionRequest.getFollowerId();
+        Long followingId = followActionRequest.getFollowingId();
+        Boolean shouldFollow = followActionRequest.getFollow();
+
+        logger.info("Processing follow action - followerId: {}, followingId: {}, action: {}",
+                   followerId, followingId, shouldFollow ? "follow" : "unfollow");
+        try {
+            if (followerId.equals(followingId)) {
+                throw new ChallengeSphereException(
+                        "Users cannot follow themselves",
+                        HttpStatus.BAD_REQUEST,
+                        logger
+                );
+            }
+            Optional<Follow> existingFollow = followRepository.findByFollowerIdAndFollowingId(followerId, followingId);
+            if (shouldFollow) {
+                if (existingFollow.isPresent()) {
+                    logger.info("User {} is already following user {}", followerId, followingId);
+                    return FollowActionResponse.success(followerId, followingId, true);
+                }
+                Follow follow = new Follow();
+                follow.setFollowerId(followerId);
+                follow.setFollowingId(followingId);
+                follow.setActive(true);
+                follow.setCreatedAt(new Timestamp(System.currentTimeMillis()));
+                followRepository.save(follow);
+                updateFollowCounts(followerId, followingId, true);
+                logger.info("User {} successfully followed user {}", followerId, followingId);
+                return FollowActionResponse.success(followerId, followingId, true);
+            } else {
+                if (existingFollow.isEmpty()) {
+                    logger.info("User {} is not following user {}", followerId, followingId);
+                    return FollowActionResponse.success(followerId, followingId, false);
+                }
+                followRepository.delete(existingFollow.get());
+                updateFollowCounts(followerId, followingId, false);
+                logger.info("User {} successfully unfollowed user {}", followerId, followingId);
+                return FollowActionResponse.success(followerId, followingId, false);
+            }
+        } catch (ChallengeSphereException e) {
+            throw e;
+        } catch (Exception e) {
+            logger.error("Error processing follow action for followerId: {}, followingId: {}: {}",
+                        followerId, followingId, e.getMessage(), e);
+            throw new ChallengeSphereException(
+                    "Failed to process follow action",
+                    HttpStatus.INTERNAL_SERVER_ERROR,
+                    logger
+            );
         }
+    }
 
-        // Check if both users exist
-        User follower = userRepository.findById(userId)
-                .orElseThrow(() -> new EntityNotFoundException("User not found with id: " + userId));
-        User followed = userRepository.findById(targetUserId)
-                .orElseThrow(() -> new EntityNotFoundException("User not found with id: " + targetUserId));
+    @Override
+    public FollowersFollowingResponse getFollowers(GetFollowersFollowingRequest request) throws ChallengeSphereException {
+        Long userId = request.getUserId();
+        int page = request.getPage();
+        int pageSize = request.getPageSize();
 
-        boolean isFollowing = followingRepository.existsByFollowerUserIdAndFollowedUserId(userId, targetUserId);
+        logger.info("Getting followers for userId: {}, page: {}, pageSize: {}", userId, page, pageSize);
 
-        if (isFollowing) {
-            // Unfollow
-            followingRepository.deleteByFollowerAndFollowed(follower, followed);
-        } else {
-            // Follow
-            Following following = new Following();
-            following.setFollower(follower);
-            following.setFollowed(followed);
-            following.setCreatedAt(Timestamp.from(Instant.now()));
-            followingRepository.save(following);
+        try {
+            List<Follow> allFollows = followRepository.findByFollowingId(userId);
+            int totalCount = allFollows.size();
+
+            // Calculate pagination
+            int offset = (page - 1) * pageSize;
+
+            // Get follower IDs for current page
+            List<Long> followerIds = allFollows.stream()
+                    .skip(offset)
+                    .limit(pageSize)
+                    .map(Follow::getFollowerId)
+                    .collect(Collectors.toList());
+
+            // Get follower User objects
+            List<User> followers = userRepository.findAllById(followerIds);
+
+            logger.info("Found {} followers for userId: {} (page {}/{})",
+                       followers.size(), userId, page, (int) Math.ceil((double) totalCount / pageSize));
+
+            return FollowersFollowingResponse.followers(userId, followers, page, pageSize, totalCount);
+
+        } catch (ChallengeSphereException e) {
+            throw e;
+        } catch (Exception e) {
+            logger.error("Error getting followers for userId: {}: {}", userId, e.getMessage(), e);
+            throw new ChallengeSphereException(
+                    "Failed to get followers",
+                    HttpStatus.INTERNAL_SERVER_ERROR,
+                    logger
+            );
         }
     }
 
     @Override
-    @Transactional
-    public UserProfileResponse registerNewUser(UserRegistrationRequest userRegistrationRequest) {
-        if (userRepository.existsByUsername(userRegistrationRequest.getUsername())) {
-            throw new IllegalArgumentException("Error: Username is already taken!");
+    public FollowersFollowingResponse getFollowing(GetFollowersFollowingRequest request) throws ChallengeSphereException {
+        Long userId = request.getUserId();
+        int page = request.getPage();
+        int pageSize = request.getPageSize();
+
+        logger.info("Getting following for userId: {}, page: {}, pageSize: {}", userId, page, pageSize);
+
+        try {
+            List<Follow> allFollows = followRepository.findByFollowerId(userId);
+            int totalCount = allFollows.size();
+
+            int offset = (page - 1) * pageSize;
+
+            List<Long> followingIds = allFollows.stream()
+                    .skip(offset)
+                    .limit(pageSize)
+                    .map(Follow::getFollowingId)
+                    .collect(Collectors.toList());
+
+            List<User> following = userRepository.findAllById(followingIds);
+
+            logger.info("Found {} following for userId: {} (page {}/{})",
+                       following.size(), userId, page, (int) Math.ceil((double) totalCount / pageSize));
+
+            return FollowersFollowingResponse.following(userId, following, page, pageSize, totalCount);
+
+        } catch (ChallengeSphereException e) {
+            throw e;
+        } catch (Exception e) {
+            logger.error("Error getting following for userId: {}: {}", userId, e.getMessage(), e);
+            throw new ChallengeSphereException(
+                    "Failed to get following",
+                    HttpStatus.INTERNAL_SERVER_ERROR,
+                    logger
+            );
         }
-        if (userRepository.existsByEmailId(userRegistrationRequest.getEmailId())) {
-            throw new IllegalArgumentException("Error: Email is already in use!");
+    }
+
+    @Override
+    public ToggleUserActivationResponse toggleUserActivation(ToggleActivateUserRequest request) throws ChallengeSphereException {
+        Long userId = request.getUserId();
+
+        logger.info("Toggling activation status for user with userId: {}", userId);
+
+        try {
+            // Find the user
+            User user = userRepository.findById(userId)
+                    .orElseThrow(() -> new ChallengeSphereException(
+                            "User not found with id: " + userId,
+                            HttpStatus.NOT_FOUND,
+                            logger
+                    ));
+
+            // Toggle the active status
+            boolean currentStatus = user.getActive();
+            boolean newStatus = !currentStatus;
+            user.setActive(newStatus);
+            userRepository.save(user);
+
+            String action = newStatus ? "activated" : "deactivated";
+            logger.info("User {} successfully {} (changed from {} to {})", userId, action, currentStatus, newStatus);
+
+            return ToggleUserActivationResponse.success(userId, newStatus, action);
+
+        } catch (ChallengeSphereException e) {
+            throw e;
+        } catch (Exception e) {
+            logger.error("Error toggling activation status for user with userId: {}: {}", userId, e.getMessage(), e);
+            throw new ChallengeSphereException(
+                    "Failed to toggle user activation status",
+                    HttpStatus.INTERNAL_SERVER_ERROR,
+                    logger
+            );
         }
-        if (userRegistrationRequest.getPhoneNumber() != null && userRepository.existsByPhoneNumber(userRegistrationRequest.getPhoneNumber())) {
-            throw new IllegalArgumentException("Error: Phone number is already in use!");
+    }
+
+    @Async
+    private void updateFollowCounts(Long followerId, Long followingId, boolean isFollow) {
+        try {
+            User follower = userRepository.findById(followerId).orElse(null);
+            if (follower != null) {
+                int currentFollowing = follower.getFollowing() != null ? follower.getFollowing() : 0;
+                follower.setFollowing(isFollow ? currentFollowing + 1 : Math.max(0, currentFollowing - 1));
+                userRepository.save(follower);
+            }
+            User following = userRepository.findById(followingId).orElse(null);
+            if (following != null) {
+                int currentFollowers = following.getFollowers() != null ? following.getFollowers() : 0;
+                following.setFollowers(isFollow ? currentFollowers + 1 : Math.max(0, currentFollowers - 1));
+                userRepository.save(following);
+            }
+            logger.debug("Updated follow counts for followerId: {}, followingId: {}, action: {}",
+                        followerId, followingId, isFollow ? "follow" : "unfollow");
+        } catch (Exception e) {
+            logger.error("Error updating follow counts: {}", e.getMessage(), e);
         }
-        User newUser = new User();
-        newUser.setUsername(userRegistrationRequest.getUsername());
-        newUser.setEmailId(userRegistrationRequest.getEmailId());
-        newUser.setPasswordHash(userRegistrationRequest.getPassword());
-        newUser.setFullName(userRegistrationRequest.getFullName());
-        newUser.setLocation(userRegistrationRequest.getLocation());
-        newUser.setBio(userRegistrationRequest.getBio());
-        newUser.setPhoneNumber(userRegistrationRequest.getPhoneNumber());
-        newUser.setLanguagePreference("en");
-        newUser.setPreferredTone("motivational");
-        newUser.setActive(1);
-        User savedUser = userRepository.save(newUser);
-        return mapToUserProfileResponse(savedUser);
     }
-
-    @Override
-    @Transactional
-    public UserProfileResponse updateUserBio(Long userId, String bio) {
-        User user = userRepository.findById(userId).orElseThrow(() -> new EntityNotFoundException("User not found"));
-        user.setBio(bio);
-        User savedUser = userRepository.save(user);
-        return mapToUserProfileResponse(savedUser);
-    }
-
-    @Override
-    @Transactional
-    public UserProfileResponse updateUserLocation(Long userId, String location) {
-        User user = userRepository.findById(userId).orElseThrow(() -> new EntityNotFoundException("User not found"));
-        user.setLocation(location);
-        User savedUser = userRepository.save(user);
-        return mapToUserProfileResponse(savedUser);
-    }
-
-    @Override
-    @Transactional
-    public UserProfileResponse updateProfilePicture(Long userId, String profilePicUrl) {
-        User user = userRepository.findById(userId).orElseThrow(() -> new EntityNotFoundException("User not found"));
-        user.setProfilePicUrl(profilePicUrl);
-        User savedUser = userRepository.save(user);
-        return mapToUserProfileResponse(savedUser);
-    }
-
-    @Override
-    @Transactional
-    public UserProfileResponse updateUserPreferences(Long userId, String language, String tone) {
-        User user = userRepository.findById(userId).orElseThrow(() -> new EntityNotFoundException("User not found"));
-        if (language != null) user.setLanguagePreference(language);
-        if (tone != null) user.setPreferredTone(tone);
-        User savedUser = userRepository.save(user);
-        return mapToUserProfileResponse(savedUser);
-    }
-
-    @Override
-    @Transactional
-    public int toggleActivation(Long userId) {
-        User user = userRepository.findById(userId).orElseThrow(() -> new EntityNotFoundException("User not found"));
-        int newStatus = user.getActive() == 1 ? 0 : 1;
-        user.setActive(newStatus);
-        userRepository.save(user);
-        return newStatus;
-    }
-
 }
