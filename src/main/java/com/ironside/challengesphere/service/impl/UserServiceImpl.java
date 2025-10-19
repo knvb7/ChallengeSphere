@@ -5,9 +5,11 @@ import com.ironside.challengesphere.api.request.FollowActionRequest;
 import com.ironside.challengesphere.api.request.GetFollowersFollowingRequest;
 import com.ironside.challengesphere.api.request.GetUserPayload;
 import com.ironside.challengesphere.api.request.UpdateUserRequest;
+import com.ironside.challengesphere.api.request.UserRegistrationRequest;
 import com.ironside.challengesphere.api.response.ToggleUserActivationResponse;
 import com.ironside.challengesphere.api.response.FollowActionResponse;
 import com.ironside.challengesphere.api.response.FollowersFollowingResponse;
+import com.ironside.challengesphere.api.response.UserRegistrationResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.model.Follow;
 import com.ironside.challengesphere.model.User;
@@ -20,7 +22,11 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.sql.Timestamp;
 import java.util.List;
 import java.util.Optional;
@@ -256,8 +262,6 @@ public class UserServiceImpl implements UserService {
 
             return FollowersFollowingResponse.followers(userId, followers, page, pageSize, totalCount);
 
-        } catch (ChallengeSphereException e) {
-            throw e;
         } catch (Exception e) {
             logger.error("Error getting followers for userId: {}: {}", userId, e.getMessage(), e);
             throw new ChallengeSphereException(
@@ -295,8 +299,6 @@ public class UserServiceImpl implements UserService {
 
             return FollowersFollowingResponse.following(userId, following, page, pageSize, totalCount);
 
-        } catch (ChallengeSphereException e) {
-            throw e;
         } catch (Exception e) {
             logger.error("Error getting following for userId: {}: {}", userId, e.getMessage(), e);
             throw new ChallengeSphereException(
@@ -345,8 +347,107 @@ public class UserServiceImpl implements UserService {
         }
     }
 
+    @Override
+    @Transactional
+    public UserRegistrationResponse registerUser(UserRegistrationRequest request) throws ChallengeSphereException {
+        logger.info("Registering new user with username: {}, email: {}", request.getUsername(), request.getEmailId());
+
+        try {
+            // Validate if user already exists
+            if (request.getUsername() != null) {
+                Optional<User> existingUser = userRepository.findByUsername(request.getUsername());
+                if (existingUser.isPresent()) {
+                    logger.warn("Registration failed: Username already exists: {}", request.getUsername());
+                    throw new ChallengeSphereException(
+                            "Username already exists",
+                            HttpStatus.CONFLICT,
+                            logger
+                    );
+                }
+            }
+
+            if (request.getEmailId() != null) {
+                Optional<User> existingUser = userRepository.findByEmailId(request.getEmailId());
+                if (existingUser.isPresent()) {
+                    logger.warn("Registration failed: Email already exists: {}", request.getEmailId());
+                    throw new ChallengeSphereException(
+                            "Email already exists",
+                            HttpStatus.CONFLICT,
+                            logger
+                    );
+                }
+            }
+
+            if (request.getPhone() != null && !request.getPhone().trim().isEmpty()) {
+                Optional<User> existingUser = userRepository.findByPhone(request.getPhone());
+                if (existingUser.isPresent()) {
+                    logger.warn("Registration failed: Phone already exists: {}", request.getPhone());
+                    throw new ChallengeSphereException(
+                            "Phone number already exists",
+                            HttpStatus.CONFLICT,
+                            logger
+                    );
+                }
+            }
+
+            // Create new user
+            User newUser = new User();
+            newUser.setUsername(request.getUsername());
+            newUser.setEmailId(request.getEmailId());
+            newUser.setPhone(request.getPhone());
+            newUser.setBio(request.getBio());
+
+            // Hash password
+            String hashedPassword = hashPassword(request.getPassword());
+            newUser.setHashedPassword(hashedPassword);
+
+            // Set defaults
+            newUser.setCreatedAt(new Timestamp(System.currentTimeMillis()));
+            newUser.setGenuinenessScore(100);
+            newUser.setActive(true);
+            newUser.setChallengesCreated(0);
+            newUser.setChallengesAccepted(0);
+            newUser.setFollowers(0);
+            newUser.setFollowing(0);
+            newUser.setPremiumUser(0);
+            newUser.setNotifications(1);
+
+            // Save user
+            User savedUser = userRepository.save(newUser);
+            logger.info("Successfully registered user with id: {}, username: {}", savedUser.getId(), savedUser.getUsername());
+
+            return UserRegistrationResponse.success(savedUser);
+
+        } catch (ChallengeSphereException e) {
+            throw e;
+        } catch (Exception e) {
+            logger.error("Error registering user: {}", e.getMessage(), e);
+            throw new ChallengeSphereException(
+                    "Failed to register user: " + e.getMessage(),
+                    HttpStatus.INTERNAL_SERVER_ERROR,
+                    logger
+            );
+        }
+    }
+
+    /**
+     * Hash password using SHA-256
+     * Note: In production, use BCrypt or similar when Spring Security is enabled
+     */
+    private String hashPassword(String password) throws NoSuchAlgorithmException {
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        byte[] hash = digest.digest(password.getBytes(StandardCharsets.UTF_8));
+        StringBuilder hexString = new StringBuilder();
+        for (byte b : hash) {
+            String hex = Integer.toHexString(0xff & b);
+            if (hex.length() == 1) hexString.append('0');
+            hexString.append(hex);
+        }
+        return hexString.toString();
+    }
+
     @Async
-    private void updateFollowCounts(Long followerId, Long followingId, boolean isFollow) {
+    protected void updateFollowCounts(Long followerId, Long followingId, boolean isFollow) {
         try {
             User follower = userRepository.findById(followerId).orElse(null);
             if (follower != null) {
@@ -367,3 +468,4 @@ public class UserServiceImpl implements UserService {
         }
     }
 }
+

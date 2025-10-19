@@ -1,88 +1,193 @@
-//package com.ironside.challengesphere.service.impl;
-//
-//import com.ironside.challengesphere.exception.ChallengeSphereException;
-//import com.ironside.challengesphere.service.CommentService;
-//import lombok.RequiredArgsConstructor;
-//import lombok.extern.slf4j.Slf4j;
-//import org.apache.logging.log4j.LogManager;
-//import org.apache.logging.log4j.Logger;
-//import org.springframework.beans.factory.annotation.Autowired;
-//import org.springframework.data.domain.Page;
-//import org.springframework.data.domain.Pageable;
-//import org.springframework.http.HttpStatus;
-//import org.springframework.stereotype.Service;
-//import org.springframework.transaction.annotation.Transactional;
-//
-//import java.sql.Timestamp;
-//
-//@Slf4j
-//@Service
-//@RequiredArgsConstructor
-//public class CommentServiceImpl implements CommentService {
-//    private final Logger logger = LogManager.getLogger(CommentServiceImpl.class);
-//
-//    @Autowired
-//    private final CommentRepository commentRepository;
-//
-//    @Autowired
-//    private final MediaRepository mediaRepository;
-//
-//    @Autowired
-//    private final UserRepository userRepository;
-//
-//    @Transactional
-//    @Override
-//    public Comment addComment(Long mediaId, Long userId, String content) throws ChallengeSphereException {
-//        Media media = mediaRepository.findById(mediaId)
-//                .orElseThrow(() -> new ChallengeSphereException(
-//                    "Media not found: " + mediaId,
-//                    HttpStatus.NOT_FOUND,
-//                    logger
-//                ));
-//        User user = userRepository.findById(userId)
-//                .orElseThrow(() -> new ChallengeSphereException(
-//                    "User not found: " + userId,
-//                    HttpStatus.NOT_FOUND,
-//                    logger
-//                ));
-//        Comment comment = new Comment();
-//        comment.setMedia(media);
-//        comment.setUser(user);
-//        comment.setContent(content);
-//        comment.setCreatedAt(new Timestamp(System.currentTimeMillis()));
-//        Comment savedComment = commentRepository.save(comment);
-//        media.setCommentsCount(media.getCommentsCount() + 1);
-//        mediaRepository.save(media);
-//        return savedComment;
-//    }
-//
-//    @Override
-//    public Page<Comment> getCommentsForMedia(Long mediaId, Pageable pageable) {
-//        return commentRepository.findByMediaId(mediaId, pageable);
-//    }
-//
-//    @Transactional
-//    @Override
-//    public void softDeleteComment(Long commentId, Long userId) throws ChallengeSphereException {
-//        try {
-//            Comment comment = commentRepository.findById(commentId)
-//                    .orElseThrow(() -> new ChallengeSphereException(
-//                        "Comment not found: " + commentId,
-//                        HttpStatus.NOT_FOUND,
-//                        logger
-//                    ));
-//            comment.setActive(false);
-//            commentRepository.save(comment);
-//            Media media = comment.getMedia();
-//            media.setCommentsCount(Math.max(0, media.getCommentsCount() - 1));
-//            mediaRepository.save(media);
-//        } catch (Exception e) {
-//            logger.error("Error soft deleting comment with id={} by userId={}: {}", commentId, userId, e.getMessage());
-//            throw new ChallengeSphereException(
-//                "Failed to soft delete comment: " + e.getMessage(),
-//                HttpStatus.INTERNAL_SERVER_ERROR,
-//                logger
-//            );
-//        }
-//    }
-//}
+package com.ironside.challengesphere.service.impl;
+
+import com.ironside.challengesphere.exception.ChallengeSphereException;
+import com.ironside.challengesphere.model.Comment;
+import com.ironside.challengesphere.model.Submission;
+import com.ironside.challengesphere.repository.CommentRepository;
+import com.ironside.challengesphere.repository.SubmissionRepository;
+import com.ironside.challengesphere.service.CommentService;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.http.HttpStatus;
+import org.springframework.scheduling.annotation.Async;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.sql.Timestamp;
+
+@Service
+public class CommentServiceImpl implements CommentService {
+
+    private static final Logger logger = LogManager.getLogger(CommentServiceImpl.class);
+
+    @Autowired
+    private CommentRepository commentRepository;
+
+    @Autowired
+    private SubmissionRepository submissionRepository;
+
+    @Override
+    public Page<Comment> getCommentsForSubmission(Long submissionId, Pageable pageable) throws ChallengeSphereException {
+        logger.info("Getting comments for submission: {}, page: {}, size: {}",
+                submissionId, pageable.getPageNumber(), pageable.getPageSize());
+
+        // Single DB query - just return the paginated results
+        return commentRepository.findActiveCommentsBySubmissionId(submissionId, pageable);
+    }
+
+    @Override
+    @Transactional
+    public Comment createComment(Long submissionId, Long userId, String content) throws ChallengeSphereException {
+        logger.info("Creating comment for submission: {} by user: {}", submissionId, userId);
+
+        // Validate submission exists (needed for creation)
+        Submission submission = submissionRepository.findById(submissionId)
+                .orElseThrow(() -> new ChallengeSphereException(
+                        "Submission not found with id: " + submissionId,
+                        HttpStatus.NOT_FOUND,
+                        logger
+                ));
+
+        // Validate content
+        if (content == null || content.trim().isEmpty()) {
+            throw new ChallengeSphereException(
+                    "Comment content cannot be empty",
+                    HttpStatus.BAD_REQUEST,
+                    logger
+            );
+        }
+
+        // Create comment
+        Comment comment = new Comment();
+        comment.setSubmissionId(submissionId);
+        comment.setUserId(userId);
+        comment.setContent(content.trim());
+        comment.setCreatedAt(new Timestamp(System.currentTimeMillis()));
+        comment.setUpdatedAt(new Timestamp(System.currentTimeMillis()));
+        comment.setActive(true);
+
+        Comment savedComment = commentRepository.save(comment);
+        logger.info("Created comment with id: {} for submission: {}", savedComment.getId(), submissionId);
+
+        // Update comment count asynchronously
+        updateCommentCountAsync(submission, true);
+
+        return savedComment;
+    }
+
+    @Override
+    @Transactional
+    public Comment updateComment(Long commentId, Long userId, String content) throws ChallengeSphereException {
+        logger.info("Updating comment: {} by user: {}", commentId, userId);
+
+        // Fetch the comment
+        Comment comment = commentRepository.findById(commentId)
+                .orElseThrow(() -> new ChallengeSphereException(
+                        "Comment not found with id: " + commentId,
+                        HttpStatus.NOT_FOUND,
+                        logger
+                ));
+
+        // Check if comment is active
+        if (!comment.getActive()) {
+            throw new ChallengeSphereException(
+                    "Cannot update a deleted comment",
+                    HttpStatus.BAD_REQUEST,
+                    logger
+            );
+        }
+
+        // Verify user owns the comment
+        if (!comment.getUserId().equals(userId)) {
+            throw new ChallengeSphereException(
+                    "User not authorized to update this comment",
+                    HttpStatus.FORBIDDEN,
+                    logger
+            );
+        }
+
+        // Validate content
+        if (content == null || content.trim().isEmpty()) {
+            throw new ChallengeSphereException(
+                    "Comment content cannot be empty",
+                    HttpStatus.BAD_REQUEST,
+                    logger
+            );
+        }
+
+        // Update comment
+        comment.setContent(content.trim());
+        comment.setUpdatedAt(new Timestamp(System.currentTimeMillis()));
+
+        Comment updatedComment = commentRepository.save(comment);
+        logger.info("Updated comment with id: {}", commentId);
+
+        return updatedComment;
+    }
+
+    @Override
+    @Transactional
+    public void deleteComment(Long commentId, Long userId) throws ChallengeSphereException {
+        logger.info("Deleting comment: {} by user: {}", commentId, userId);
+
+        // Fetch the comment
+        Comment comment = commentRepository.findById(commentId)
+                .orElseThrow(() -> new ChallengeSphereException(
+                        "Comment not found with id: " + commentId,
+                        HttpStatus.NOT_FOUND,
+                        logger
+                ));
+
+        // Check if comment is already deleted
+        if (!comment.getActive()) {
+            throw new ChallengeSphereException(
+                    "Comment already deleted",
+                    HttpStatus.BAD_REQUEST,
+                    logger
+            );
+        }
+
+        // Verify user owns the comment
+        if (!comment.getUserId().equals(userId)) {
+            throw new ChallengeSphereException(
+                    "User not authorized to delete this comment",
+                    HttpStatus.FORBIDDEN,
+                    logger
+            );
+        }
+
+        // Soft delete
+        comment.setActive(false);
+        comment.setUpdatedAt(new Timestamp(System.currentTimeMillis()));
+        commentRepository.save(comment);
+
+        logger.info("Soft deleted comment with id: {}", commentId);
+
+        // Update comment count asynchronously
+        Submission submission = submissionRepository.findById(comment.getSubmissionId()).orElse(null);
+        if (submission != null) {
+            updateCommentCountAsync(submission, false);
+        }
+    }
+
+    @Async
+    @Transactional
+    public void updateCommentCountAsync(Submission submission, boolean isAdded) {
+        try {
+            if (submission != null) {
+                Long currentCount = submission.getCommentsCount();
+                Long newCount = isAdded ? currentCount + 1 : Math.max(0, currentCount - 1);
+                submission.setCommentsCount(newCount);
+                submissionRepository.save(submission);
+                logger.info("Updated comment count to {} for submission: {} ({})",
+                        newCount, submission.getId(), isAdded ? "increased" : "decreased");
+            }
+        } catch (Exception e) {
+            logger.error("Error updating comment count for submission {}: {}",
+                    submission.getId(), e.getMessage(), e);
+        }
+    }
+}

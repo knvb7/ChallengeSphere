@@ -5,9 +5,11 @@ import com.ironside.challengesphere.api.request.FollowActionRequest;
 import com.ironside.challengesphere.api.request.GetFollowersFollowingRequest;
 import com.ironside.challengesphere.api.request.GetUserPayload;
 import com.ironside.challengesphere.api.request.UpdateUserRequest;
+import com.ironside.challengesphere.api.request.UserRegistrationRequest;
 import com.ironside.challengesphere.api.response.ToggleUserActivationResponse;
 import com.ironside.challengesphere.api.response.FollowActionResponse;
 import com.ironside.challengesphere.api.response.FollowersFollowingResponse;
+import com.ironside.challengesphere.api.response.UserRegistrationResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.model.User;
 import com.ironside.challengesphere.service.UserService;
@@ -15,6 +17,7 @@ import lombok.RequiredArgsConstructor;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -28,6 +31,17 @@ public class UserController {
 
     @Autowired
     private UserService userService;
+
+    /**
+     * Register a new user
+     * POST /api/v1/users/register
+     */
+    @PostMapping("/register")
+    public ResponseEntity<UserRegistrationResponse> registerUser(@Valid @RequestBody UserRegistrationRequest request) throws ChallengeSphereException {
+        logger.info("Registration request received for username: {}", request.getUsername());
+        UserRegistrationResponse response = userService.registerUser(request);
+        return ResponseEntity.status(HttpStatus.CREATED).body(response);
+    }
 
     @GetMapping("/getUser")
     public ResponseEntity<User> getUser(@Valid @RequestBody GetUserPayload getUserPayload) throws ChallengeSphereException {
