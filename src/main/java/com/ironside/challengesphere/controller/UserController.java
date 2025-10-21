@@ -1,7 +1,6 @@
 package com.ironside.challengesphere.controller;
 
 import com.ironside.challengesphere.api.request.ToggleActivateUserRequest;
-import com.ironside.challengesphere.api.request.FollowActionRequest;
 import com.ironside.challengesphere.api.request.GetFollowersFollowingRequest;
 import com.ironside.challengesphere.api.request.GetUserPayload;
 import com.ironside.challengesphere.api.request.UpdateUserRequest;
@@ -44,7 +43,16 @@ public class UserController {
     }
 
     @GetMapping("/getUser")
-    public ResponseEntity<User> getUser(@Valid @RequestBody GetUserPayload getUserPayload) throws ChallengeSphereException {
+    public ResponseEntity<User> getUser(
+            @RequestParam(required = false) Long userId,
+            @RequestParam(required = false) String emailId,
+            @RequestParam(required = false) String phone,
+            @RequestParam(required = false) String username) throws ChallengeSphereException {
+        GetUserPayload getUserPayload = new GetUserPayload();
+        getUserPayload.setUserId(userId);
+        getUserPayload.setEmailId(emailId);
+        getUserPayload.setPhone(phone);
+        getUserPayload.setUsername(username);
         User user = userService.getUser(getUserPayload);
         return ResponseEntity.ok(user);
     }
@@ -55,9 +63,29 @@ public class UserController {
         return ResponseEntity.ok(updatedUser);
     }
 
-    @PostMapping("/followAction")
-    public ResponseEntity<FollowActionResponse> followAction(@Valid @RequestBody FollowActionRequest followActionRequest) throws ChallengeSphereException {
-        FollowActionResponse response = userService.followAction(followActionRequest);
+    /**
+     * Follow a user
+     * POST /api/v1/users/follow?followerId=X&followingId=Y
+     */
+    @PostMapping("/follow")
+    public ResponseEntity<FollowActionResponse> followUser(
+            @RequestParam Long followerId,
+            @RequestParam Long followingId) throws ChallengeSphereException {
+        logger.info("Follow request - followerId: {}, followingId: {}", followerId, followingId);
+        FollowActionResponse response = userService.follow(followerId, followingId);
+        return ResponseEntity.ok(response);
+    }
+
+    /**
+     * Unfollow a user
+     * POST /api/v1/users/unfollow?followerId=X&followingId=Y
+     */
+    @PostMapping("/unfollow")
+    public ResponseEntity<FollowActionResponse> unfollowUser(
+            @RequestParam Long followerId,
+            @RequestParam Long followingId) throws ChallengeSphereException {
+        logger.info("Unfollow request - followerId: {}, followingId: {}", followerId, followingId);
+        FollowActionResponse response = userService.unfollow(followerId, followingId);
         return ResponseEntity.ok(response);
     }
 

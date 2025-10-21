@@ -1,6 +1,8 @@
 package com.ironside.challengesphere.service;
 
 import com.ironside.challengesphere.api.request.CreateSubmissionRequest;
+import com.ironside.challengesphere.api.request.GeneratePresignedUrlsRequest;
+import com.ironside.challengesphere.api.response.PresignedUrlsResponse;
 import com.ironside.challengesphere.api.response.SubmissionResponse;
 import com.ironside.challengesphere.api.response.SubmissionsResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
@@ -12,4 +14,5 @@ public interface SubmissionService {
     SubmissionsResponse getSubmissionsByUserAndChallenge(Long userId, Long challengeId, int page, int pageSize) throws ChallengeSphereException;
     SubmissionsResponse getSubmissionsByChallenge(Long challengeId, int page, int pageSize) throws ChallengeSphereException;
     SubmissionsResponse getSubmissionsByUser(Long userId, int page, int pageSize) throws ChallengeSphereException;
+    PresignedUrlsResponse generatePresignedUrls(GeneratePresignedUrlsRequest request) throws ChallengeSphereException;
 }

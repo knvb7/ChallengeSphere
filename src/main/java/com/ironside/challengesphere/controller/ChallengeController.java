@@ -28,7 +28,6 @@ import org.springframework.web.bind.annotation.*;
 
 import jakarta.validation.Valid;
 import java.util.List;
-import java.util.logging.Handler;
 
 @RestController
 @RequestMapping("/api/v1/challenges")

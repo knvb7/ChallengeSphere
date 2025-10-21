@@ -26,6 +26,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -128,6 +129,9 @@ public class ChallengeServiceImpl implements ChallengeService {
             Challenge savedChallenge = challengeRepository.save(challenge);
             logger.info("Successfully created challenge with id: {} for user: {}", savedChallenge.getId(), request.getCreatorUserId());
 
+            // Update user's challengesCreated count asynchronously
+            updateChallengesCreatedCountAsync(request.getCreatorUserId());
+
             // Return success response
             return ChallengeCreateResponse.success(
                     savedChallenge.getId(),
@@ -154,6 +158,26 @@ public class ChallengeServiceImpl implements ChallengeService {
                     HttpStatus.INTERNAL_SERVER_ERROR,
                     logger
             );
+        }
+    }
+
+    /**
+     * Asynchronously update the challengesCreated count for a user
+     */
+    @Async
+    @Transactional
+    protected void updateChallengesCreatedCountAsync(Long userId) {
+        try {
+            logger.info("Async update challengesCreated count for user: {}", userId);
+            User user = userRepository.findById(userId).orElse(null);
+            if (user != null) {
+                Integer currentCount = user.getChallengesCreated() != null ? user.getChallengesCreated() : 0;
+                user.setChallengesCreated(currentCount + 1);
+                userRepository.save(user);
+                logger.info("Updated challengesCreated count to {} for user: {}", currentCount + 1, userId);
+            }
+        } catch (Exception e) {
+            logger.error("Error updating challengesCreated count for user {}: {}", userId, e.getMessage(), e);
         }
     }
 

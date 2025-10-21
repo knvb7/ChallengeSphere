@@ -112,20 +112,20 @@ public class UserServiceImpl implements UserService {
                             logger
                     ));
 
-            if (updateUserRequest.getEmailId() != null) {
+            if (updateUserRequest.getEmailId() != null && !updateUserRequest.getEmailId().trim().isEmpty()) {
                 user.setEmailId(updateUserRequest.getEmailId().trim());
                 logger.debug("Updated emailId for user {}", userId);
             }
-            if (updateUserRequest.getPhone() != null) {
+            if (updateUserRequest.getPhone() != null && !updateUserRequest.getPhone().trim().isEmpty()) {
                 user.setPhone(updateUserRequest.getPhone().trim());
                 logger.debug("Updated phone for user {}", userId);
             }
-            if (updateUserRequest.getUsername() != null) {
+            if (updateUserRequest.getUsername() != null && !updateUserRequest.getUsername().trim().isEmpty()) {
                 user.setUsername(updateUserRequest.getUsername().trim());
                 logger.debug("Updated username for user {}", userId);
             }
             //TODO: Might need to hash the password here before saving
-            if (updateUserRequest.getHashedPassword() != null) {
+            if (updateUserRequest.getHashedPassword() != null && !updateUserRequest.getHashedPassword().trim().isEmpty()) {
                 user.setHashedPassword(updateUserRequest.getHashedPassword());
                 logger.debug("Updated hashedPassword for user {}", userId);
             }
@@ -149,11 +149,11 @@ public class UserServiceImpl implements UserService {
                 user.setProfilePicUrl(updateUserRequest.getProfilePicUrl());
                 logger.debug("Updated profilePicUrl for user {}", userId);
             }
-            if (updateUserRequest.getPremiumUser() != null) {
+            if (updateUserRequest.getPremiumUser() != null && !updateUserRequest.getEmailId().trim().isEmpty()) {
                 user.setPremiumUser(updateUserRequest.getPremiumUser());
                 logger.debug("Updated premiumUser for user {}", userId);
             }
-            if (updateUserRequest.getNotifications() != null) {
+            if (updateUserRequest.getNotifications() != null && !updateUserRequest.getEmailId().trim().isEmpty()) {
                 user.setNotifications(updateUserRequest.getNotifications());
                 logger.debug("Updated notifications for user {}", userId);
             }
@@ -179,14 +179,11 @@ public class UserServiceImpl implements UserService {
     }
 
     @Override
-    public FollowActionResponse followAction(FollowActionRequest followActionRequest) throws ChallengeSphereException {
-        Long followerId = followActionRequest.getFollowerId();
-        Long followingId = followActionRequest.getFollowingId();
-        Boolean shouldFollow = followActionRequest.getFollow();
+    public FollowActionResponse follow(Long followerId, Long followingId) throws ChallengeSphereException {
+        logger.info("User {} attempting to follow user {}", followerId, followingId);
 
-        logger.info("Processing follow action - followerId: {}, followingId: {}, action: {}",
-                   followerId, followingId, shouldFollow ? "follow" : "unfollow");
         try {
+            // Validate users cannot follow themselves
             if (followerId.equals(followingId)) {
                 throw new ChallengeSphereException(
                         "Users cannot follow themselves",
@@ -194,38 +191,71 @@ public class UserServiceImpl implements UserService {
                         logger
                 );
             }
+
+            // Check if already following
             Optional<Follow> existingFollow = followRepository.findByFollowerIdAndFollowingId(followerId, followingId);
-            if (shouldFollow) {
-                if (existingFollow.isPresent()) {
-                    logger.info("User {} is already following user {}", followerId, followingId);
-                    return FollowActionResponse.success(followerId, followingId, true);
-                }
-                Follow follow = new Follow();
+            if (existingFollow.isPresent() && existingFollow.get().getActive()) {
+                logger.info("User {} is already following user {}", followerId, followingId);
+                return FollowActionResponse.success(followerId, followingId, true);
+            }
+
+            // Create or reactivate follow
+            Follow follow;
+            if (existingFollow.isPresent()) {
+                follow = existingFollow.get();
+                follow.setActive(true);
+            } else {
+                follow = new Follow();
                 follow.setFollowerId(followerId);
                 follow.setFollowingId(followingId);
                 follow.setActive(true);
                 follow.setCreatedAt(new Timestamp(System.currentTimeMillis()));
-                followRepository.save(follow);
-                updateFollowCounts(followerId, followingId, true);
-                logger.info("User {} successfully followed user {}", followerId, followingId);
-                return FollowActionResponse.success(followerId, followingId, true);
-            } else {
-                if (existingFollow.isEmpty()) {
-                    logger.info("User {} is not following user {}", followerId, followingId);
-                    return FollowActionResponse.success(followerId, followingId, false);
-                }
-                followRepository.delete(existingFollow.get());
-                updateFollowCounts(followerId, followingId, false);
-                logger.info("User {} successfully unfollowed user {}", followerId, followingId);
-                return FollowActionResponse.success(followerId, followingId, false);
             }
+
+            followRepository.save(follow);
+            updateFollowCounts(followerId, followingId, true);
+            logger.info("User {} successfully followed user {}", followerId, followingId);
+            return FollowActionResponse.success(followerId, followingId, true);
+
         } catch (ChallengeSphereException e) {
             throw e;
         } catch (Exception e) {
-            logger.error("Error processing follow action for followerId: {}, followingId: {}: {}",
-                        followerId, followingId, e.getMessage(), e);
+            logger.error("Error following user - followerId: {}, followingId: {}: {}",
+                    followerId, followingId, e.getMessage(), e);
             throw new ChallengeSphereException(
-                    "Failed to process follow action",
+                    "Failed to follow user",
+                    HttpStatus.INTERNAL_SERVER_ERROR,
+                    logger
+            );
+        }
+    }
+
+    @Override
+    public FollowActionResponse unfollow(Long followerId, Long followingId) throws ChallengeSphereException {
+        logger.info("User {} attempting to unfollow user {}", followerId, followingId);
+
+        try {
+            // Check if follow exists
+            Optional<Follow> existingFollow = followRepository.findByFollowerIdAndFollowingId(followerId, followingId);
+            if (existingFollow.isEmpty() || !existingFollow.get().getActive()) {
+                logger.info("User {} is not following user {}", followerId, followingId);
+                return FollowActionResponse.success(followerId, followingId, false);
+            }
+
+            // Soft delete by setting active to false
+            Follow follow = existingFollow.get();
+            follow.setActive(false);
+            followRepository.save(follow);
+
+            updateFollowCounts(followerId, followingId, false);
+            logger.info("User {} successfully unfollowed user {}", followerId, followingId);
+            return FollowActionResponse.success(followerId, followingId, false);
+
+        } catch (Exception e) {
+            logger.error("Error unfollowing user - followerId: {}, followingId: {}: {}",
+                    followerId, followingId, e.getMessage(), e);
+            throw new ChallengeSphereException(
+                    "Failed to unfollow user",
                     HttpStatus.INTERNAL_SERVER_ERROR,
                     logger
             );
@@ -468,4 +498,3 @@ public class UserServiceImpl implements UserService {
         }
     }
 }
-

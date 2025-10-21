@@ -1,6 +1,8 @@
 package com.ironside.challengesphere.service.impl;
 
 import com.ironside.challengesphere.api.request.CreateSubmissionRequest;
+import com.ironside.challengesphere.api.request.GeneratePresignedUrlsRequest;
+import com.ironside.challengesphere.api.response.PresignedUrlsResponse;
 import com.ironside.challengesphere.api.response.SubmissionResponse;
 import com.ironside.challengesphere.api.response.SubmissionsResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
@@ -13,16 +15,20 @@ import com.ironside.challengesphere.repository.SubmissionRepository;
 import com.ironside.challengesphere.repository.UserRepository;
 import com.ironside.challengesphere.repository.UserChallengeRepository;
 import com.ironside.challengesphere.service.SubmissionService;
+import com.ironside.challengesphere.util.GetSignedUrlForGcs;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 
 @Service
 public class SubmissionServiceImpl implements SubmissionService {
@@ -39,6 +45,15 @@ public class SubmissionServiceImpl implements SubmissionService {
 
     @Autowired
     private UserChallengeRepository userChallengeRepository;
+
+    @Value("${gcs.bucket.name}")
+    private String bucketName;
+
+    @Value("${gcs.bucket.region}")
+    private String bucketRegion;
+
+    @Value("${gcs.projectId}")
+    private String projectId;
 
     @Override
     @Transactional
@@ -248,5 +263,89 @@ public class SubmissionServiceImpl implements SubmissionService {
                     logger
             );
         }
+    }
+
+    @Override
+    public PresignedUrlsResponse generatePresignedUrls(GeneratePresignedUrlsRequest request) throws ChallengeSphereException {
+        Long userId = request.getUserId();
+        List<GeneratePresignedUrlsRequest.MediaFileInfo> mediaFiles = request.getMediaFiles();
+
+        logger.info("Generating presigned URLs for user: {} with {} media files", userId, mediaFiles.size());
+
+        try {
+            // Validate user exists
+            if (!userRepository.existsById(userId)) {
+                throw new ChallengeSphereException(
+                        "User not found with id: " + userId,
+                        HttpStatus.NOT_FOUND,
+                        logger
+                );
+            }
+
+            // Generate presigned URLs for each media file
+            List<PresignedUrlsResponse.PresignedUrlInfo> presignedUrls = new ArrayList<>();
+            long expirationTimeInSeconds = 3600; // 1 hour expiration
+
+            for (GeneratePresignedUrlsRequest.MediaFileInfo mediaFile : mediaFiles) {
+                try {
+                    // Generate unique file key with timestamp and UUID to prevent collisions
+                    String timestamp = String.valueOf(System.currentTimeMillis());
+                    String uniqueId = UUID.randomUUID().toString();
+                    String fileExtension = getFileExtension(mediaFile.getFileName());
+                    String fileKey = String.format("submissions/user_%d/%s/%s_%s%s",
+                            userId,
+                            mediaFile.getMediaType().name(),
+                            timestamp,
+                            uniqueId,
+                            fileExtension);
+
+                    // Generate presigned URL using Google Cloud Storage
+                    String presignedUrl = GetSignedUrlForGcs.generateV4PutObjectSignedUrl(projectId, bucketName, fileKey, 5, mediaFile.getContentType());
+
+                    PresignedUrlsResponse.PresignedUrlInfo urlInfo = new PresignedUrlsResponse.PresignedUrlInfo(
+                            mediaFile.getFileName(),
+                            mediaFile.getMediaType().name(),
+                            mediaFile.getContentType().getMimeType(),
+                            presignedUrl,
+                            fileKey,
+                            expirationTimeInSeconds
+                    );
+
+                    presignedUrls.add(urlInfo);
+                    logger.debug("Generated presigned URL for file: {} with key: {}", mediaFile.getFileName(), fileKey);
+
+                } catch (Exception e) {
+                    logger.error("Error generating presigned URL for file: {}", mediaFile.getFileName(), e);
+                    throw new ChallengeSphereException(
+                            "Failed to generate presigned URL for file: " + mediaFile.getFileName(),
+                            HttpStatus.INTERNAL_SERVER_ERROR,
+                            logger
+                    );
+                }
+            }
+
+            logger.info("Successfully generated {} presigned URLs for user: {}", presignedUrls.size(), userId);
+            return PresignedUrlsResponse.success(userId, presignedUrls);
+
+        } catch (ChallengeSphereException e) {
+            throw e;
+        } catch (Exception e) {
+            logger.error("Error generating presigned URLs for user: {}", userId, e);
+            throw new ChallengeSphereException(
+                    "Failed to generate presigned URLs",
+                    HttpStatus.INTERNAL_SERVER_ERROR,
+                    logger
+            );
+        }
+    }
+
+    /**
+     * Extract file extension from filename
+     */
+    private String getFileExtension(String fileName) {
+        if (fileName == null || !fileName.contains(".")) {
+            return "";
+        }
+        return fileName.substring(fileName.lastIndexOf("."));
     }
 }

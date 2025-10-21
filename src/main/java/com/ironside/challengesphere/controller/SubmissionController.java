@@ -1,6 +1,8 @@
 package com.ironside.challengesphere.controller;
 
 import com.ironside.challengesphere.api.request.CreateSubmissionRequest;
+import com.ironside.challengesphere.api.request.GeneratePresignedUrlsRequest;
+import com.ironside.challengesphere.api.response.PresignedUrlsResponse;
 import com.ironside.challengesphere.api.response.SubmissionResponse;
 import com.ironside.challengesphere.api.response.SubmissionsResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
@@ -35,6 +37,20 @@ public class SubmissionController {
 
         SubmissionResponse response = submissionService.createSubmission(request);
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
+    }
+
+    /**
+     * Generate presigned URLs for media upload (Instagram-style)
+     * POST /api/v1/submissions/presigned-urls
+     */
+    @PostMapping("/presignedUrls")
+    public ResponseEntity<PresignedUrlsResponse> generatePresignedUrls(
+            @Valid @RequestBody GeneratePresignedUrlsRequest request) throws ChallengeSphereException {
+        logger.info("Received request to generate presigned URLs for user: {} with {} files",
+                request.getUserId(), request.getMediaFiles().size());
+
+        PresignedUrlsResponse response = submissionService.generatePresignedUrls(request);
+        return ResponseEntity.ok(response);
     }
 
     /**

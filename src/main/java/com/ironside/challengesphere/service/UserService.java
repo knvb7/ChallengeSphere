@@ -19,7 +19,8 @@ public interface UserService {
     UserRegistrationResponse registerUser(UserRegistrationRequest request) throws ChallengeSphereException;
     User getUser(GetUserPayload getUserPayload) throws ChallengeSphereException;
     User updateUserDetails(UpdateUserRequest updateUserRequest) throws ChallengeSphereException;
-    FollowActionResponse followAction(FollowActionRequest followActionRequest) throws ChallengeSphereException;
+    FollowActionResponse follow(Long followerId, Long followingId) throws ChallengeSphereException;
+    FollowActionResponse unfollow(Long followerId, Long followingId) throws ChallengeSphereException;
     FollowersFollowingResponse getFollowers(GetFollowersFollowingRequest request) throws ChallengeSphereException;
     FollowersFollowingResponse getFollowing(GetFollowersFollowingRequest request) throws ChallengeSphereException;
     ToggleUserActivationResponse toggleUserActivation(ToggleActivateUserRequest request) throws ChallengeSphereException;

@@ -17,7 +17,7 @@ public class UpdateUserRequest {
     @Size(max = 20, message = "Phone number should not exceed 20 characters")
     private String phone;
 
-    @Size(min = 3, max = 50, message = "Username must be between 3 and 50 characters")
+    @Size(max = 50, message = "Username must be between 3 and 50 characters")
     private String username;
 
     private String hashedPassword;
