@@ -1,6 +1,9 @@
 package com.ironside.challengesphere.repository;
 
-import com.ironside.challengesphere.model.Submission;
+import java.time.LocalDate;
+import java.util.List;
+import java.util.Optional;
+
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -8,9 +11,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
-import java.time.LocalDate;
-import java.util.List;
-import java.util.Optional;
+import com.ironside.challengesphere.model.Submission;
 
 @Repository
 public interface SubmissionRepository extends JpaRepository<Submission, Long> {
@@ -123,4 +124,12 @@ public interface SubmissionRepository extends JpaRepository<Submission, Long> {
     // Find all submissions for a challenge by a specific user
     @Query(value = "SELECT * FROM challengesphere.submissions WHERE user_id = :userId AND challenge_id = :challengeId AND active = true ORDER BY day_number ASC", nativeQuery = true)
     List<Submission> findActiveByUserIdAndChallengeId(@Param("userId") Long userId, @Param("challengeId") Long challengeId);
+
+    // Find submissions by challenge and user (for leaderboard)
+    @Query(value = "SELECT * FROM challengesphere.submissions WHERE challenge_id = :challengeId AND user_id = :userId ORDER BY day_number ASC", nativeQuery = true)
+    List<Submission> findByChallengeIdAndUserId(@Param("challengeId") Long challengeId, @Param("userId") Long userId);
+
+    // Find submissions by challenge for multiple users (for leaderboard batch fetch)
+    @Query(value = "SELECT * FROM challengesphere.submissions WHERE challenge_id = :challengeId AND user_id IN :userIds AND active = true", nativeQuery = true)
+    List<Submission> findByChallengeIdAndUserIdIn(@Param("challengeId") Long challengeId, @Param("userIds") List<Long> userIds);
 }

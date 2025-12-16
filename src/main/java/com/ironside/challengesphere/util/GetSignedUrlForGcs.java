@@ -1,57 +1,65 @@
 package com.ironside.challengesphere.util;
 
-import com.google.cloud.storage.BlobId;
-import com.google.cloud.storage.BlobInfo;
-import com.google.cloud.storage.HttpMethod;
-import com.google.cloud.storage.Storage;
-import com.google.cloud.storage.StorageOptions;
+import com.google.auth.oauth2.ServiceAccountCredentials;
+import com.google.cloud.storage.*;
 import com.ironside.challengesphere.api.request.GeneratePresignedUrlsRequest;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.stereotype.Component;
 
+import java.io.FileInputStream;
+import java.io.IOException;
 import java.net.URL;
-import java.util.HashMap;
-import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
+@Component
 public class GetSignedUrlForGcs {
-    /**
-     * Signing a URL requires Credentials which implement ServiceAccountSigner. These can be set
-     * explicitly using the Storage.SignUrlOption.signWith(ServiceAccountSigner) option. If you don't,
-     * you could also pass a service account signer to StorageOptions, i.e.
-     * StorageOptions().newBuilder().setCredentials(ServiceAccountSignerCredentials). In this example,
-     * neither of these options are used, which means the following code only works when the
-     * credentials are defined via the environment variable GOOGLE_APPLICATION_CREDENTIALS, and those
-     * credentials are authorized to sign a URL. See the documentation for Storage.signUrl for more
-     * details.
-     */
-    public static String generateV4PutObjectSignedUrl(String projectId, String bucketName, String objectName, Integer expirationTime, GeneratePresignedUrlsRequest.ContentType contentType) throws Exception {
-        // String projectId = "my-project-id";
-        // String bucketName = "my-bucket";
-        // String objectName = "my-object";
 
-        Storage storage = StorageOptions.newBuilder().setProjectId(projectId).build().getService();
+    private static final Logger logger = LogManager.getLogger(GetSignedUrlForGcs.class);
 
-        // Define Resource
-        BlobInfo blobInfo = BlobInfo.newBuilder(BlobId.of(bucketName, objectName)).setContentType(contentType.getMimeType()).build();
+    @Value("${gcs.key.path}")
+    private String keyPath;
 
-        // Generate Signed URL
-        Map<String, String> extensionHeaders = new HashMap<>();
-        extensionHeaders.put("Content-Type", "application/octet-stream");
+    @Value("${gcs.projectId}")
+    private String projectId;
 
-        URL url = storage.signUrl(
+    private static Storage storage;
+
+    @Scheduled(initialDelay = 0, fixedDelay = Long.MAX_VALUE)
+    public void storage() throws IOException {
+        storage = StorageOptions.newBuilder()
+                .setProjectId(projectId)
+                .setCredentials(ServiceAccountCredentials.fromStream(new FileInputStream(keyPath)))
+                .build()
+                .getService();
+    }
+
+
+    public static String generateV4PutObjectSignedUrl(
+            String projectId,
+            String bucketName,
+            String objectName,
+            Integer expirationTime,
+            GeneratePresignedUrlsRequest.ContentType contentType
+    ) {
+
+        // --- Step 2: Define object metadata ---
+        BlobInfo blobInfo = BlobInfo.newBuilder(BlobId.of(bucketName, objectName))
+                .setContentType(String.valueOf(contentType))
+                .build();
+
+        // --- Step 3: Generate signed URL (V4, PUT method) ---
+        URL signedUrl = storage.signUrl(
                 blobInfo,
                 expirationTime,
                 TimeUnit.MINUTES,
                 Storage.SignUrlOption.httpMethod(HttpMethod.PUT),
-                Storage.SignUrlOption.withExtHeaders(extensionHeaders),
-                Storage.SignUrlOption.withV4Signature());
+                Storage.SignUrlOption.withV4Signature() // REQUIRED for modern GCS
+        );
 
-        System.out.println("Generated PUT signed URL:");
-        System.out.println(url);
-        System.out.println("You can use this URL with any user agent, for example:");
-        System.out.println(
-                "curl -X PUT -H 'Content-Type: application/octet-stream' --upload-file my-file '"
-                        + url
-                        + "'");
-        return url.toString();
+        logger.info("✅ Generated PUT signed URL: {}", signedUrl);
+        return signedUrl.toString();
     }
 }

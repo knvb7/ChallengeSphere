@@ -1,33 +1,43 @@
 package com.ironside.challengesphere.controller;
 
-import com.ironside.challengesphere.api.request.BulkChallengeUpdateRequest;
-import com.ironside.challengesphere.api.request.BulkUserChallengeUpdateRequest;
-import com.ironside.challengesphere.api.request.ChallengeCreateRequest;
-import com.ironside.challengesphere.api.request.GetUserChallengesRequest;
-import com.ironside.challengesphere.api.request.JoinChallengeRequest;
-import com.ironside.challengesphere.api.request.LeaveChallengeRequest;
-import com.ironside.challengesphere.api.request.GetChallengeParticipantsRequest;
-import com.ironside.challengesphere.api.request.GetChallengesByHashtagRequest;
-import com.ironside.challengesphere.api.request.GetPopularChallengesRequest;
-import com.ironside.challengesphere.api.response.ChallengeCreateResponse;
-import com.ironside.challengesphere.api.response.UserChallengesResponse;
-import com.ironside.challengesphere.api.response.JoinChallengeResponse;
-import com.ironside.challengesphere.api.response.LeaveChallengeResponse;
-import com.ironside.challengesphere.api.response.ChallengeParticipantsResponse;
-import com.ironside.challengesphere.api.response.ChallengesByHashtagResponse;
-import com.ironside.challengesphere.api.response.PopularChallengesResponse;
-import com.ironside.challengesphere.exception.ChallengeSphereException;
-import com.ironside.challengesphere.model.Challenge;
-import com.ironside.challengesphere.service.ChallengeService;
-import lombok.RequiredArgsConstructor;
+import java.util.List;
+
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.retry.annotation.CircuitBreaker;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+
+import com.ironside.challengesphere.api.request.BulkChallengeUpdateRequest;
+import com.ironside.challengesphere.api.request.BulkUserChallengeUpdateRequest;
+import com.ironside.challengesphere.api.request.ChallengeCreateRequest;
+import com.ironside.challengesphere.api.request.GetChallengeParticipantsRequest;
+import com.ironside.challengesphere.api.request.GetChallengesByHashtagRequest;
+import com.ironside.challengesphere.api.request.GetPopularChallengesRequest;
+import com.ironside.challengesphere.api.request.GetUserChallengesRequest;
+import com.ironside.challengesphere.api.request.JoinChallengeRequest;
+import com.ironside.challengesphere.api.request.LeaveChallengeRequest;
+import com.ironside.challengesphere.api.response.ChallengeCreateResponse;
+import com.ironside.challengesphere.api.response.ChallengeParticipantsResponse;
+import com.ironside.challengesphere.api.response.ChallengesByHashtagResponse;
+import com.ironside.challengesphere.api.response.JoinChallengeResponse;
+import com.ironside.challengesphere.api.response.LeaveChallengeResponse;
+import com.ironside.challengesphere.api.response.PopularChallengesResponse;
+import com.ironside.challengesphere.api.response.RecentChallengesResponse;
+import com.ironside.challengesphere.api.response.UserChallengesResponse;
+import com.ironside.challengesphere.exception.ChallengeSphereException;
+import com.ironside.challengesphere.model.Challenge;
+import com.ironside.challengesphere.service.ChallengeService;
 
 import jakarta.validation.Valid;
-import java.util.List;
+import lombok.RequiredArgsConstructor;
 
 @RestController
 @RequestMapping("/api/v1/challenges")
@@ -123,6 +133,25 @@ public class ChallengeController {
 
         PopularChallengesResponse response = challengeService.getPopularChallenges(request);
         return ResponseEntity.ok(response);
+    }
+
+    @GetMapping("/recent")
+    public ResponseEntity<RecentChallengesResponse> getRecentChallenges(
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "10") int pageSize) throws ChallengeSphereException {
+        
+        logger.info("GET /api/v1/challenges/recent - page: {}, pageSize: {}", page, pageSize);
+        RecentChallengesResponse response = challengeService.getRecentChallenges(page, pageSize);
+        return ResponseEntity.ok(response);
+    }
+
+    @GetMapping("/trending/ids")
+    public ResponseEntity<List<Long>> getTrendingChallengeIds(
+            @RequestParam(defaultValue = "10") int limit) {
+        
+        logger.info("GET /api/v1/challenges/trending/ids - limit: {}", limit);
+        List<Long> trendingIds = challengeService.getTrendingChallengeIds(limit);
+        return ResponseEntity.ok(trendingIds);
     }
     
     

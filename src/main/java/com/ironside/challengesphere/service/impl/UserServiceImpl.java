@@ -1,21 +1,13 @@
 package com.ironside.challengesphere.service.impl;
 
-import com.ironside.challengesphere.api.request.ToggleActivateUserRequest;
-import com.ironside.challengesphere.api.request.FollowActionRequest;
-import com.ironside.challengesphere.api.request.GetFollowersFollowingRequest;
-import com.ironside.challengesphere.api.request.GetUserPayload;
-import com.ironside.challengesphere.api.request.UpdateUserRequest;
-import com.ironside.challengesphere.api.request.UserRegistrationRequest;
-import com.ironside.challengesphere.api.response.ToggleUserActivationResponse;
-import com.ironside.challengesphere.api.response.FollowActionResponse;
-import com.ironside.challengesphere.api.response.FollowersFollowingResponse;
-import com.ironside.challengesphere.api.response.UserRegistrationResponse;
-import com.ironside.challengesphere.exception.ChallengeSphereException;
-import com.ironside.challengesphere.model.Follow;
-import com.ironside.challengesphere.model.User;
-import com.ironside.challengesphere.repository.FollowRepository;
-import com.ironside.challengesphere.repository.UserRepository;
-import com.ironside.challengesphere.service.UserService;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.sql.Timestamp;
+import java.util.List;
+import java.util.Optional;
+import java.util.stream.Collectors;
+
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -24,13 +16,21 @@ import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import java.sql.Timestamp;
-import java.util.List;
-import java.util.Optional;
-import java.util.stream.Collectors;
+import com.ironside.challengesphere.api.request.GetFollowersFollowingRequest;
+import com.ironside.challengesphere.api.request.GetUserPayload;
+import com.ironside.challengesphere.api.request.ToggleActivateUserRequest;
+import com.ironside.challengesphere.api.request.UpdateUserRequest;
+import com.ironside.challengesphere.api.request.UserRegistrationRequest;
+import com.ironside.challengesphere.api.response.FollowActionResponse;
+import com.ironside.challengesphere.api.response.FollowersFollowingResponse;
+import com.ironside.challengesphere.api.response.ToggleUserActivationResponse;
+import com.ironside.challengesphere.api.response.UserRegistrationResponse;
+import com.ironside.challengesphere.exception.ChallengeSphereException;
+import com.ironside.challengesphere.model.Follow;
+import com.ironside.challengesphere.model.User;
+import com.ironside.challengesphere.repository.FollowRepository;
+import com.ironside.challengesphere.repository.UserRepository;
+import com.ironside.challengesphere.service.UserService;
 
 @Service
 public class UserServiceImpl implements UserService {
@@ -41,6 +41,9 @@ public class UserServiceImpl implements UserService {
 
     @Autowired
     private FollowRepository followRepository;
+    
+    @Autowired
+    private RedisCacheServiceImpl cacheService;
 
     @Override
     public User getUser(GetUserPayload getUserPayload) throws ChallengeSphereException {
@@ -52,11 +55,19 @@ public class UserServiceImpl implements UserService {
                 userId, emailId, phone, username);
 
         try {
+            // Try cache first for userId lookups (most common)
             if (userId != null) {
-                logger.debug("Searching by userId: {}", userId);
+                Optional<User> cached = cacheService.getCachedUserProfile(userId, User.class);
+                if (cached.isPresent()) {
+                    logger.debug("Cache hit for userId: {}", userId);
+                    return cached.get();
+                }
+                
+                logger.debug("Cache miss for userId: {}, searching DB", userId);
                 Optional<User> user = userRepository.findById(userId);
                 if (user.isPresent()) {
                     logger.info("User found by userId: {}", userId);
+                    cacheService.cacheUserProfile(userId, user.get());
                     return user.get();
                 }
             }
@@ -66,6 +77,8 @@ public class UserServiceImpl implements UserService {
                 Optional<User> user = userRepository.findByEmailId(emailId.trim());
                 if (user.isPresent()) {
                     logger.info("User found by emailId: {}", emailId);
+                    // Cache by userId for future lookups
+                    cacheService.cacheUserProfile(user.get().getId(), user.get());
                     return user.get();
                 }
             }
@@ -75,6 +88,7 @@ public class UserServiceImpl implements UserService {
                 Optional<User> user = userRepository.findByPhone(phone.trim());
                 if (user.isPresent()) {
                     logger.info("User found by phone: {}", phone);
+                    cacheService.cacheUserProfile(user.get().getId(), user.get());
                     return user.get();
                 }
             }
@@ -84,6 +98,7 @@ public class UserServiceImpl implements UserService {
                 Optional<User> user = userRepository.findByUsername(username.trim());
                 if (user.isPresent()) {
                     logger.info("User found by username: {}", username);
+                    cacheService.cacheUserProfile(user.get().getId(), user.get());
                     return user.get();
                 }
             }
@@ -163,6 +178,12 @@ public class UserServiceImpl implements UserService {
             }
 
             User updatedUser = userRepository.save(user);
+            
+            // Invalidate user cache after update
+            cacheService.invalidateUserProfile(userId);
+            // Re-cache the updated user
+            cacheService.cacheUserProfile(userId, updatedUser);
+            
             logger.info("Successfully updated user details for userId: {}", userId);
             return updatedUser;
 
@@ -214,6 +235,10 @@ public class UserServiceImpl implements UserService {
 
             followRepository.save(follow);
             updateFollowCounts(followerId, followingId, true);
+            
+            // Invalidate follow-related caches
+            cacheService.invalidateFollowCaches(followerId, followingId);
+            
             logger.info("User {} successfully followed user {}", followerId, followingId);
             return FollowActionResponse.success(followerId, followingId, true);
 
@@ -248,6 +273,10 @@ public class UserServiceImpl implements UserService {
             followRepository.save(follow);
 
             updateFollowCounts(followerId, followingId, false);
+            
+            // Invalidate follow-related caches
+            cacheService.invalidateFollowCaches(followerId, followingId);
+            
             logger.info("User {} successfully unfollowed user {}", followerId, followingId);
             return FollowActionResponse.success(followerId, followingId, false);
 
@@ -270,6 +299,13 @@ public class UserServiceImpl implements UserService {
 
         logger.info("Getting followers for userId: {}, page: {}, pageSize: {}", userId, page, pageSize);
 
+        // Try to get from cache first
+        Optional<FollowersFollowingResponse> cachedFollowers = cacheService.getCachedUserFollowers(userId, page, pageSize, FollowersFollowingResponse.class);
+        if (cachedFollowers.isPresent()) {
+            logger.info("Returning cached followers for userId: {}, page: {}", userId, page);
+            return cachedFollowers.get();
+        }
+
         try {
             List<Follow> allFollows = followRepository.findByFollowingId(userId);
             int totalCount = allFollows.size();
@@ -290,7 +326,12 @@ public class UserServiceImpl implements UserService {
             logger.info("Found {} followers for userId: {} (page {}/{})",
                        followers.size(), userId, page, (int) Math.ceil((double) totalCount / pageSize));
 
-            return FollowersFollowingResponse.followers(userId, followers, page, pageSize, totalCount);
+            FollowersFollowingResponse response = FollowersFollowingResponse.followers(userId, followers, page, pageSize, totalCount);
+            
+            // Cache the response
+            cacheService.cacheUserFollowers(userId, page, pageSize, response);
+            
+            return response;
 
         } catch (Exception e) {
             logger.error("Error getting followers for userId: {}: {}", userId, e.getMessage(), e);
@@ -310,6 +351,13 @@ public class UserServiceImpl implements UserService {
 
         logger.info("Getting following for userId: {}, page: {}, pageSize: {}", userId, page, pageSize);
 
+        // Try to get from cache first
+        Optional<FollowersFollowingResponse> cachedFollowing = cacheService.getCachedUserFollowing(userId, page, pageSize, FollowersFollowingResponse.class);
+        if (cachedFollowing.isPresent()) {
+            logger.info("Returning cached following for userId: {}, page: {}", userId, page);
+            return cachedFollowing.get();
+        }
+
         try {
             List<Follow> allFollows = followRepository.findByFollowerId(userId);
             int totalCount = allFollows.size();
@@ -327,7 +375,12 @@ public class UserServiceImpl implements UserService {
             logger.info("Found {} following for userId: {} (page {}/{})",
                        following.size(), userId, page, (int) Math.ceil((double) totalCount / pageSize));
 
-            return FollowersFollowingResponse.following(userId, following, page, pageSize, totalCount);
+            FollowersFollowingResponse response = FollowersFollowingResponse.following(userId, following, page, pageSize, totalCount);
+            
+            // Cache the response
+            cacheService.cacheUserFollowing(userId, page, pageSize, response);
+            
+            return response;
 
         } catch (Exception e) {
             logger.error("Error getting following for userId: {}: {}", userId, e.getMessage(), e);

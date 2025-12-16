@@ -1,14 +1,15 @@
 package com.ironside.challengesphere.repository;
 
-import com.ironside.challengesphere.model.Challenge;
+import java.time.LocalDate;
+import java.util.List;
+
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
-import java.time.LocalDate;
-import java.util.List;
+import com.ironside.challengesphere.model.Challenge;
 
 @Repository
 public interface ChallengeRepository extends JpaRepository<Challenge, Long> {
@@ -27,6 +28,18 @@ public interface ChallengeRepository extends JpaRepository<Challenge, Long> {
 
     @Query(value = "SELECT * FROM challengesphere.challenges WHERE private = true AND active = true", nativeQuery = true)
     List<Challenge> findAllPrivateChallenges();
+
+    // Recent challenges - ordered by creation date
+    @Query(value = "SELECT * FROM challengesphere.challenges WHERE active = true AND private = false ORDER BY created_at DESC LIMIT :limit", nativeQuery = true)
+    List<Challenge> findRecentPublicChallenges(@Param("limit") int limit);
+
+    // Recent challenges with pagination
+    @Query(value = "SELECT * FROM challengesphere.challenges WHERE active = true AND private = false ORDER BY created_at DESC LIMIT :limit OFFSET :offset", nativeQuery = true)
+    List<Challenge> findRecentPublicChallengesPaginated(@Param("limit") int limit, @Param("offset") int offset);
+
+    // Count public active challenges
+    @Query(value = "SELECT COUNT(*) FROM challengesphere.challenges WHERE active = true AND private = false", nativeQuery = true)
+    long countPublicActiveChallenges();
 
     @Query(value = "SELECT * FROM challengesphere.challenges WHERE start_date = :startDate", nativeQuery = true)
     List<Challenge> findByStartDate(@Param("startDate") LocalDate startDate);

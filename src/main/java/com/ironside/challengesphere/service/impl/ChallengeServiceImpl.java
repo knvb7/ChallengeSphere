@@ -1,27 +1,15 @@
 package com.ironside.challengesphere.service.impl;
 
-import com.ironside.challengesphere.api.request.ChallengeCreateRequest;
-import com.ironside.challengesphere.api.request.GetUserChallengesRequest;
-import com.ironside.challengesphere.api.request.JoinChallengeRequest;
-import com.ironside.challengesphere.api.request.LeaveChallengeRequest;
-import com.ironside.challengesphere.api.request.GetChallengeParticipantsRequest;
-import com.ironside.challengesphere.api.request.GetChallengesByHashtagRequest;
-import com.ironside.challengesphere.api.request.GetPopularChallengesRequest;
-import com.ironside.challengesphere.api.response.ChallengeCreateResponse;
-import com.ironside.challengesphere.api.response.UserChallengesResponse;
-import com.ironside.challengesphere.api.response.JoinChallengeResponse;
-import com.ironside.challengesphere.api.response.LeaveChallengeResponse;
-import com.ironside.challengesphere.api.response.ChallengeParticipantsResponse;
-import com.ironside.challengesphere.api.response.ChallengesByHashtagResponse;
-import com.ironside.challengesphere.api.response.PopularChallengesResponse;
-import com.ironside.challengesphere.exception.ChallengeSphereException;
-import com.ironside.challengesphere.model.Challenge;
-import com.ironside.challengesphere.model.UserChallenge;
-import com.ironside.challengesphere.model.User;
-import com.ironside.challengesphere.repository.ChallengeRepository;
-import com.ironside.challengesphere.repository.UserRepository;
-import com.ironside.challengesphere.repository.UserChallengeRepository;
-import com.ironside.challengesphere.service.ChallengeService;
+import java.sql.Timestamp;
+import java.time.LocalDate;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
+
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -30,14 +18,29 @@ import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.sql.Timestamp;
-import java.time.LocalDate;
-import java.util.ArrayList;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.stream.Collectors;
+import com.ironside.challengesphere.api.request.ChallengeCreateRequest;
+import com.ironside.challengesphere.api.request.GetChallengeParticipantsRequest;
+import com.ironside.challengesphere.api.request.GetChallengesByHashtagRequest;
+import com.ironside.challengesphere.api.request.GetPopularChallengesRequest;
+import com.ironside.challengesphere.api.request.GetUserChallengesRequest;
+import com.ironside.challengesphere.api.request.JoinChallengeRequest;
+import com.ironside.challengesphere.api.request.LeaveChallengeRequest;
+import com.ironside.challengesphere.api.response.ChallengeCreateResponse;
+import com.ironside.challengesphere.api.response.ChallengeParticipantsResponse;
+import com.ironside.challengesphere.api.response.ChallengesByHashtagResponse;
+import com.ironside.challengesphere.api.response.JoinChallengeResponse;
+import com.ironside.challengesphere.api.response.LeaveChallengeResponse;
+import com.ironside.challengesphere.api.response.PopularChallengesResponse;
+import com.ironside.challengesphere.api.response.RecentChallengesResponse;
+import com.ironside.challengesphere.api.response.UserChallengesResponse;
+import com.ironside.challengesphere.exception.ChallengeSphereException;
+import com.ironside.challengesphere.model.Challenge;
+import com.ironside.challengesphere.model.User;
+import com.ironside.challengesphere.model.UserChallenge;
+import com.ironside.challengesphere.repository.ChallengeRepository;
+import com.ironside.challengesphere.repository.UserChallengeRepository;
+import com.ironside.challengesphere.repository.UserRepository;
+import com.ironside.challengesphere.service.ChallengeService;
 
 @Service
 public class ChallengeServiceImpl implements ChallengeService {
@@ -51,6 +54,43 @@ public class ChallengeServiceImpl implements ChallengeService {
 
     @Autowired
     private UserChallengeRepository userChallengeRepository;
+    
+    @Autowired
+    private RedisCacheServiceImpl cacheService;
+
+    @Override
+    public Optional<Challenge> getChallengeById(Long challengeId) throws ChallengeSphereException {
+        logger.info("Fetching challenge by id: {}", challengeId);
+        
+        try {
+            // Try cache first
+            Optional<Challenge> cached = cacheService.getCachedChallenge(challengeId, Challenge.class);
+            if (cached.isPresent()) {
+                logger.debug("Cache hit for challenge id: {}", challengeId);
+                return cached;
+            }
+            
+            // Fetch from database
+            logger.debug("Cache miss for challenge id: {}, fetching from DB", challengeId);
+            Optional<Challenge> challenge = challengeRepository.findById(challengeId);
+            
+            // Cache if found
+            challenge.ifPresent(c -> {
+                cacheService.cacheChallenge(c.getId(), c);
+                // Increment view count
+                cacheService.incrementChallengeViews(c.getId());
+            });
+            
+            return challenge;
+        } catch (Exception e) {
+            logger.error("Error fetching challenge by id {}: {}", challengeId, e.getMessage(), e);
+            throw new ChallengeSphereException(
+                    "Failed to fetch challenge",
+                    HttpStatus.INTERNAL_SERVER_ERROR,
+                    logger
+            );
+        }
+    }
 
     @Override
     public UserChallengesResponse getUserChallenges(GetUserChallengesRequest request) throws ChallengeSphereException {
@@ -129,6 +169,13 @@ public class ChallengeServiceImpl implements ChallengeService {
             Challenge savedChallenge = challengeRepository.save(challenge);
             logger.info("Successfully created challenge with id: {} for user: {}", savedChallenge.getId(), request.getCreatorUserId());
 
+            // Cache the newly created challenge
+            cacheService.cacheChallenge(savedChallenge.getId(), savedChallenge);
+            
+            // Invalidate recent/trending challenges cache since we have new content
+            cacheService.invalidateRecentChallenges();
+            cacheService.invalidateTrendingChallenges();
+
             // Update user's challengesCreated count asynchronously
             updateChallengesCreatedCountAsync(request.getCreatorUserId());
 
@@ -182,12 +229,41 @@ public class ChallengeServiceImpl implements ChallengeService {
     }
 
     @Override
-    public List<Challenge> getChallengeByIds(List<Long> challengeId) throws ChallengeSphereException {
+    public List<Challenge> getChallengeByIds(List<Long> challengeIds) throws ChallengeSphereException {
         try {
-            logger.info("Fetching challenges by ids: {}", challengeId);
-            return challengeRepository.findAllById(challengeId).stream().toList();
+            logger.info("Fetching challenges by ids: {}", challengeIds);
+            
+            List<Challenge> result = new ArrayList<>();
+            List<Long> cacheMisses = new ArrayList<>();
+            
+            // Try to get challenges from cache first
+            for (Long challengeId : challengeIds) {
+                Optional<Challenge> cached = cacheService.getCachedChallenge(challengeId, Challenge.class);
+                if (cached.isPresent()) {
+                    result.add(cached.get());
+                    logger.debug("Cache hit for challenge id: {}", challengeId);
+                } else {
+                    cacheMisses.add(challengeId);
+                }
+            }
+            
+            // Fetch cache misses from database
+            if (!cacheMisses.isEmpty()) {
+                logger.debug("Cache misses for challenge ids: {}", cacheMisses);
+                List<Challenge> dbChallenges = challengeRepository.findAllById(cacheMisses);
+                
+                // Cache the fetched challenges and add to result
+                for (Challenge challenge : dbChallenges) {
+                    cacheService.cacheChallenge(challenge.getId(), challenge);
+                    result.add(challenge);
+                }
+            }
+            
+            logger.info("Retrieved {} challenges ({} from cache, {} from DB)", 
+                result.size(), challengeIds.size() - cacheMisses.size(), cacheMisses.size());
+            return result;
         } catch (Exception e) {
-            logger.error("Error fetching challenges by ids {}: {}", challengeId, e.getMessage(), e);
+            logger.error("Error fetching challenges by ids {}: {}", challengeIds, e.getMessage(), e);
             throw new ChallengeSphereException(
                     "Failed to fetch challenges by ids",
                     HttpStatus.INTERNAL_SERVER_ERROR,
@@ -203,10 +279,18 @@ public class ChallengeServiceImpl implements ChallengeService {
             logger.info("Bulk update on challenges {}", challengeIds);
 
             List<Challenge> challenges = challengeRepository.findAllById(challengeIds).stream().toList();
-            for (Challenge challenge : challenges)
+            for (Challenge challenge : challenges) {
                 challenge.setActive(false);
+                // Invalidate individual challenge cache
+                cacheService.invalidateChallenge(challenge.getId());
+            }
             challengeRepository.saveAll(challenges);
-            logger.info("Deleted {} challenges", challenges.size());
+            
+            // Invalidate list caches since challenge status changed
+            cacheService.invalidateRecentChallenges();
+            cacheService.invalidateTrendingChallenges();
+            
+            logger.info("Deleted {} challenges and invalidated caches", challenges.size());
         } catch (Exception e) {
             logger.error("Error during bulk update for challenges {}: {}", challengeIds, e.getMessage(), e);
             throw new RuntimeException("Failed to perform bulk update on challenges", e);
@@ -228,10 +312,17 @@ public class ChallengeServiceImpl implements ChallengeService {
 
             for (Challenge challenge : challenges) {
                 challenge.setActive(false);
+                // Invalidate individual challenge cache
+                cacheService.invalidateChallenge(challenge.getId());
             }
 
             challengeRepository.saveAll(challenges);
-            logger.info("Disabled {} challenges for {} users", challenges.size(), userIds.size());
+            
+            // Invalidate list caches
+            cacheService.invalidateRecentChallenges();
+            cacheService.invalidateTrendingChallenges();
+            
+            logger.info("Disabled {} challenges for {} users and invalidated caches", challenges.size(), userIds.size());
 
         } catch (Exception e) {
             logger.error("Error disabling challenges for userIds {}.", userIds, e);
@@ -313,6 +404,12 @@ public class ChallengeServiceImpl implements ChallengeService {
 
                 userChallengeRepository.saveAll(userChallenges);
                 logger.info("Successfully joined {} users to challenge {}", successfulUserIds.size(), challengeId);
+                
+                // Track engagement: joining a challenge is high engagement (5 points per user)
+                cacheService.trackChallengeEngagement(challengeId, successfulUserIds.size() * 5);
+                
+                // Invalidate trending challenges cache since participant counts changed
+                cacheService.invalidateTrendingChallenges();
             }
 
             // Return appropriate response based on results
@@ -392,6 +489,9 @@ public class ChallengeServiceImpl implements ChallengeService {
             if (!toDeactivate.isEmpty()) {
                 userChallengeRepository.saveAll(toDeactivate);
                 logger.info("Successfully deactivated {} users from challenge {}", successfulUserIds.size(), challengeId);
+                
+                // Invalidate trending challenges cache since participant counts changed
+                cacheService.invalidateTrendingChallenges();
             }
 
             // Return appropriate response based on results
@@ -531,6 +631,20 @@ public class ChallengeServiceImpl implements ChallengeService {
                 activeFilter, startDate, endDate, page, pageSize);
 
         try {
+            // For default queries (active=true, no date filter, page 1), try cache first
+            boolean isDefaultQuery = Boolean.TRUE.equals(activeFilter) 
+                    && startDate == null 
+                    && endDate == null 
+                    && page == 1;
+            
+            if (isDefaultQuery) {
+                Optional<PopularChallengesResponse> cached = cacheService.getTrendingChallenges(PopularChallengesResponse.class);
+                if (cached.isPresent()) {
+                    logger.info("Returning popular challenges from cache");
+                    return cached.get();
+                }
+            }
+
             // Get all public challenges
             List<Challenge> publicChallenges = challengeRepository.findAll().stream()
                     .filter(challenge -> !challenge.getIsPrivate())
@@ -595,7 +709,15 @@ public class ChallengeServiceImpl implements ChallengeService {
             logger.info("Found {} public challenges matching criteria (showing page {}/{})",
                     totalCount, page, (int) Math.ceil((double) totalCount / pageSize));
 
-            return PopularChallengesResponse.create(paginatedChallenges, page, pageSize, totalCount);
+            PopularChallengesResponse response = PopularChallengesResponse.create(paginatedChallenges, page, pageSize, totalCount);
+            
+            // Cache the response for default queries
+            if (isDefaultQuery) {
+                cacheService.cacheTrendingChallenges(response);
+                logger.debug("Cached popular challenges response");
+            }
+            
+            return response;
 
         } catch (Exception e) {
             logger.error("Error fetching popular challenges: {}", e.getMessage(), e);
@@ -605,5 +727,108 @@ public class ChallengeServiceImpl implements ChallengeService {
                     logger
             );
         }
+    }
+
+    // ==================== RECENT CHALLENGES WITH CACHING ====================
+
+    @Override
+    @Transactional(readOnly = true)
+    public RecentChallengesResponse getRecentChallenges(int page, int pageSize) throws ChallengeSphereException {
+        logger.info("Getting recent challenges - page: {}, pageSize: {}", page, pageSize);
+
+        try {
+            // Validate pagination parameters
+            if (page < 1) page = 1;
+            if (pageSize < 1) pageSize = 10;
+            if (pageSize > 100) pageSize = 100; // Cap at 100
+
+            // Try cache first
+            Optional<RecentChallengesResponse> cached = cacheService.getRecentChallengesPaginated(page, pageSize, RecentChallengesResponse.class);
+            if (cached.isPresent()) {
+                logger.debug("Cache hit for recent challenges page {}", page);
+                return cached.get();
+            }
+
+            // Cache miss - fetch from database
+            logger.debug("Cache miss for recent challenges page {}, fetching from DB", page);
+
+            // Get total count for pagination
+            long totalCount = challengeRepository.countPublicActiveChallenges();
+            
+            if (totalCount == 0) {
+                return RecentChallengesResponse.empty(page, pageSize);
+            }
+
+            // Fetch paginated challenges from DB
+            int offset = (page - 1) * pageSize;
+            List<Challenge> challenges = challengeRepository.findRecentPublicChallengesPaginated(pageSize, offset);
+
+            // Get participant counts for these challenges
+            List<Long> challengeIds = challenges.stream()
+                    .map(Challenge::getId)
+                    .toList();
+            
+            Map<Long, Long> participantCountMap = new java.util.HashMap<>();
+            if (!challengeIds.isEmpty()) {
+                List<UserChallenge> userChallenges = userChallengeRepository.findByChallengeIdIn(challengeIds);
+                participantCountMap = userChallenges.stream()
+                        .collect(Collectors.groupingBy(UserChallenge::getChallengeId, Collectors.counting()));
+            }
+
+            // Convert to response with engagement metrics from Redis
+            final Map<Long, Long> finalParticipantMap = participantCountMap;
+            List<RecentChallengesResponse.ChallengeInfo> challengeInfos = challenges.stream()
+                    .map(challenge -> {
+                        long viewCount = cacheService.getChallengeViews(challenge.getId());
+                        long engagementScore = cacheService.getChallengeEngagementScore(challenge.getId());
+                        int participantCount = finalParticipantMap.getOrDefault(challenge.getId(), 0L).intValue();
+                        return RecentChallengesResponse.ChallengeInfo.fromChallenge(
+                                challenge, viewCount, engagementScore, participantCount);
+                    })
+                    .toList();
+
+            RecentChallengesResponse response = RecentChallengesResponse.create(
+                    challengeInfos, page, pageSize, (int) totalCount);
+
+            // Cache the response
+            cacheService.cacheRecentChallengesPaginated(page, pageSize, response);
+            logger.debug("Cached recent challenges page {}", page);
+
+            return response;
+
+        } catch (Exception e) {
+            logger.error("Error fetching recent challenges: {}", e.getMessage(), e);
+            throw new ChallengeSphereException(
+                    "Failed to fetch recent challenges",
+                    HttpStatus.INTERNAL_SERVER_ERROR,
+                    logger
+            );
+        }
+    }
+
+    @Override
+    public List<Long> getTrendingChallengeIds(int limit) {
+        logger.info("Getting trending challenge IDs, limit: {}", limit);
+        
+        if (limit < 1) limit = 10;
+        if (limit > 100) limit = 100;
+        
+        // Try engagement-based trending first
+        List<Long> engagedIds = cacheService.getTopEngagedChallengeIds(limit);
+        if (!engagedIds.isEmpty()) {
+            logger.debug("Returning {} trending challenges by engagement", engagedIds.size());
+            return engagedIds;
+        }
+        
+        // Fallback to view-based trending
+        List<Long> viewedIds = cacheService.getTopViewedChallengeIds(limit);
+        if (!viewedIds.isEmpty()) {
+            logger.debug("Returning {} trending challenges by views", viewedIds.size());
+            return viewedIds;
+        }
+        
+        // Fallback to empty list (no engagement data yet)
+        logger.debug("No trending data available, returning empty list");
+        return List.of();
     }
 }
