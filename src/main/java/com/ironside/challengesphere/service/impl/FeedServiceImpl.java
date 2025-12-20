@@ -1,1 +1,327 @@
+package com.ironside.challengesphere.service.impl;
+
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
+
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.http.HttpStatus;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import com.ironside.challengesphere.api.request.GetFeedRequest;
+import com.ironside.challengesphere.api.response.FeedItemResponse;
+import com.ironside.challengesphere.api.response.FeedResponse;
+import com.ironside.challengesphere.exception.ChallengeSphereException;
+import com.ironside.challengesphere.model.Challenge;
+import com.ironside.challengesphere.model.Submission;
+import com.ironside.challengesphere.model.User;
+import com.ironside.challengesphere.repository.ChallengeRepository;
+import com.ironside.challengesphere.repository.GloryRepository;
+import com.ironside.challengesphere.repository.SubmissionRepository;
+import com.ironside.challengesphere.repository.UserRepository;
+import com.ironside.challengesphere.service.FeedService;
+
+/**
+ * Implementation of FeedService
+ * Provides personalized feeds with caching support
+ */
+@Service
+public class FeedServiceImpl implements FeedService {
+
+    private static final Logger logger = LogManager.getLogger(FeedServiceImpl.class);
+
+    @Autowired
+    private SubmissionRepository submissionRepository;
+
+    @Autowired
+    private UserRepository userRepository;
+
+    @Autowired
+    private ChallengeRepository challengeRepository;
+
+    @Autowired
+    private GloryRepository gloryRepository;
+
+    @Autowired
+    private RedisCacheServiceImpl cacheService;
+
+    // Cache key prefixes
+    private static final String FEED_CACHE_PREFIX = "feed:";
+
+    @Override
+    @Transactional(readOnly = true)
+    public FeedResponse getFeed(GetFeedRequest request) throws ChallengeSphereException {
+        logger.info("Getting feed for userId: {}, type: {}, page: {}", 
+                request.getUserId(), request.getFeedType(), request.getPage());
+
+        return switch (request.getFeedType()) {
+            case FOLLOWING -> getFollowingFeed(request.getUserId(), request.getPage(), request.getPageSize());
+            case TRENDING -> getTrendingFeed(request.getPage(), request.getPageSize(), request.getUserId());
+            case EXPLORE -> getExploreFeed(request.getPage(), request.getPageSize(), request.getUserId());
+        };
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public FeedResponse getFollowingFeed(Long userId, int page, int pageSize) throws ChallengeSphereException {
+        logger.info("Getting following feed for userId: {}, page: {}, pageSize: {}", userId, page, pageSize);
+
+        if (userId == null) {
+            throw new ChallengeSphereException("User ID is required for following feed", HttpStatus.BAD_REQUEST, logger);
+        }
+
+        try {
+            // Validate user exists
+            if (!userRepository.existsById(userId)) {
+                throw new ChallengeSphereException("User not found: " + userId, HttpStatus.NOT_FOUND, logger);
+            }
+
+            Pageable pageable = PageRequest.of(page - 1, pageSize);
+            Page<Submission> submissionsPage = submissionRepository.findFeedForUser(userId, pageable);
+
+            if (submissionsPage.isEmpty()) {
+                logger.debug("No submissions found in following feed for userId: {}", userId);
+                return FeedResponse.empty(page, pageSize, "FOLLOWING");
+            }
+
+            List<FeedItemResponse> feedItems = enrichSubmissions(submissionsPage.getContent(), userId);
+
+            logger.info("Returning {} items for following feed, page {}/{}", 
+                    feedItems.size(), page, submissionsPage.getTotalPages());
+
+            return FeedResponse.create(feedItems, page, pageSize, 
+                    submissionsPage.getTotalElements(), "FOLLOWING");
+
+        } catch (ChallengeSphereException e) {
+            throw e;
+        } catch (Exception e) {
+            logger.error("Error getting following feed for userId {}: {}", userId, e.getMessage(), e);
+            throw new ChallengeSphereException("Failed to get following feed", HttpStatus.INTERNAL_SERVER_ERROR, logger);
+        }
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public FeedResponse getTrendingFeed(int page, int pageSize, Long currentUserId) throws ChallengeSphereException {
+        logger.info("Getting trending feed, page: {}, pageSize: {}", page, pageSize);
+
+        try {
+            Pageable pageable = PageRequest.of(page - 1, pageSize);
+            Page<Submission> submissionsPage = submissionRepository.findTrendingSubmissions(pageable);
+
+            if (submissionsPage.isEmpty()) {
+                logger.debug("No trending submissions found");
+                return FeedResponse.empty(page, pageSize, "TRENDING");
+            }
+
+            List<FeedItemResponse> feedItems = enrichSubmissions(submissionsPage.getContent(), currentUserId);
+
+            logger.info("Returning {} trending items, page {}/{}", 
+                    feedItems.size(), page, submissionsPage.getTotalPages());
+
+            return FeedResponse.create(feedItems, page, pageSize, 
+                    submissionsPage.getTotalElements(), "TRENDING");
+
+        } catch (Exception e) {
+            logger.error("Error getting trending feed: {}", e.getMessage(), e);
+            throw new ChallengeSphereException("Failed to get trending feed", HttpStatus.INTERNAL_SERVER_ERROR, logger);
+        }
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public FeedResponse getExploreFeed(int page, int pageSize, Long currentUserId) throws ChallengeSphereException {
+        logger.info("Getting explore feed, page: {}, pageSize: {}", page, pageSize);
+
+        try {
+            Pageable pageable = PageRequest.of(page - 1, pageSize);
+            Page<Submission> submissionsPage = submissionRepository.findPublicSubmissions(pageable);
+
+            if (submissionsPage.isEmpty()) {
+                logger.debug("No public submissions found");
+                return FeedResponse.empty(page, pageSize, "EXPLORE");
+            }
+
+            List<FeedItemResponse> feedItems = enrichSubmissions(submissionsPage.getContent(), currentUserId);
+
+            logger.info("Returning {} explore items, page {}/{}", 
+                    feedItems.size(), page, submissionsPage.getTotalPages());
+
+            return FeedResponse.create(feedItems, page, pageSize, 
+                    submissionsPage.getTotalElements(), "EXPLORE");
+
+        } catch (Exception e) {
+            logger.error("Error getting explore feed: {}", e.getMessage(), e);
+            throw new ChallengeSphereException("Failed to get explore feed", HttpStatus.INTERNAL_SERVER_ERROR, logger);
+        }
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public FeedResponse getChallengeFeed(Long challengeId, int page, int pageSize, Long currentUserId) 
+            throws ChallengeSphereException {
+        logger.info("Getting challenge feed for challengeId: {}, page: {}", challengeId, page);
+
+        if (challengeId == null) {
+            throw new ChallengeSphereException("Challenge ID is required", HttpStatus.BAD_REQUEST, logger);
+        }
+
+        try {
+            // Validate challenge exists
+            if (!challengeRepository.existsById(challengeId)) {
+                throw new ChallengeSphereException("Challenge not found: " + challengeId, HttpStatus.NOT_FOUND, logger);
+            }
+
+            List<Submission> submissions = submissionRepository.findPublicActiveByChallengeId(challengeId);
+
+            if (submissions.isEmpty()) {
+                logger.debug("No submissions found for challengeId: {}", challengeId);
+                return FeedResponse.empty(page, pageSize, "CHALLENGE");
+            }
+
+            // Manual pagination
+            int totalItems = submissions.size();
+            int offset = (page - 1) * pageSize;
+            List<Submission> paginatedSubmissions = submissions.stream()
+                    .skip(offset)
+                    .limit(pageSize)
+                    .collect(Collectors.toList());
+
+            List<FeedItemResponse> feedItems = enrichSubmissions(paginatedSubmissions, currentUserId);
+
+            return FeedResponse.create(feedItems, page, pageSize, totalItems, "CHALLENGE");
+
+        } catch (ChallengeSphereException e) {
+            throw e;
+        } catch (Exception e) {
+            logger.error("Error getting challenge feed for challengeId {}: {}", challengeId, e.getMessage(), e);
+            throw new ChallengeSphereException("Failed to get challenge feed", HttpStatus.INTERNAL_SERVER_ERROR, logger);
+        }
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public FeedResponse getUserFeed(Long targetUserId, int page, int pageSize, Long currentUserId) 
+            throws ChallengeSphereException {
+        logger.info("Getting user feed for targetUserId: {}, page: {}", targetUserId, page);
+
+        if (targetUserId == null) {
+            throw new ChallengeSphereException("Target user ID is required", HttpStatus.BAD_REQUEST, logger);
+        }
+
+        try {
+            // Validate user exists
+            if (!userRepository.existsById(targetUserId)) {
+                throw new ChallengeSphereException("User not found: " + targetUserId, HttpStatus.NOT_FOUND, logger);
+            }
+
+            // Get submissions - if viewing own profile, show all; otherwise only public
+            List<Submission> submissions;
+            boolean isOwnProfile = targetUserId.equals(currentUserId);
+            
+            if (isOwnProfile) {
+                submissions = submissionRepository.findActiveByUserId(targetUserId);
+            } else {
+                // Only public submissions for other users
+                submissions = submissionRepository.findActiveByUserId(targetUserId).stream()
+                        .filter(s -> !s.getIsPrivate())
+                        .collect(Collectors.toList());
+            }
+
+            if (submissions.isEmpty()) {
+                logger.debug("No submissions found for targetUserId: {}", targetUserId);
+                return FeedResponse.empty(page, pageSize, "USER");
+            }
+
+            // Manual pagination
+            int totalItems = submissions.size();
+            int offset = (page - 1) * pageSize;
+            List<Submission> paginatedSubmissions = submissions.stream()
+                    .skip(offset)
+                    .limit(pageSize)
+                    .collect(Collectors.toList());
+
+            List<FeedItemResponse> feedItems = enrichSubmissions(paginatedSubmissions, currentUserId);
+
+            return FeedResponse.create(feedItems, page, pageSize, totalItems, "USER");
+
+        } catch (ChallengeSphereException e) {
+            throw e;
+        } catch (Exception e) {
+            logger.error("Error getting user feed for targetUserId {}: {}", targetUserId, e.getMessage(), e);
+            throw new ChallengeSphereException("Failed to get user feed", HttpStatus.INTERNAL_SERVER_ERROR, logger);
+        }
+    }
+
+    // ==================== HELPER METHODS ====================
+
+    /**
+     * Enrich submissions with user and challenge information
+     * Uses batch queries to avoid N+1 problems
+     */
+    private List<FeedItemResponse> enrichSubmissions(List<Submission> submissions, Long currentUserId) {
+        if (submissions.isEmpty()) {
+            return List.of();
+        }
+
+        // Collect unique user IDs and challenge IDs
+        Set<Long> userIds = submissions.stream()
+                .map(Submission::getUserId)
+                .collect(Collectors.toSet());
+        Set<Long> challengeIds = submissions.stream()
+                .map(Submission::getChallengeId)
+                .collect(Collectors.toSet());
+        Set<Long> submissionIds = submissions.stream()
+                .map(Submission::getId)
+                .collect(Collectors.toSet());
+
+        // Batch fetch users and challenges
+        Map<Long, User> userMap = userRepository.findAllById(userIds).stream()
+                .collect(Collectors.toMap(User::getId, u -> u));
+        Map<Long, Challenge> challengeMap = challengeRepository.findAllById(challengeIds).stream()
+                .collect(Collectors.toMap(Challenge::getId, c -> c));
+
+        // Batch check if current user has gloried these submissions
+        Map<Long, Boolean> gloryMap = new HashMap<>();
+        if (currentUserId != null) {
+            for (Long submissionId : submissionIds) {
+                gloryMap.put(submissionId, gloryRepository.existsBySubmissionIdAndUserId(submissionId, currentUserId));
+            }
+        }
+
+        // Build feed items
+        List<FeedItemResponse> feedItems = new ArrayList<>();
+        for (Submission submission : submissions) {
+            User user = userMap.get(submission.getUserId());
+            Challenge challenge = challengeMap.get(submission.getChallengeId());
+
+            if (user == null || challenge == null) {
+                logger.warn("Missing user or challenge data for submission {}", submission.getId());
+                continue;
+            }
+
+            Boolean isGloried = currentUserId != null ? gloryMap.getOrDefault(submission.getId(), false) : null;
+
+            FeedItemResponse item = FeedItemResponse.fromSubmission(
+                    submission,
+                    user.getUsername(),
+                    user.getProfilePicUrl(),
+                    challenge.getTitle(),
+                    isGloried
+            );
+            feedItems.add(item);
+        }
+
+        return feedItems;
+    }
+}
 

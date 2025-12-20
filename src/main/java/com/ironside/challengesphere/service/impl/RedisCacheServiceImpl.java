@@ -8,11 +8,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.data.redis.connection.RedisConnectionCommands;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.core.ZSetOperations;
@@ -31,6 +33,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
  * - Leaderboard management
  * - Session management
  * - Batch operations for performance
+ * - Async operations to not block main flow
  */
 @Service
 public class RedisCacheServiceImpl {
@@ -42,6 +45,10 @@ public class RedisCacheServiceImpl {
     
     @Autowired
     private ObjectMapper objectMapper;
+
+    @Autowired
+    @Qualifier("cacheExecutor")
+    private Executor cacheExecutor;
 
     // Cache key prefixes for different entities
     private static final String CHALLENGE_PREFIX = "challenge:";
@@ -250,26 +257,72 @@ public class RedisCacheServiceImpl {
         }
     }
 
-    // ==================== USE CASE 1: CHALLENGE CACHING ====================
+    // ==================== ASYNC WRITE OPERATIONS ====================
+    // All cache writes are async by default to not block the main flow
+    // Read operations remain synchronous (caller needs the result)
 
     /**
-     * Cache individual challenge details
-     * Use Case: Reduce DB queries for frequently viewed challenges
+     * Execute a cache operation asynchronously
+     * Use this for all write operations (save, delete, invalidate)
      */
-    public <T> boolean cacheChallenge(Long challengeId, T challenge) {
-        if (challengeId == null || challenge == null) {
-            return false;
-        }
-        String key = CHALLENGE_PREFIX + challengeId;
-        boolean saved = save(key, challenge, DEFAULT_CHALLENGE_TTL);
-        if (saved) {
-            logger.info("Cached challenge: id={}", challengeId);
-        }
-        return saved;
+    private void executeAsync(Runnable task) {
+        cacheExecutor.execute(() -> {
+            try {
+                task.run();
+            } catch (Exception e) {
+                logger.warn("Async cache operation failed: {}", e.getMessage());
+            }
+        });
     }
 
     /**
-     * Get challenge from cache
+     * Async save - fire and forget
+     */
+    public <T> void saveAsync(String key, T value, Duration ttl) {
+        executeAsync(() -> save(key, value, ttl));
+    }
+
+    /**
+     * Async delete - fire and forget
+     */
+    public void deleteAsync(String key) {
+        executeAsync(() -> delete(key));
+    }
+
+    /**
+     * Async delete by pattern - fire and forget
+     */
+    public void deleteByPatternAsync(String pattern) {
+        executeAsync(() -> deleteByPattern(pattern));
+    }
+
+    /**
+     * Async delete all - fire and forget
+     */
+    public void deleteAllAsync(Collection<String> keys) {
+        executeAsync(() -> deleteAll(keys));
+    }
+
+    // ==================== USE CASE 1: CHALLENGE CACHING ====================
+
+    /**
+     * Cache individual challenge details (ASYNC - non-blocking)
+     * Use Case: Reduce DB queries for frequently viewed challenges
+     */
+    public <T> void cacheChallenge(Long challengeId, T challenge) {
+        if (challengeId == null || challenge == null) {
+            return;
+        }
+        executeAsync(() -> {
+            String key = CHALLENGE_PREFIX + challengeId;
+            if (save(key, challenge, DEFAULT_CHALLENGE_TTL)) {
+                logger.debug("Cached challenge: id={}", challengeId);
+            }
+        });
+    }
+
+    /**
+     * Get challenge from cache (SYNC - needs result)
      */
     public <T> Optional<T> getCachedChallenge(Long challengeId, Class<T> type) {
         if (challengeId == null) {
@@ -280,37 +333,39 @@ public class RedisCacheServiceImpl {
     }
 
     /**
-     * Invalidate challenge cache (when updated)
+     * Invalidate challenge cache (ASYNC - non-blocking)
      */
     public void invalidateChallenge(Long challengeId) {
         if (challengeId == null) {
             return;
         }
-        String key = CHALLENGE_PREFIX + challengeId;
-        delete(key);
-        logger.info("Invalidated challenge cache: id={}", challengeId);
+        executeAsync(() -> {
+            String key = CHALLENGE_PREFIX + challengeId;
+            delete(key);
+            logger.debug("Invalidated challenge cache: id={}", challengeId);
+        });
     }
 
     // ==================== USE CASE 2: USER SESSION MANAGEMENT ====================
 
     /**
-     * Store user session data
+     * Store user session data (ASYNC - non-blocking)
      * Use Case: Fast session lookup without DB hits
      */
-    public <T> boolean createSession(String sessionId, T sessionData) {
+    public <T> void createSession(String sessionId, T sessionData) {
         if (sessionId == null || sessionData == null) {
-            return false;
+            return;
         }
-        String key = SESSION_PREFIX + sessionId;
-        boolean saved = save(key, sessionData, DEFAULT_SESSION_TTL);
-        if (saved) {
-            logger.info("Created session: sessionId={}", sessionId);
-        }
-        return saved;
+        executeAsync(() -> {
+            String key = SESSION_PREFIX + sessionId;
+            if (save(key, sessionData, DEFAULT_SESSION_TTL)) {
+                logger.debug("Created session: sessionId={}", sessionId);
+            }
+        });
     }
 
     /**
-     * Get session data
+     * Get session data (SYNC - needs result)
      */
     public <T> Optional<T> getSession(String sessionId, Class<T> type) {
         if (sessionId == null) {
@@ -321,31 +376,32 @@ public class RedisCacheServiceImpl {
     }
 
     /**
-     * Extend session timeout
-     * @return true if session was extended, false if session doesn't exist
+     * Extend session timeout (ASYNC - non-blocking)
      */
-    public boolean extendSession(String sessionId) {
+    public void extendSession(String sessionId) {
         if (sessionId == null) {
-            return false;
+            return;
         }
-        String key = SESSION_PREFIX + sessionId;
-        boolean extended = expire(key, DEFAULT_SESSION_TTL);
-        if (extended) {
-            logger.debug("Extended session: sessionId={}", sessionId);
-        }
-        return extended;
+        executeAsync(() -> {
+            String key = SESSION_PREFIX + sessionId;
+            if (expire(key, DEFAULT_SESSION_TTL)) {
+                logger.debug("Extended session: sessionId={}", sessionId);
+            }
+        });
     }
 
     /**
-     * Invalidate session (logout)
+     * Invalidate session (ASYNC - non-blocking)
      */
     public void invalidateSession(String sessionId) {
         if (sessionId == null) {
             return;
         }
-        String key = SESSION_PREFIX + sessionId;
-        delete(key);
-        logger.info("Invalidated session: sessionId={}", sessionId);
+        executeAsync(() -> {
+            String key = SESSION_PREFIX + sessionId;
+            delete(key);
+            logger.debug("Invalidated session: sessionId={}", sessionId);
+        });
     }
 
     // ==================== USE CASE 3: RATE LIMITING ====================
@@ -425,9 +481,11 @@ public class RedisCacheServiceImpl {
         if (userId == null) {
             return;
         }
-        String key = RATE_LIMIT_PREFIX + userId;
-        delete(key);
-        logger.info("Reset rate limit: userId={}", userId);
+        executeAsync(() -> {
+            String key = RATE_LIMIT_PREFIX + userId;
+            delete(key);
+            logger.debug("Reset rate limit: userId={}", userId);
+        });
     }
 
     // ==================== USE CASE 4: LEADERBOARD ====================
@@ -438,44 +496,43 @@ public class RedisCacheServiceImpl {
     public record LeaderboardEntry(String userId, double score, long rank) {}
 
     /**
-     * Add user score to leaderboard
+     * Add user score to leaderboard (ASYNC - non-blocking)
      * Use Case: Real-time leaderboard updates
-     * @return true if score was added successfully
      */
-    public boolean addToLeaderboard(Long challengeId, Long userId, double score) {
+    public void addToLeaderboard(Long challengeId, Long userId, double score) {
         if (challengeId == null || userId == null) {
-            return false;
+            return;
         }
-        String key = LEADERBOARD_PREFIX + challengeId;
-        try {
-            Boolean added = redisTemplate.opsForZSet().add(key, userId.toString(), score);
-            expire(key, DEFAULT_LEADERBOARD_TTL);
-            logger.info("Added to leaderboard: challengeId={}, userId={}, score={}",
-                    challengeId, userId, score);
-            return Boolean.TRUE.equals(added);
-        } catch (Exception e) {
-            logger.error("Error adding to leaderboard: challengeId={}, userId={}", challengeId, userId, e);
-            return false;
-        }
+        executeAsync(() -> {
+            String key = LEADERBOARD_PREFIX + challengeId;
+            try {
+                redisTemplate.opsForZSet().add(key, userId.toString(), score);
+                expire(key, DEFAULT_LEADERBOARD_TTL);
+                logger.debug("Added to leaderboard: challengeId={}, userId={}, score={}",
+                        challengeId, userId, score);
+            } catch (Exception e) {
+                logger.warn("Error adding to leaderboard: challengeId={}, userId={}", challengeId, userId, e);
+            }
+        });
     }
 
     /**
-     * Update user's score in leaderboard (atomic increment)
+     * Update user's score in leaderboard (ASYNC - non-blocking)
      */
-    public Double incrementLeaderboardScore(Long challengeId, Long userId, double delta) {
+    public void incrementLeaderboardScore(Long challengeId, Long userId, double delta) {
         if (challengeId == null || userId == null) {
-            return null;
+            return;
         }
-        String key = LEADERBOARD_PREFIX + challengeId;
-        try {
-            Double newScore = redisTemplate.opsForZSet().incrementScore(key, userId.toString(), delta);
-            logger.debug("Incremented leaderboard score: challengeId={}, userId={}, delta={}, newScore={}",
-                    challengeId, userId, delta, newScore);
-            return newScore;
-        } catch (Exception e) {
-            logger.error("Error incrementing leaderboard score", e);
-            return null;
-        }
+        executeAsync(() -> {
+            String key = LEADERBOARD_PREFIX + challengeId;
+            try {
+                Double newScore = redisTemplate.opsForZSet().incrementScore(key, userId.toString(), delta);
+                logger.debug("Incremented leaderboard score: challengeId={}, userId={}, delta={}, newScore={}",
+                        challengeId, userId, delta, newScore);
+            } catch (Exception e) {
+                logger.warn("Error incrementing leaderboard score", e);
+            }
+        });
     }
 
     /**
@@ -583,42 +640,43 @@ public class RedisCacheServiceImpl {
     }
 
     /**
-     * Remove user from leaderboard
+     * Remove user from leaderboard (ASYNC - non-blocking)
      */
-    public boolean removeFromLeaderboard(Long challengeId, Long userId) {
+    public void removeFromLeaderboard(Long challengeId, Long userId) {
         if (challengeId == null || userId == null) {
-            return false;
+            return;
         }
-        String key = LEADERBOARD_PREFIX + challengeId;
-        try {
-            Long removed = redisTemplate.opsForZSet().remove(key, userId.toString());
-            return removed != null && removed > 0;
-        } catch (Exception e) {
-            logger.error("Error removing from leaderboard: challengeId={}, userId={}", challengeId, userId, e);
-            return false;
-        }
+        executeAsync(() -> {
+            String key = LEADERBOARD_PREFIX + challengeId;
+            try {
+                redisTemplate.opsForZSet().remove(key, userId.toString());
+                logger.debug("Removed from leaderboard: challengeId={}, userId={}", challengeId, userId);
+            } catch (Exception e) {
+                logger.warn("Error removing from leaderboard: challengeId={}, userId={}", challengeId, userId, e);
+            }
+        });
     }
 
     // ==================== USE CASE 5: SUBMISSION CACHING ====================
 
     /**
-     * Cache user's submission result
+     * Cache user's submission result (ASYNC - non-blocking)
      * Use Case: Quick access to recent submission results
      */
-    public <T> boolean cacheSubmission(Long submissionId, T submission) {
+    public <T> void cacheSubmission(Long submissionId, T submission) {
         if (submissionId == null || submission == null) {
-            return false;
+            return;
         }
-        String key = SUBMISSION_PREFIX + submissionId;
-        boolean saved = save(key, submission, DEFAULT_SUBMISSION_TTL);
-        if (saved) {
-            logger.info("Cached submission: id={}", submissionId);
-        }
-        return saved;
+        executeAsync(() -> {
+            String key = SUBMISSION_PREFIX + submissionId;
+            if (save(key, submission, DEFAULT_SUBMISSION_TTL)) {
+                logger.debug("Cached submission: id={}", submissionId);
+            }
+        });
     }
 
     /**
-     * Get cached submission
+     * Get cached submission (SYNC - needs result)
      */
     public <T> Optional<T> getCachedSubmission(Long submissionId, Class<T> type) {
         if (submissionId == null) {
@@ -629,30 +687,34 @@ public class RedisCacheServiceImpl {
     }
 
     /**
-     * Invalidate submission cache
+     * Invalidate submission cache (ASYNC - non-blocking)
      */
     public void invalidateSubmission(Long submissionId) {
         if (submissionId == null) {
             return;
         }
-        String key = SUBMISSION_PREFIX + submissionId;
-        delete(key);
-        logger.debug("Invalidated submission cache: id={}", submissionId);
+        executeAsync(() -> {
+            String key = SUBMISSION_PREFIX + submissionId;
+            delete(key);
+            logger.debug("Invalidated submission cache: id={}", submissionId);
+        });
     }
 
     /**
-     * Cache all submissions for a user-challenge pair
+     * Cache all submissions for a user-challenge pair (ASYNC - non-blocking)
      */
-    public <T> boolean cacheUserSubmissions(Long userId, Long challengeId, T submissions) {
+    public <T> void cacheUserSubmissions(Long userId, Long challengeId, T submissions) {
         if (userId == null || challengeId == null || submissions == null) {
-            return false;
+            return;
         }
-        String key = SUBMISSION_PREFIX + "user:" + userId + ":challenge:" + challengeId;
-        return save(key, submissions, Duration.ofMinutes(15));
+        executeAsync(() -> {
+            String key = SUBMISSION_PREFIX + "user:" + userId + ":challenge:" + challengeId;
+            save(key, submissions, Duration.ofMinutes(15));
+        });
     }
 
     /**
-     * Get cached submissions for a user-challenge pair
+     * Get cached submissions for a user-challenge pair (SYNC - needs result)
      */
     public <T> Optional<T> getCachedUserSubmissions(Long userId, Long challengeId, Class<T> type) {
         if (userId == null || challengeId == null) {
@@ -669,8 +731,10 @@ public class RedisCacheServiceImpl {
         if (userId == null || challengeId == null) {
             return;
         }
-        String key = SUBMISSION_PREFIX + "user:" + userId + ":challenge:" + challengeId;
-        delete(key);
+        executeAsync(() -> {
+            String key = SUBMISSION_PREFIX + "user:" + userId + ":challenge:" + challengeId;
+            delete(key);
+        });
     }
 
     // ==================== USE CASE 6: RECENT/TRENDING CHALLENGES ====================
@@ -687,47 +751,44 @@ public class RedisCacheServiceImpl {
     private static final Duration ENGAGEMENT_TTL = Duration.ofDays(7);
 
     /**
-     * Cache list of recent challenges (default - no pagination)
+     * Cache list of recent challenges (ASYNC - non-blocking)
      * Use Case: Homepage/Dashboard performance
      */
-    public <T> boolean cacheRecentChallenges(T challenges) {
+    public <T> void cacheRecentChallenges(T challenges) {
         if (challenges == null) {
-            return false;
+            return;
         }
-        boolean saved = save(RECENT_CHALLENGES_KEY, challenges, RECENT_CHALLENGES_TTL);
-        if (saved) {
-            logger.info("Cached recent challenges");
-        }
-        return saved;
+        executeAsync(() -> {
+            if (save(RECENT_CHALLENGES_KEY, challenges, RECENT_CHALLENGES_TTL)) {
+                logger.debug("Cached recent challenges");
+            }
+        });
     }
 
     /**
-     * Cache paginated recent challenges
-     * @param page Page number (1-based)
-     * @param pageSize Number of items per page
-     * @param challenges The challenges response to cache
+     * Cache paginated recent challenges (ASYNC - non-blocking)
      */
-    public <T> boolean cacheRecentChallengesPaginated(int page, int pageSize, T challenges) {
+    public <T> void cacheRecentChallengesPaginated(int page, int pageSize, T challenges) {
         if (challenges == null || page < 1) {
-            return false;
+            return;
         }
-        String key = RECENT_CHALLENGES_PAGE_PREFIX + page + ":" + pageSize;
-        boolean saved = save(key, challenges, RECENT_CHALLENGES_TTL);
-        if (saved) {
-            logger.debug("Cached recent challenges page {} (size={})", page, pageSize);
-        }
-        return saved;
+        executeAsync(() -> {
+            String key = RECENT_CHALLENGES_PAGE_PREFIX + page + ":" + pageSize;
+            if (save(key, challenges, RECENT_CHALLENGES_TTL)) {
+                logger.debug("Cached recent challenges page {} (size={})", page, pageSize);
+            }
+        });
     }
 
     /**
-     * Get recent challenges (default - no pagination)
+     * Get recent challenges (SYNC - needs result)
      */
     public <T> Optional<T> getRecentChallenges(Class<T> type) {
         return getOptional(RECENT_CHALLENGES_KEY, type);
     }
 
     /**
-     * Get paginated recent challenges from cache
+     * Get paginated recent challenges from cache (SYNC - needs result)
      */
     public <T> Optional<T> getRecentChallengesPaginated(int page, int pageSize, Class<T> type) {
         if (page < 1) {
@@ -738,52 +799,54 @@ public class RedisCacheServiceImpl {
     }
 
     /**
-     * Invalidate recent challenges cache (all pages)
+     * Invalidate recent challenges cache (ASYNC - non-blocking)
      */
     public void invalidateRecentChallenges() {
-        delete(RECENT_CHALLENGES_KEY);
-        deleteByPattern(RECENT_CHALLENGES_PAGE_PREFIX + "*");
-        logger.debug("Invalidated recent challenges cache (all pages)");
+        executeAsync(() -> {
+            delete(RECENT_CHALLENGES_KEY);
+            deleteByPattern(RECENT_CHALLENGES_PAGE_PREFIX + "*");
+            logger.debug("Invalidated recent challenges cache (all pages)");
+        });
     }
 
     /**
-     * Cache trending challenges (default - no pagination)
+     * Cache trending challenges (ASYNC - non-blocking)
      */
-    public <T> boolean cacheTrendingChallenges(T challenges) {
+    public <T> void cacheTrendingChallenges(T challenges) {
         if (challenges == null) {
-            return false;
+            return;
         }
-        boolean saved = save(TRENDING_CHALLENGES_KEY, challenges, TRENDING_CHALLENGES_TTL);
-        if (saved) {
-            logger.info("Cached trending challenges");
-        }
-        return saved;
+        executeAsync(() -> {
+            if (save(TRENDING_CHALLENGES_KEY, challenges, TRENDING_CHALLENGES_TTL)) {
+                logger.debug("Cached trending challenges");
+            }
+        });
     }
 
     /**
-     * Cache paginated trending challenges
+     * Cache paginated trending challenges (ASYNC - non-blocking)
      */
-    public <T> boolean cacheTrendingChallengesPaginated(int page, int pageSize, T challenges) {
+    public <T> void cacheTrendingChallengesPaginated(int page, int pageSize, T challenges) {
         if (challenges == null || page < 1) {
-            return false;
+            return;
         }
-        String key = TRENDING_CHALLENGES_PAGE_PREFIX + page + ":" + pageSize;
-        boolean saved = save(key, challenges, TRENDING_CHALLENGES_TTL);
-        if (saved) {
-            logger.debug("Cached trending challenges page {} (size={})", page, pageSize);
-        }
-        return saved;
+        executeAsync(() -> {
+            String key = TRENDING_CHALLENGES_PAGE_PREFIX + page + ":" + pageSize;
+            if (save(key, challenges, TRENDING_CHALLENGES_TTL)) {
+                logger.debug("Cached trending challenges page {} (size={})", page, pageSize);
+            }
+        });
     }
 
     /**
-     * Get trending challenges (default - no pagination)
+     * Get trending challenges (SYNC - needs result)
      */
     public <T> Optional<T> getTrendingChallenges(Class<T> type) {
         return getOptional(TRENDING_CHALLENGES_KEY, type);
     }
 
     /**
-     * Get paginated trending challenges from cache
+     * Get paginated trending challenges from cache (SYNC - needs result)
      */
     public <T> Optional<T> getTrendingChallengesPaginated(int page, int pageSize, Class<T> type) {
         if (page < 1) {
@@ -794,50 +857,54 @@ public class RedisCacheServiceImpl {
     }
 
     /**
-     * Invalidate trending challenges cache (all pages)
+     * Invalidate trending challenges cache (ASYNC - non-blocking)
      */
     public void invalidateTrendingChallenges() {
-        delete(TRENDING_CHALLENGES_KEY);
-        deleteByPattern(TRENDING_CHALLENGES_PAGE_PREFIX + "*");
-        logger.debug("Invalidated trending challenges cache (all pages)");
+        executeAsync(() -> {
+            delete(TRENDING_CHALLENGES_KEY);
+            deleteByPattern(TRENDING_CHALLENGES_PAGE_PREFIX + "*");
+            logger.debug("Invalidated trending challenges cache (all pages)");
+        });
     }
 
     /**
-     * Invalidate both recent and trending caches
+     * Invalidate both recent and trending caches (ASYNC - non-blocking)
      * Use this when a challenge is created/updated/deleted
      */
     public void invalidateRecentAndTrendingChallenges() {
-        invalidateRecentChallenges();
-        invalidateTrendingChallenges();
-        logger.info("Invalidated both recent and trending challenges caches");
+        executeAsync(() -> {
+            delete(RECENT_CHALLENGES_KEY);
+            deleteByPattern(RECENT_CHALLENGES_PAGE_PREFIX + "*");
+            delete(TRENDING_CHALLENGES_KEY);
+            deleteByPattern(TRENDING_CHALLENGES_PAGE_PREFIX + "*");
+            logger.debug("Invalidated both recent and trending challenges caches");
+        });
     }
 
     // ==================== CHALLENGE ENGAGEMENT TRACKING ====================
 
     /**
-     * Increment challenge view count using Redis sorted set
+     * Increment challenge view count (ASYNC - non-blocking)
      * Use Case: Real-time trending calculation based on views
-     * @return the new view count
      */
-    public long incrementChallengeViews(Long challengeId) {
+    public void incrementChallengeViews(Long challengeId) {
         if (challengeId == null) {
-            return 0;
+            return;
         }
-        try {
-            Double newScore = redisTemplate.opsForZSet()
-                    .incrementScore(CHALLENGE_VIEWS_KEY, challengeId.toString(), 1);
-            // Set expiry on first increment
-            redisTemplate.expire(CHALLENGE_VIEWS_KEY, ENGAGEMENT_TTL);
-            logger.debug("Incremented view count for challenge {}: new count={}", challengeId, newScore);
-            return newScore != null ? newScore.longValue() : 0;
-        } catch (Exception e) {
-            logger.warn("Failed to increment challenge views: challengeId={}, error={}", challengeId, e.getMessage());
-            return 0;
-        }
+        executeAsync(() -> {
+            try {
+                Double newScore = redisTemplate.opsForZSet()
+                        .incrementScore(CHALLENGE_VIEWS_KEY, challengeId.toString(), 1);
+                redisTemplate.expire(CHALLENGE_VIEWS_KEY, ENGAGEMENT_TTL);
+                logger.debug("Incremented view count for challenge {}: new count={}", challengeId, newScore);
+            } catch (Exception e) {
+                logger.warn("Failed to increment challenge views: challengeId={}, error={}", challengeId, e.getMessage());
+            }
+        });
     }
 
     /**
-     * Get challenge view count
+     * Get challenge view count (SYNC - needs result)
      */
     public long getChallengeViews(Long challengeId) {
         if (challengeId == null) {
@@ -853,7 +920,7 @@ public class RedisCacheServiceImpl {
     }
 
     /**
-     * Get top viewed challenges (trending by views)
+     * Get top viewed challenges (SYNC - needs result)
      * @param limit Number of challenges to return
      * @return List of challenge IDs sorted by views (descending)
      */
@@ -885,18 +952,20 @@ public class RedisCacheServiceImpl {
         if (challengeId == null || engagementPoints <= 0) {
             return;
         }
-        try {
-            redisTemplate.opsForZSet()
-                    .incrementScore(CHALLENGE_ENGAGEMENT_KEY, challengeId.toString(), engagementPoints);
-            redisTemplate.expire(CHALLENGE_ENGAGEMENT_KEY, ENGAGEMENT_TTL);
-            logger.debug("Tracked engagement for challenge {}: +{} points", challengeId, engagementPoints);
-        } catch (Exception e) {
-            logger.warn("Failed to track challenge engagement: challengeId={}, error={}", challengeId, e.getMessage());
-        }
+        executeAsync(() -> {
+            try {
+                redisTemplate.opsForZSet()
+                        .incrementScore(CHALLENGE_ENGAGEMENT_KEY, challengeId.toString(), engagementPoints);
+                redisTemplate.expire(CHALLENGE_ENGAGEMENT_KEY, ENGAGEMENT_TTL);
+                logger.debug("Tracked engagement for challenge {}: +{} points", challengeId, engagementPoints);
+            } catch (Exception e) {
+                logger.warn("Failed to track challenge engagement: challengeId={}, error={}", challengeId, e.getMessage());
+            }
+        });
     }
 
     /**
-     * Get top engaged challenges (trending by engagement score)
+     * Get top engaged challenges (SYNC - needs result)
      * @param limit Number of challenges to return
      * @return List of challenge IDs sorted by engagement score (descending)
      */
@@ -919,7 +988,7 @@ public class RedisCacheServiceImpl {
     }
 
     /**
-     * Get engagement score for a specific challenge
+     * Get engagement score for a specific challenge (SYNC - needs result)
      */
     public long getChallengeEngagementScore(Long challengeId) {
         if (challengeId == null) {
@@ -935,16 +1004,18 @@ public class RedisCacheServiceImpl {
     }
 
     /**
-     * Reset engagement tracking (e.g., weekly reset for fresh trending)
+     * Reset engagement tracking (ASYNC - non-blocking)
      */
     public void resetEngagementTracking() {
-        try {
-            delete(CHALLENGE_VIEWS_KEY);
-            delete(CHALLENGE_ENGAGEMENT_KEY);
-            logger.info("Reset challenge engagement tracking");
-        } catch (Exception e) {
-            logger.warn("Failed to reset engagement tracking: error={}", e.getMessage());
-        }
+        executeAsync(() -> {
+            try {
+                delete(CHALLENGE_VIEWS_KEY);
+                delete(CHALLENGE_ENGAGEMENT_KEY);
+                logger.debug("Reset challenge engagement tracking");
+            } catch (Exception e) {
+                logger.warn("Failed to reset engagement tracking: error={}", e.getMessage());
+            }
+        });
     }
 
     // ==================== USE CASE 7: USER PROFILE CACHING ====================
@@ -957,23 +1028,23 @@ public class RedisCacheServiceImpl {
     private static final Duration USER_STATS_TTL = Duration.ofMinutes(10);
 
     /**
-     * Cache user profile
+     * Cache user profile (ASYNC - non-blocking)
      * Use Case: Reduce DB queries for user data
      */
-    public <T> boolean cacheUserProfile(Long userId, T userProfile) {
+    public <T> void cacheUserProfile(Long userId, T userProfile) {
         if (userId == null || userProfile == null) {
-            return false;
+            return;
         }
-        String key = USER_PREFIX + "profile:" + userId;
-        boolean saved = save(key, userProfile, DEFAULT_USER_PROFILE_TTL);
-        if (saved) {
-            logger.debug("Cached user profile: userId={}", userId);
-        }
-        return saved;
+        executeAsync(() -> {
+            String key = USER_PREFIX + "profile:" + userId;
+            if (save(key, userProfile, DEFAULT_USER_PROFILE_TTL)) {
+                logger.debug("Cached user profile: userId={}", userId);
+            }
+        });
     }
 
     /**
-     * Get cached user profile
+     * Get cached user profile (SYNC - needs result)
      */
     public <T> Optional<T> getCachedUserProfile(Long userId, Class<T> type) {
         if (userId == null) {
@@ -984,49 +1055,51 @@ public class RedisCacheServiceImpl {
     }
 
     /**
-     * Invalidate user profile cache (when updated)
+     * Invalidate user profile cache (ASYNC - non-blocking)
      */
     public void invalidateUserProfile(Long userId) {
         if (userId == null) {
             return;
         }
-        String key = USER_PREFIX + "profile:" + userId;
-        delete(key);
-        logger.debug("Invalidated user profile cache: userId={}", userId);
+        executeAsync(() -> {
+            String key = USER_PREFIX + "profile:" + userId;
+            delete(key);
+            logger.debug("Invalidated user profile cache: userId={}", userId);
+        });
     }
 
     /**
-     * Cache user's followers list
+     * Cache user's followers list (ASYNC - non-blocking)
      */
-    public <T> boolean cacheUserFollowers(Long userId, T followers) {
+    public <T> void cacheUserFollowers(Long userId, T followers) {
         if (userId == null || followers == null) {
-            return false;
+            return;
         }
-        String key = USER_FOLLOWERS_PREFIX + userId;
-        boolean saved = save(key, followers, USER_FOLLOWERS_TTL);
-        if (saved) {
-            logger.debug("Cached followers for user: userId={}", userId);
-        }
-        return saved;
+        executeAsync(() -> {
+            String key = USER_FOLLOWERS_PREFIX + userId;
+            if (save(key, followers, USER_FOLLOWERS_TTL)) {
+                logger.debug("Cached followers for user: userId={}", userId);
+            }
+        });
     }
 
     /**
-     * Cache user's followers list with pagination
+     * Cache user's followers list with pagination (ASYNC - non-blocking)
      */
-    public <T> boolean cacheUserFollowers(Long userId, int page, int pageSize, T followers) {
+    public <T> void cacheUserFollowers(Long userId, int page, int pageSize, T followers) {
         if (userId == null || followers == null) {
-            return false;
+            return;
         }
-        String key = USER_FOLLOWERS_PREFIX + userId + ":page:" + page + ":size:" + pageSize;
-        boolean saved = save(key, followers, USER_FOLLOWERS_TTL);
-        if (saved) {
-            logger.debug("Cached followers for user: userId={}, page={}, pageSize={}", userId, page, pageSize);
-        }
-        return saved;
+        executeAsync(() -> {
+            String key = USER_FOLLOWERS_PREFIX + userId + ":page:" + page + ":size:" + pageSize;
+            if (save(key, followers, USER_FOLLOWERS_TTL)) {
+                logger.debug("Cached followers for user: userId={}, page={}, pageSize={}", userId, page, pageSize);
+            }
+        });
     }
 
     /**
-     * Get cached user followers
+     * Get cached user followers (SYNC - needs result)
      */
     public <T> Optional<T> getCachedUserFollowers(Long userId, Class<T> type) {
         if (userId == null) {
@@ -1037,7 +1110,7 @@ public class RedisCacheServiceImpl {
     }
 
     /**
-     * Get cached user followers with pagination
+     * Get cached user followers with pagination (SYNC - needs result)
      */
     public <T> Optional<T> getCachedUserFollowers(Long userId, int page, int pageSize, Class<T> type) {
         if (userId == null) {
@@ -1048,51 +1121,52 @@ public class RedisCacheServiceImpl {
     }
 
     /**
-     * Invalidate user followers cache
+     * Invalidate user followers cache (ASYNC - non-blocking)
      */
     public void invalidateUserFollowers(Long userId) {
         if (userId == null) {
             return;
         }
-        String key = USER_FOLLOWERS_PREFIX + userId;
-        delete(key);
-        // Also invalidate paginated caches using pattern delete
-        deleteByPattern(USER_FOLLOWERS_PREFIX + userId + ":page:*");
-        logger.debug("Invalidated followers cache: userId={}", userId);
+        executeAsync(() -> {
+            String key = USER_FOLLOWERS_PREFIX + userId;
+            delete(key);
+            deleteByPattern(USER_FOLLOWERS_PREFIX + userId + ":page:*");
+            logger.debug("Invalidated followers cache: userId={}", userId);
+        });
     }
 
     /**
-     * Cache user's following list
+     * Cache user's following list (ASYNC - non-blocking)
      */
-    public <T> boolean cacheUserFollowing(Long userId, T following) {
+    public <T> void cacheUserFollowing(Long userId, T following) {
         if (userId == null || following == null) {
-            return false;
+            return;
         }
-        String key = USER_FOLLOWING_PREFIX + userId;
-        boolean saved = save(key, following, USER_FOLLOWERS_TTL);
-        if (saved) {
-            logger.debug("Cached following for user: userId={}", userId);
-        }
-        return saved;
+        executeAsync(() -> {
+            String key = USER_FOLLOWING_PREFIX + userId;
+            if (save(key, following, USER_FOLLOWERS_TTL)) {
+                logger.debug("Cached following for user: userId={}", userId);
+            }
+        });
     }
 
     /**
-     * Cache user's following list with pagination
+     * Cache user's following list with pagination (ASYNC - non-blocking)
      */
-    public <T> boolean cacheUserFollowing(Long userId, int page, int pageSize, T following) {
+    public <T> void cacheUserFollowing(Long userId, int page, int pageSize, T following) {
         if (userId == null || following == null) {
-            return false;
+            return;
         }
-        String key = USER_FOLLOWING_PREFIX + userId + ":page:" + page + ":size:" + pageSize;
-        boolean saved = save(key, following, USER_FOLLOWERS_TTL);
-        if (saved) {
-            logger.debug("Cached following for user: userId={}, page={}, pageSize={}", userId, page, pageSize);
-        }
-        return saved;
+        executeAsync(() -> {
+            String key = USER_FOLLOWING_PREFIX + userId + ":page:" + page + ":size:" + pageSize;
+            if (save(key, following, USER_FOLLOWERS_TTL)) {
+                logger.debug("Cached following for user: userId={}, page={}, pageSize={}", userId, page, pageSize);
+            }
+        });
     }
 
     /**
-     * Get cached user following
+     * Get cached user following (SYNC - needs result)
      */
     public <T> Optional<T> getCachedUserFollowing(Long userId, Class<T> type) {
         if (userId == null) {
@@ -1103,7 +1177,7 @@ public class RedisCacheServiceImpl {
     }
 
     /**
-     * Get cached user following with pagination
+     * Get cached user following with pagination (SYNC - needs result)
      */
     public <T> Optional<T> getCachedUserFollowing(Long userId, int page, int pageSize, Class<T> type) {
         if (userId == null) {
@@ -1114,36 +1188,37 @@ public class RedisCacheServiceImpl {
     }
 
     /**
-     * Invalidate user following cache
+     * Invalidate user following cache (ASYNC - non-blocking)
      */
     public void invalidateUserFollowing(Long userId) {
         if (userId == null) {
             return;
         }
-        String key = USER_FOLLOWING_PREFIX + userId;
-        delete(key);
-        // Also invalidate paginated caches using pattern delete
-        deleteByPattern(USER_FOLLOWING_PREFIX + userId + ":page:*");
-        logger.debug("Invalidated following cache: userId={}", userId);
+        executeAsync(() -> {
+            String key = USER_FOLLOWING_PREFIX + userId;
+            delete(key);
+            deleteByPattern(USER_FOLLOWING_PREFIX + userId + ":page:*");
+            logger.debug("Invalidated following cache: userId={}", userId);
+        });
     }
 
     /**
-     * Cache user stats (followers count, following count, challenges count, etc.)
+     * Cache user stats (ASYNC - non-blocking)
      */
-    public <T> boolean cacheUserStats(Long userId, T stats) {
+    public <T> void cacheUserStats(Long userId, T stats) {
         if (userId == null || stats == null) {
-            return false;
+            return;
         }
-        String key = USER_STATS_PREFIX + userId;
-        boolean saved = save(key, stats, USER_STATS_TTL);
-        if (saved) {
-            logger.debug("Cached stats for user: userId={}", userId);
-        }
-        return saved;
+        executeAsync(() -> {
+            String key = USER_STATS_PREFIX + userId;
+            if (save(key, stats, USER_STATS_TTL)) {
+                logger.debug("Cached stats for user: userId={}", userId);
+            }
+        });
     }
 
     /**
-     * Get cached user stats
+     * Get cached user stats (SYNC - needs result)
      */
     public <T> Optional<T> getCachedUserStats(Long userId, Class<T> type) {
         if (userId == null) {
@@ -1154,50 +1229,48 @@ public class RedisCacheServiceImpl {
     }
 
     /**
-     * Invalidate user stats cache
+     * Invalidate user stats cache (ASYNC - non-blocking)
      */
     public void invalidateUserStats(Long userId) {
         if (userId == null) {
             return;
         }
-        String key = USER_STATS_PREFIX + userId;
-        delete(key);
-        logger.debug("Invalidated stats cache: userId={}", userId);
+        executeAsync(() -> {
+            String key = USER_STATS_PREFIX + userId;
+            delete(key);
+            logger.debug("Invalidated stats cache: userId={}", userId);
+        });
     }
 
     /**
-     * Invalidate all user-related caches (profile, followers, following, stats)
+     * Invalidate all user-related caches (ASYNC - non-blocking)
      * Use when user is updated or deleted
      */
     public void invalidateAllUserCaches(Long userId) {
         if (userId == null) {
             return;
         }
+        // All these are already async internally
         invalidateUserProfile(userId);
         invalidateUserFollowers(userId);
         invalidateUserFollowing(userId);
         invalidateUserStats(userId);
-        logger.info("Invalidated all caches for user: userId={}", userId);
     }
 
     /**
-     * Invalidate follow-related caches for both follower and following users
+     * Invalidate follow-related caches (ASYNC - non-blocking)
      * Use when follow/unfollow action occurs
      */
     public void invalidateFollowCaches(Long followerId, Long followingId) {
-        // Follower's following list changed
+        // All these are already async internally
         invalidateUserFollowing(followerId);
         invalidateUserStats(followerId);
-        
-        // Following user's followers list changed
         invalidateUserFollowers(followingId);
         invalidateUserStats(followingId);
-        
-        logger.debug("Invalidated follow caches: followerId={}, followingId={}", followerId, followingId);
     }
 
     /**
-     * Batch cache multiple user profiles
+     * Batch cache multiple user profiles (ASYNC - non-blocking)
      */
     public <T> void cacheUserProfiles(Map<Long, T> userProfiles) {
         if (userProfiles == null || userProfiles.isEmpty()) {
@@ -1227,38 +1300,38 @@ public class RedisCacheServiceImpl {
     // ==================== USE CASE 8: TEMPORARY DATA STORAGE ====================
 
     /**
-     * Store temporary verification codes (email/phone)
+     * Store temporary verification codes (ASYNC - non-blocking)
      * Use Case: OTP, verification codes
      */
-    public boolean storeVerificationCode(String identifier, String code) {
+    public void storeVerificationCode(String identifier, String code) {
         if (identifier == null || code == null) {
-            return false;
+            return;
         }
-        String key = VERIFICATION_PREFIX + identifier;
-        boolean saved = save(key, code, DEFAULT_VERIFICATION_TTL);
-        if (saved) {
-            logger.info("Stored verification code: identifier={}", identifier);
-        }
-        return saved;
+        executeAsync(() -> {
+            String key = VERIFICATION_PREFIX + identifier;
+            if (save(key, code, DEFAULT_VERIFICATION_TTL)) {
+                logger.debug("Stored verification code: identifier={}", identifier);
+            }
+        });
     }
 
     /**
-     * Store verification code with custom TTL
+     * Store verification code with custom TTL (ASYNC - non-blocking)
      */
-    public boolean storeVerificationCode(String identifier, String code, Duration ttl) {
+    public void storeVerificationCode(String identifier, String code, Duration ttl) {
         if (identifier == null || code == null) {
-            return false;
+            return;
         }
-        String key = VERIFICATION_PREFIX + identifier;
-        boolean saved = save(key, code, ttl);
-        if (saved) {
-            logger.info("Stored verification code: identifier={}, ttl={}", identifier, ttl);
-        }
-        return saved;
+        executeAsync(() -> {
+            String key = VERIFICATION_PREFIX + identifier;
+            if (save(key, code, ttl)) {
+                logger.debug("Stored verification code: identifier={}, ttl={}", identifier, ttl);
+            }
+        });
     }
 
     /**
-     * Verify and consume code (one-time use)
+     * Verify and consume code (SYNC - needs result for verification flow)
      * @return true if code matches and was consumed
      */
     public boolean verifyCode(String identifier, String code) {
@@ -1269,16 +1342,16 @@ public class RedisCacheServiceImpl {
         String storedCode = get(key, String.class);
 
         if (storedCode != null && storedCode.equals(code)) {
-            delete(key); // Consume the code
-            logger.info("Verification successful: identifier={}", identifier);
+            delete(key); // Consume the code (sync delete is fine here)
+            logger.debug("Verification successful: identifier={}", identifier);
             return true;
         }
-        logger.warn("Verification failed: identifier={}", identifier);
+        logger.debug("Verification failed: identifier={}", identifier);
         return false;
     }
 
     /**
-     * Check if verification code exists (without consuming)
+     * Check if verification code exists (SYNC - needs result)
      */
     public boolean hasVerificationCode(String identifier) {
         if (identifier == null) {
@@ -1289,15 +1362,17 @@ public class RedisCacheServiceImpl {
     }
 
     /**
-     * Invalidate verification code
+     * Invalidate verification code (ASYNC - non-blocking)
      */
     public void invalidateVerificationCode(String identifier) {
         if (identifier == null) {
             return;
         }
-        String key = VERIFICATION_PREFIX + identifier;
-        delete(key);
-        logger.debug("Invalidated verification code: identifier={}", identifier);
+        executeAsync(() -> {
+            String key = VERIFICATION_PREFIX + identifier;
+            delete(key);
+            logger.debug("Invalidated verification code: identifier={}", identifier);
+        });
     }
 
     // ==================== USE CASE 9: COUNTER OPERATIONS ====================
@@ -1354,87 +1429,92 @@ public class RedisCacheServiceImpl {
     }
 
     /**
-     * Reset challenge view count (legacy - uses simple key)
+     * Reset challenge view count (ASYNC - non-blocking)
      */
     public void resetChallengeViews(Long challengeId) {
         if (challengeId == null) {
             return;
         }
-        // Remove from sorted set
-        try {
-            redisTemplate.opsForZSet().remove(CHALLENGE_VIEWS_KEY, challengeId.toString());
-            logger.debug("Reset views for challenge: {}", challengeId);
-        } catch (Exception e) {
-            logger.warn("Failed to reset challenge views: challengeId={}, error={}", challengeId, e.getMessage());
-        }
+        executeAsync(() -> {
+            try {
+                redisTemplate.opsForZSet().remove(CHALLENGE_VIEWS_KEY, challengeId.toString());
+                logger.debug("Reset views for challenge: {}", challengeId);
+            } catch (Exception e) {
+                logger.warn("Failed to reset challenge views: challengeId={}, error={}", challengeId, e.getMessage());
+            }
+        });
     }
 
     // ==================== USE CASE 10: CACHE INVALIDATION ====================
 
     /**
-     * Clear all cache entries for a specific challenge
+     * Clear all cache entries for a specific challenge (ASYNC - non-blocking)
      */
     public void clearChallengeCache(Long challengeId) {
         if (challengeId == null) {
             return;
         }
-        List<String> keys = List.of(
-                CHALLENGE_PREFIX + challengeId,
-                LEADERBOARD_PREFIX + challengeId
-        );
-        deleteAll(keys);
+        executeAsync(() -> {
+            List<String> keys = List.of(
+                    CHALLENGE_PREFIX + challengeId,
+                    LEADERBOARD_PREFIX + challengeId
+            );
+            deleteAll(keys);
+            
+            // Remove from sorted sets
+            try {
+                redisTemplate.opsForZSet().remove(CHALLENGE_VIEWS_KEY, challengeId.toString());
+                redisTemplate.opsForZSet().remove(CHALLENGE_ENGAGEMENT_KEY, challengeId.toString());
+            } catch (Exception e) {
+                logger.warn("Failed to remove challenge from sorted sets: {}", e.getMessage());
+            }
+            
+            logger.debug("Cleared all cache for challenge: id={}", challengeId);
+        });
         
-        // Remove from sorted sets
-        try {
-            redisTemplate.opsForZSet().remove(CHALLENGE_VIEWS_KEY, challengeId.toString());
-            redisTemplate.opsForZSet().remove(CHALLENGE_ENGAGEMENT_KEY, challengeId.toString());
-        } catch (Exception e) {
-            logger.warn("Failed to remove challenge from sorted sets: {}", e.getMessage());
-        }
-        
-        // Invalidate recent/trending caches since they might contain this challenge
+        // These are already async
         invalidateRecentAndTrendingChallenges();
-        
-        logger.info("Cleared all cache for challenge: id={}", challengeId);
     }
 
     /**
-     * Clear all cache entries for a user
+     * Clear all cache entries for a user (ASYNC - non-blocking)
      */
     public void clearUserCache(Long userId) {
         if (userId == null) {
             return;
         }
-        List<String> keys = List.of(
-                USER_PREFIX + "profile:" + userId,
-                USER_PREFIX + "submissions:" + userId
-        );
-        deleteAll(keys);
-
-        // Also clear any user-specific submission caches
-        deleteByPattern(SUBMISSION_PREFIX + "user:" + userId + ":*");
-        logger.info("Cleared all cache for user: id={}", userId);
+        executeAsync(() -> {
+            List<String> keys = List.of(
+                    USER_PREFIX + "profile:" + userId,
+                    USER_PREFIX + "submissions:" + userId
+            );
+            deleteAll(keys);
+            deleteByPattern(SUBMISSION_PREFIX + "user:" + userId + ":*");
+            logger.debug("Cleared all cache for user: id={}", userId);
+        });
     }
 
     /**
-     * Clear all caches (use with caution - admin only)
+     * Clear all caches (ASYNC - non-blocking, admin only)
      */
     public void clearAllCaches() {
-        try {
-            Set<String> keys = redisTemplate.keys("*");
-            if (!keys.isEmpty()) {
-                redisTemplate.delete(keys);
-                logger.warn("Cleared ALL caches: count={}", keys.size());
+        executeAsync(() -> {
+            try {
+                Set<String> keys = redisTemplate.keys("*");
+                if (!keys.isEmpty()) {
+                    redisTemplate.delete(keys);
+                    logger.warn("Cleared ALL caches: count={}", keys.size());
+                }
+            } catch (Exception e) {
+                logger.error("Error clearing all caches", e);
             }
-        } catch (Exception e) {
-            logger.error("Error clearing all caches", e);
-        }
+        });
     }
 
     // ==================== UTILITY METHODS ====================
 
     /**
-     * Get cache statistics (useful for monitoring)
+     * Get cache statistics (SYNC - needs result for monitoring)
      */
     public Map<String, Object> getCacheStats() {
         Map<String, Object> stats = new HashMap<>();

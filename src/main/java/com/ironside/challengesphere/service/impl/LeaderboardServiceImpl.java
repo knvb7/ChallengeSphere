@@ -403,13 +403,9 @@ public class LeaderboardServiceImpl implements LeaderboardService {
             // Step 1: Mark as disqualified in DB (don't delete - keep history)
             leaderboardEntryRepository.disqualifyUser(challengeId, userId);
             
-            // Step 2: Remove from Redis
-            boolean removed = cacheService.removeFromLeaderboard(challengeId, userId);
-            if (removed) {
-                logger.info("Successfully removed user {} from leaderboard for challenge {} (DB + Redis)", userId, challengeId);
-            } else {
-                logger.debug("User {} was not in Redis leaderboard for challenge {}", userId, challengeId);
-            }
+            // Step 2: Remove from Redis (async, fire-and-forget)
+            cacheService.removeFromLeaderboard(challengeId, userId);
+            logger.info("Successfully removed user {} from leaderboard for challenge {} (DB + Redis)", userId, challengeId);
         } catch (Exception e) {
             logger.error("Error removing user from leaderboard: challenge={}, user={}", challengeId, userId, e);
         }
