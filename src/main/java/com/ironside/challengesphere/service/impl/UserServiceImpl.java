@@ -55,51 +55,60 @@ public class UserServiceImpl implements UserService {
                 userId, emailId, phone, username);
 
         try {
-            // Try cache first for userId lookups (most common)
+            // 1. Try cache by userId (fastest path)
             if (userId != null) {
                 Optional<User> cached = cacheService.getCachedUserProfile(userId, User.class);
                 if (cached.isPresent()) {
-                    logger.debug("Cache hit for userId: {}", userId);
+                    logger.info("Cache hit for userId: {}", userId);
                     return cached.get();
                 }
-                
-                logger.debug("Cache miss for userId: {}, searching DB", userId);
+                logger.info("Cache miss for userId: {}, fetching from DB", userId);
                 Optional<User> user = userRepository.findById(userId);
                 if (user.isPresent()) {
                     logger.info("User found by userId: {}", userId);
-                    cacheService.cacheUserProfile(userId, user.get());
-                    return user.get();
+                    final User found = user.get();
+                    cacheService.cacheUserProfile(userId, found); // async internally
+                    return found;
                 }
             }
 
+            // 2. Try cache by emailId (secondary key stored as user:<email>)
             if (emailId != null && !emailId.trim().isEmpty()) {
-                logger.debug("Searching by emailId: {}", emailId);
-                Optional<User> user = userRepository.findByEmailId(emailId.trim());
+                String emailKey = emailId.trim();
+                logger.debug("Cache miss for emailId: {}, fetching from DB", emailId);
+                Optional<User> user = userRepository.findByEmailId(emailKey);
                 if (user.isPresent()) {
                     logger.info("User found by emailId: {}", emailId);
-                    // Cache by userId for future lookups
-                    cacheService.cacheUserProfile(user.get().getId(), user.get());
-                    return user.get();
+                    final User found = user.get();
+                    // Cache by userId (canonical key) asynchronously
+                    cacheService.cacheUserProfile(found.getId(), found);
+                    return found;
                 }
             }
 
+            // 3. Try cache by phone
             if (phone != null && !phone.trim().isEmpty()) {
-                logger.debug("Searching by phone: {}", phone);
-                Optional<User> user = userRepository.findByPhone(phone.trim());
+                String phoneKey = phone.trim();
+                logger.debug("Cache miss for phone: {}, fetching from DB", phone);
+                Optional<User> user = userRepository.findByPhone(phoneKey);
                 if (user.isPresent()) {
                     logger.info("User found by phone: {}", phone);
-                    cacheService.cacheUserProfile(user.get().getId(), user.get());
-                    return user.get();
+                    final User found = user.get();
+                    cacheService.cacheUserProfile(found.getId(), found);
+                    return found;
                 }
             }
 
+            // 4. Try cache by username
             if (username != null && !username.trim().isEmpty()) {
-                logger.debug("Searching by username: {}", username);
-                Optional<User> user = userRepository.findByUsername(username.trim());
+                String usernameKey = username.trim();
+                logger.debug("Cache miss for username: {}, fetching from DB", username);
+                Optional<User> user = userRepository.findByUsername(usernameKey);
                 if (user.isPresent()) {
                     logger.info("User found by username: {}", username);
-                    cacheService.cacheUserProfile(user.get().getId(), user.get());
-                    return user.get();
+                    final User found = user.get();
+                    cacheService.cacheUserProfile(found.getId(), found);
+                    return found;
                 }
             }
 
@@ -164,11 +173,11 @@ public class UserServiceImpl implements UserService {
                 user.setProfilePicUrl(updateUserRequest.getProfilePicUrl());
                 logger.debug("Updated profilePicUrl for user {}", userId);
             }
-            if (updateUserRequest.getPremiumUser() != null && !updateUserRequest.getEmailId().trim().isEmpty()) {
+            if (updateUserRequest.getPremiumUser() != null) {
                 user.setPremiumUser(updateUserRequest.getPremiumUser());
                 logger.debug("Updated premiumUser for user {}", userId);
             }
-            if (updateUserRequest.getNotifications() != null && !updateUserRequest.getEmailId().trim().isEmpty()) {
+            if (updateUserRequest.getNotifications() != null) {
                 user.setNotifications(updateUserRequest.getNotifications());
                 logger.debug("Updated notifications for user {}", userId);
             }

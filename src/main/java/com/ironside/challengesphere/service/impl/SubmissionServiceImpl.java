@@ -7,6 +7,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
+import com.ironside.challengesphere.util.Constants;
+import com.ironside.challengesphere.util.GetSignedUrlForGcs;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -422,7 +424,8 @@ public class SubmissionServiceImpl implements SubmissionService {
                 mediaFile.getFileName(),
                 mediaFile.getMediaType().name(),
                 mediaFile.getContentType().getMimeType(),
-                "",
+                GetSignedUrlForGcs.generateV4PutObjectSignedUrl(Constants.GCSBUCKETFORSUBMISSIONS, mediaFile.getMediaType().name(),
+                        expirationTimeInSeconds, mediaFile.getContentType()),
                 fileKey,
                 expirationTimeInSeconds
         );

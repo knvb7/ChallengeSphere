@@ -38,13 +38,11 @@ public class GetSignedUrlForGcs {
 
 
     public static String generateV4PutObjectSignedUrl(
-            String projectId,
             String bucketName,
             String objectName,
-            Integer expirationTime,
+            Long expirationTime,
             GeneratePresignedUrlsRequest.ContentType contentType
     ) {
-
         // --- Step 2: Define object metadata ---
         BlobInfo blobInfo = BlobInfo.newBuilder(BlobId.of(bucketName, objectName))
                 .setContentType(String.valueOf(contentType))
@@ -54,7 +52,7 @@ public class GetSignedUrlForGcs {
         URL signedUrl = storage.signUrl(
                 blobInfo,
                 expirationTime,
-                TimeUnit.MINUTES,
+                TimeUnit.SECONDS,
                 Storage.SignUrlOption.httpMethod(HttpMethod.PUT),
                 Storage.SignUrlOption.withV4Signature() // REQUIRED for modern GCS
         );
