@@ -43,21 +43,22 @@ public class GetSignedUrlForGcs {
             Long expirationTime,
             GeneratePresignedUrlsRequest.ContentType contentType
     ) {
-        // --- Step 2: Define object metadata ---
+        // Define object metadata with the correct MIME content type
         BlobInfo blobInfo = BlobInfo.newBuilder(BlobId.of(bucketName, objectName))
-                .setContentType(String.valueOf(contentType))
+                .setContentType(contentType.getMimeType())
                 .build();
 
-        // --- Step 3: Generate signed URL (V4, PUT method) ---
+        // Generate V4 signed URL for HTTP PUT (client uploads directly to GCS)
         URL signedUrl = storage.signUrl(
                 blobInfo,
                 expirationTime,
                 TimeUnit.SECONDS,
                 Storage.SignUrlOption.httpMethod(HttpMethod.PUT),
-                Storage.SignUrlOption.withV4Signature() // REQUIRED for modern GCS
+                Storage.SignUrlOption.withV4Signature(),
+                Storage.SignUrlOption.withExtHeaders(java.util.Map.of("Content-Type", contentType.getMimeType()))
         );
 
-        logger.info("✅ Generated PUT signed URL: {}", signedUrl);
+        logger.info("Generated V4 PUT signed URL for object: {}", objectName);
         return signedUrl.toString();
     }
 }

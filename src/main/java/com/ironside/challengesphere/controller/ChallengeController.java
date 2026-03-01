@@ -6,10 +6,11 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
-import org.springframework.retry.annotation.CircuitBreaker;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -48,56 +49,68 @@ public class ChallengeController {
     @Autowired
     private ChallengeService challengeService;
 
-    @PostMapping("/create")
+    @PostMapping
     public ResponseEntity<ChallengeCreateResponse> createChallenge(@Valid @RequestBody ChallengeCreateRequest request) throws ChallengeSphereException {
         ChallengeCreateResponse response = challengeService.createChallenge(request);
         return ResponseEntity.ok(response);
     }
 
-    @PostMapping("/getUserChallenges")
-    public ResponseEntity<UserChallengesResponse> getUserChallenges(@Valid @RequestBody GetUserChallengesRequest request) throws ChallengeSphereException {
+    @GetMapping("/user/{userId}")
+    public ResponseEntity<UserChallengesResponse> getUserChallenges(
+            @PathVariable Long userId,
+            @RequestParam(defaultValue = "1") Integer page,
+            @RequestParam(defaultValue = "10") Integer pageSize,
+            @RequestParam(required = false) Boolean active) throws ChallengeSphereException {
+        GetUserChallengesRequest request = new GetUserChallengesRequest();
+        request.setUserId(userId);
+        request.setPage(page);
+        request.setPageSize(pageSize);
+        request.setActive(active);
         UserChallengesResponse response = challengeService.getUserChallenges(request);
         return ResponseEntity.ok(response);
     }
 
-    @PostMapping("/getByIds")
+    @PostMapping("/batch")
     public ResponseEntity<List<Challenge>> getChallengesByIds(@RequestBody List<Long> ids) throws ChallengeSphereException {
         List<Challenge> challenges = challengeService.getChallengeByIds(ids);
         return ResponseEntity.ok(challenges);
     }
 
-    @PutMapping("/deleteChallenges")
+    @DeleteMapping
     public ResponseEntity<Void> deleteChallenges(@RequestBody BulkChallengeUpdateRequest request) {
         challengeService.deleteChallenges(request.getChallengeIds());
         return ResponseEntity.ok().build();
     }
 
-    @PutMapping("/bulkDisableByUsers")
+    @PatchMapping("/bulk-disable-by-users")
     public ResponseEntity<String> disableChallengesForUsers(
             @RequestBody BulkUserChallengeUpdateRequest request) throws ChallengeSphereException {
         challengeService.disableChallengesForUsers(request.getUserIds());
         return ResponseEntity.ok("Successfully disabled challenges for " + request.getUserIds().size() + " user(s)");
     }
 
-    @PostMapping("/joinChallenge")
+    @PostMapping("/join")
     public ResponseEntity<JoinChallengeResponse> joinChallenge(@Valid @RequestBody JoinChallengeRequest request) throws ChallengeSphereException {
         JoinChallengeResponse response = challengeService.joinChallenge(request);
         return ResponseEntity.ok(response);
     }
 
-    @PostMapping("/leaveChallenge")
+    @PostMapping("/leave")
     public ResponseEntity<LeaveChallengeResponse> leaveChallenge(@Valid @RequestBody LeaveChallengeRequest request) throws ChallengeSphereException {
         LeaveChallengeResponse response = challengeService.leaveChallenge(request);
         return ResponseEntity.ok(response);
     }
 
-    @PostMapping("/getParticipants")
-    public ResponseEntity<ChallengeParticipantsResponse> getChallengeParticipants(@Valid @RequestBody GetChallengeParticipantsRequest request) throws ChallengeSphereException {
+    @GetMapping("/{challengeId}/participants")
+    public ResponseEntity<ChallengeParticipantsResponse> getChallengeParticipants(
+            @PathVariable Long challengeId) throws ChallengeSphereException {
+        GetChallengeParticipantsRequest request = new GetChallengeParticipantsRequest();
+        request.setChallengeId(challengeId);
         ChallengeParticipantsResponse response = challengeService.getChallengeParticipants(request);
         return ResponseEntity.ok(response);
     }
 
-    @GetMapping("/byHashtags")
+    @GetMapping("/by-hashtags")
     public ResponseEntity<ChallengesByHashtagResponse> getChallengesByHashtag(
             @RequestParam List<String> hashtags,
             @RequestParam(defaultValue = "1") int page,

@@ -61,6 +61,15 @@ public class RedisCacheServiceImpl {
     private static final String TRENDING_CHALLENGES_KEY = "trending:challenges";
     private static final String VERIFICATION_PREFIX = "verification:";
 
+    // Cache key prefixes for new use cases
+    private static final String USER_CHALLENGES_PREFIX = "user:challenges:";
+    private static final String CHALLENGE_PARTICIPANTS_PREFIX = "challenge:participants:";
+    private static final String HASHTAG_CHALLENGES_PREFIX = "challenge:hashtag:";
+    private static final String COMMENTS_PREFIX = "comments:submission:";
+    private static final String GLORY_COUNT_PREFIX = "glory:count:";
+    private static final String GLORY_CHECK_PREFIX = "glory:check:";
+    private static final String FEED_PREFIX = "feed:";
+
     // Default TTL values
     private static final Duration DEFAULT_CHALLENGE_TTL = Duration.ofHours(1);
     private static final Duration DEFAULT_SESSION_TTL = Duration.ofHours(24);
@@ -68,6 +77,14 @@ public class RedisCacheServiceImpl {
     private static final Duration DEFAULT_USER_PROFILE_TTL = Duration.ofMinutes(30);
     private static final Duration DEFAULT_LEADERBOARD_TTL = Duration.ofDays(7);
     private static final Duration DEFAULT_VERIFICATION_TTL = Duration.ofMinutes(10);
+
+    // Additional TTL values for new use cases
+    private static final Duration USER_CHALLENGES_TTL = Duration.ofMinutes(15);
+    private static final Duration CHALLENGE_PARTICIPANTS_TTL = Duration.ofMinutes(10);
+    private static final Duration HASHTAG_CHALLENGES_TTL = Duration.ofMinutes(10);
+    private static final Duration COMMENTS_TTL = Duration.ofMinutes(10);
+    private static final Duration GLORY_TTL = Duration.ofMinutes(15);
+    private static final Duration FEED_TTL = Duration.ofMinutes(5);
 
     // ==================== HEALTH CHECK ====================
 
@@ -1584,5 +1601,309 @@ public class RedisCacheServiceImpl {
             save(key, value, ttl);
         }
         return value;
+    }
+
+    // ==================== USE CASE 11: USER CHALLENGES CACHING ====================
+
+    /**
+     * Cache user's created/owned challenges response (ASYNC - non-blocking)
+     * Use Case: Quick access to user's challenges list on profile/dashboard
+     */
+    public <T> void cacheUserChallenges(Long userId, int page, int pageSize, Boolean active, T response) {
+        if (userId == null || response == null) {
+            return;
+        }
+        executeAsync(() -> {
+            String key = USER_CHALLENGES_PREFIX + userId + ":page:" + page + ":size:" + pageSize
+                    + ":active:" + (active != null ? active : "all");
+            if (save(key, response, USER_CHALLENGES_TTL)) {
+                logger.debug("Cached user challenges: userId={}, page={}, pageSize={}, active={}", userId, page, pageSize, active);
+            }
+        });
+    }
+
+    /**
+     * Get cached user challenges (SYNC - needs result)
+     */
+    public <T> Optional<T> getCachedUserChallenges(Long userId, int page, int pageSize, Boolean active, Class<T> type) {
+        if (userId == null) {
+            return Optional.empty();
+        }
+        String key = USER_CHALLENGES_PREFIX + userId + ":page:" + page + ":size:" + pageSize
+                + ":active:" + (active != null ? active : "all");
+        return getOptional(key, type);
+    }
+
+    /**
+     * Invalidate all cached user challenges for a user (ASYNC - non-blocking)
+     * Call this when a user creates, deletes, or updates a challenge
+     */
+    public void invalidateUserChallenges(Long userId) {
+        if (userId == null) {
+            return;
+        }
+        executeAsync(() -> {
+            deleteByPattern(USER_CHALLENGES_PREFIX + userId + ":*");
+            logger.debug("Invalidated user challenges cache: userId={}", userId);
+        });
+    }
+
+    // ==================== USE CASE 12: CHALLENGE PARTICIPANTS CACHING ====================
+
+    /**
+     * Cache challenge participants response (ASYNC - non-blocking)
+     */
+    public <T> void cacheChallengeParticipants(Long challengeId, T response) {
+        if (challengeId == null || response == null) {
+            return;
+        }
+        executeAsync(() -> {
+            String key = CHALLENGE_PARTICIPANTS_PREFIX + challengeId;
+            if (save(key, response, CHALLENGE_PARTICIPANTS_TTL)) {
+                logger.debug("Cached challenge participants: challengeId={}", challengeId);
+            }
+        });
+    }
+
+    /**
+     * Get cached challenge participants (SYNC - needs result)
+     */
+    public <T> Optional<T> getCachedChallengeParticipants(Long challengeId, Class<T> type) {
+        if (challengeId == null) {
+            return Optional.empty();
+        }
+        String key = CHALLENGE_PARTICIPANTS_PREFIX + challengeId;
+        return getOptional(key, type);
+    }
+
+    /**
+     * Invalidate challenge participants cache (ASYNC - non-blocking)
+     * Call when users join/leave a challenge
+     */
+    public void invalidateChallengeParticipants(Long challengeId) {
+        if (challengeId == null) {
+            return;
+        }
+        executeAsync(() -> {
+            String key = CHALLENGE_PARTICIPANTS_PREFIX + challengeId;
+            delete(key);
+            logger.debug("Invalidated challenge participants cache: challengeId={}", challengeId);
+        });
+    }
+
+    // ==================== USE CASE 13: HASHTAG CHALLENGES CACHING ====================
+
+    /**
+     * Cache challenges by hashtag response (ASYNC - non-blocking)
+     */
+    public <T> void cacheHashtagChallenges(List<String> hashtags, int page, int pageSize, T response) {
+        if (hashtags == null || hashtags.isEmpty() || response == null) {
+            return;
+        }
+        executeAsync(() -> {
+            String hashtagKey = String.join(",", hashtags.stream().sorted().toList());
+            String key = HASHTAG_CHALLENGES_PREFIX + hashtagKey + ":page:" + page + ":size:" + pageSize;
+            if (save(key, response, HASHTAG_CHALLENGES_TTL)) {
+                logger.debug("Cached hashtag challenges: hashtags={}, page={}", hashtags, page);
+            }
+        });
+    }
+
+    /**
+     * Get cached hashtag challenges (SYNC - needs result)
+     */
+    public <T> Optional<T> getCachedHashtagChallenges(List<String> hashtags, int page, int pageSize, Class<T> type) {
+        if (hashtags == null || hashtags.isEmpty()) {
+            return Optional.empty();
+        }
+        String hashtagKey = String.join(",", hashtags.stream().sorted().toList());
+        String key = HASHTAG_CHALLENGES_PREFIX + hashtagKey + ":page:" + page + ":size:" + pageSize;
+        return getOptional(key, type);
+    }
+
+    /**
+     * Invalidate all hashtag challenge caches (ASYNC - non-blocking)
+     */
+    public void invalidateHashtagChallenges() {
+        executeAsync(() -> {
+            deleteByPattern(HASHTAG_CHALLENGES_PREFIX + "*");
+            logger.debug("Invalidated all hashtag challenges cache");
+        });
+    }
+
+    // ==================== USE CASE 14: COMMENTS CACHING ====================
+
+    /**
+     * Cache comments for a submission page (ASYNC - non-blocking)
+     */
+    public <T> void cacheCommentsForSubmission(Long submissionId, int page, int size, T comments) {
+        if (submissionId == null || comments == null) {
+            return;
+        }
+        executeAsync(() -> {
+            String key = COMMENTS_PREFIX + submissionId + ":page:" + page + ":size:" + size;
+            if (save(key, comments, COMMENTS_TTL)) {
+                logger.debug("Cached comments for submission: submissionId={}, page={}", submissionId, page);
+            }
+        });
+    }
+
+    /**
+     * Get cached comments for a submission page (SYNC - needs result)
+     */
+    public <T> Optional<T> getCachedCommentsForSubmission(Long submissionId, int page, int size, Class<T> type) {
+        if (submissionId == null) {
+            return Optional.empty();
+        }
+        String key = COMMENTS_PREFIX + submissionId + ":page:" + page + ":size:" + size;
+        return getOptional(key, type);
+    }
+
+    /**
+     * Invalidate comments cache for a submission (ASYNC - non-blocking)
+     */
+    public void invalidateCommentsForSubmission(Long submissionId) {
+        if (submissionId == null) {
+            return;
+        }
+        executeAsync(() -> {
+            deleteByPattern(COMMENTS_PREFIX + submissionId + ":*");
+            logger.debug("Invalidated comments cache for submission: submissionId={}", submissionId);
+        });
+    }
+
+    // ==================== USE CASE 15: GLORY CACHING ====================
+
+    /**
+     * Cache glory count for a submission (ASYNC - non-blocking)
+     */
+    public void cacheGloryCount(Long submissionId, Long count) {
+        if (submissionId == null || count == null) {
+            return;
+        }
+        executeAsync(() -> {
+            String key = GLORY_COUNT_PREFIX + submissionId;
+            if (save(key, count, GLORY_TTL)) {
+                logger.debug("Cached glory count for submission: submissionId={}, count={}", submissionId, count);
+            }
+        });
+    }
+
+    /**
+     * Get cached glory count for a submission (SYNC - needs result)
+     */
+    public Optional<Long> getCachedGloryCount(Long submissionId) {
+        if (submissionId == null) {
+            return Optional.empty();
+        }
+        String key = GLORY_COUNT_PREFIX + submissionId;
+        return getOptional(key, Long.class);
+    }
+
+    /**
+     * Cache whether a user has given glory to a submission (ASYNC - non-blocking)
+     */
+    public void cacheGloryCheck(Long submissionId, Long userId, boolean hasGlory) {
+        if (submissionId == null || userId == null) {
+            return;
+        }
+        executeAsync(() -> {
+            String key = GLORY_CHECK_PREFIX + submissionId + ":user:" + userId;
+            if (save(key, hasGlory, GLORY_TTL)) {
+                logger.debug("Cached glory check: submissionId={}, userId={}, hasGlory={}", submissionId, userId, hasGlory);
+            }
+        });
+    }
+
+    /**
+     * Get cached glory check for a user on a submission (SYNC - needs result)
+     */
+    public Optional<Boolean> getCachedGloryCheck(Long submissionId, Long userId) {
+        if (submissionId == null || userId == null) {
+            return Optional.empty();
+        }
+        String key = GLORY_CHECK_PREFIX + submissionId + ":user:" + userId;
+        return getOptional(key, Boolean.class);
+    }
+
+    /**
+     * Invalidate all glory caches for a submission (ASYNC - non-blocking)
+     */
+    public void invalidateGloryCaches(Long submissionId) {
+        if (submissionId == null) {
+            return;
+        }
+        executeAsync(() -> {
+            delete(GLORY_COUNT_PREFIX + submissionId);
+            deleteByPattern(GLORY_CHECK_PREFIX + submissionId + ":*");
+            logger.debug("Invalidated glory caches for submission: submissionId={}", submissionId);
+        });
+    }
+
+    // ==================== USE CASE 16: FEED CACHING ====================
+
+    /**
+     * Cache a feed response (ASYNC - non-blocking)
+     */
+    public <T> void cacheFeed(String feedType, Long userId, int page, int pageSize, T response) {
+        if (feedType == null || response == null) {
+            return;
+        }
+        executeAsync(() -> {
+            String key = FEED_PREFIX + feedType + ":user:" + (userId != null ? userId : "anon")
+                    + ":page:" + page + ":size:" + pageSize;
+            if (save(key, response, FEED_TTL)) {
+                logger.debug("Cached feed: type={}, userId={}, page={}", feedType, userId, page);
+            }
+        });
+    }
+
+    /**
+     * Get cached feed response (SYNC - needs result)
+     */
+    public <T> Optional<T> getCachedFeed(String feedType, Long userId, int page, int pageSize, Class<T> type) {
+        if (feedType == null) {
+            return Optional.empty();
+        }
+        String key = FEED_PREFIX + feedType + ":user:" + (userId != null ? userId : "anon")
+                + ":page:" + page + ":size:" + pageSize;
+        return getOptional(key, type);
+    }
+
+    /**
+     * Invalidate feed caches for a specific feed type (ASYNC - non-blocking)
+     */
+    public void invalidateFeed(String feedType) {
+        if (feedType == null) {
+            return;
+        }
+        executeAsync(() -> {
+            deleteByPattern(FEED_PREFIX + feedType + ":*");
+            logger.debug("Invalidated feed cache: type={}", feedType);
+        });
+    }
+
+    /**
+     * Invalidate all feed caches (ASYNC - non-blocking)
+     * Use when new submissions or interactions occur
+     */
+    public void invalidateAllFeeds() {
+        executeAsync(() -> {
+            deleteByPattern(FEED_PREFIX + "*");
+            logger.debug("Invalidated all feed caches");
+        });
+    }
+
+    /**
+     * Invalidate feed caches for a specific user (ASYNC - non-blocking)
+     */
+    public void invalidateUserFeeds(Long userId) {
+        if (userId == null) {
+            return;
+        }
+        executeAsync(() -> {
+            deleteByPattern(FEED_PREFIX + "*:user:" + userId + ":*");
+            logger.debug("Invalidated feed caches for userId={}", userId);
+        });
     }
 }

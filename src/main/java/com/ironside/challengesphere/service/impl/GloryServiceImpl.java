@@ -29,6 +29,9 @@ public class GloryServiceImpl implements GloryService {
     @Autowired
     private SubmissionRepository submissionRepository;
 
+    @Autowired
+    private RedisCacheServiceImpl cacheService;
+
     @Override
     @Transactional
     public boolean toggleGlory(Long submissionId, Long userId) throws ChallengeSphereException {
@@ -57,6 +60,10 @@ public class GloryServiceImpl implements GloryService {
         }
 
         updateGloryCountAsync(submission, isGiven);
+
+        // Invalidate glory caches for this submission
+        cacheService.invalidateGloryCaches(submissionId);
+
         return isGiven;
     }
 
@@ -93,12 +100,38 @@ public class GloryServiceImpl implements GloryService {
     @Override
     public boolean hasUserGivenGlory(Long submissionId, Long userId) {
         logger.info("Checking if user {} has given glory to submission {}", userId, submissionId);
-        return gloryRepository.existsBySubmissionIdAndUserId(submissionId, userId);
+
+        // Try cache first
+        Optional<Boolean> cached = cacheService.getCachedGloryCheck(submissionId, userId);
+        if (cached.isPresent()) {
+            logger.debug("Cache hit for glory check: submissionId={}, userId={}", submissionId, userId);
+            return cached.get();
+        }
+
+        boolean hasGlory = gloryRepository.existsBySubmissionIdAndUserId(submissionId, userId);
+
+        // Cache the result asynchronously
+        cacheService.cacheGloryCheck(submissionId, userId, hasGlory);
+
+        return hasGlory;
     }
 
     @Override
     public Long getGloryCount(Long submissionId) throws ChallengeSphereException {
         logger.info("Getting glory count for submission: {}", submissionId);
-        return gloryRepository.countActiveBySubmissionId(submissionId);
+
+        // Try cache first
+        Optional<Long> cached = cacheService.getCachedGloryCount(submissionId);
+        if (cached.isPresent()) {
+            logger.debug("Cache hit for glory count: submissionId={}", submissionId);
+            return cached.get();
+        }
+
+        Long count = gloryRepository.countActiveBySubmissionId(submissionId);
+
+        // Cache the count asynchronously
+        cacheService.cacheGloryCount(submissionId, count);
+
+        return count;
     }
 }

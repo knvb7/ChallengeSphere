@@ -103,6 +103,14 @@ public class ChallengeServiceImpl implements ChallengeService {
                 userId, page, pageSize, activeFilter);
 
         try {
+            // Try cache first
+            Optional<UserChallengesResponse> cached = cacheService.getCachedUserChallenges(userId, page, pageSize, activeFilter, UserChallengesResponse.class);
+            if (cached.isPresent()) {
+                logger.info("Cache hit for user challenges: userId={}, page={}", userId, page);
+                return cached.get();
+            }
+            logger.debug("Cache miss for user challenges: userId={}, fetching from DB", userId);
+
             List<Challenge> createdChallenges = challengeRepository.findByCreatorId(userId);
             List<Challenge> ownedChallenges = challengeRepository.findByCurrentOwnerId(userId);
 
@@ -126,7 +134,12 @@ public class ChallengeServiceImpl implements ChallengeService {
             logger.info("Found {} challenges for userId: {} (page {}/{})",
                     paginatedChallenges.size(), userId, page, (int) Math.ceil((double) totalCount / pageSize));
 
-            return UserChallengesResponse.create(userId, paginatedChallenges, page, pageSize, totalCount);
+            UserChallengesResponse response = UserChallengesResponse.create(userId, paginatedChallenges, page, pageSize, totalCount);
+
+            // Cache the response asynchronously
+            cacheService.cacheUserChallenges(userId, page, pageSize, activeFilter, response);
+
+            return response;
 
         } catch (Exception e) {
             logger.error("Error getting challenges for userId: {}: {}", userId, e.getMessage(), e);
@@ -176,6 +189,12 @@ public class ChallengeServiceImpl implements ChallengeService {
             cacheService.invalidateRecentChallenges();
             cacheService.invalidateTrendingChallenges();
 
+            // Invalidate user challenges cache since user created a new challenge
+            cacheService.invalidateUserChallenges(request.getCreatorUserId());
+
+            // Invalidate hashtag challenges cache since new challenge may match hashtag searches
+            cacheService.invalidateHashtagChallenges();
+
             // Update user's challengesCreated count asynchronously
             updateChallengesCreatedCountAsync(request.getCreatorUserId());
 
@@ -221,6 +240,8 @@ public class ChallengeServiceImpl implements ChallengeService {
                 Integer currentCount = user.getChallengesCreated() != null ? user.getChallengesCreated() : 0;
                 user.setChallengesCreated(currentCount + 1);
                 userRepository.save(user);
+                // Update cached user profile with new count
+                cacheService.cacheUserProfile(userId, user);
                 logger.info("Updated challengesCreated count to {} for user: {}", currentCount + 1, userId);
             }
         } catch (Exception e) {
@@ -289,7 +310,20 @@ public class ChallengeServiceImpl implements ChallengeService {
             // Invalidate list caches since challenge status changed
             cacheService.invalidateRecentChallenges();
             cacheService.invalidateTrendingChallenges();
-            
+            cacheService.invalidateHashtagChallenges();
+
+            // Invalidate user challenges cache for affected creators/owners
+            challenges.stream()
+                    .map(Challenge::getCreatorId)
+                    .distinct()
+                    .forEach(cacheService::invalidateUserChallenges);
+
+            // Invalidate participants cache for affected challenges
+            challengeIds.forEach(cacheService::invalidateChallengeParticipants);
+
+            // Invalidate feed caches since challenge content changed
+            cacheService.invalidateAllFeeds();
+
             logger.info("Deleted {} challenges and invalidated caches", challenges.size());
         } catch (Exception e) {
             logger.error("Error during bulk update for challenges {}: {}", challengeIds, e.getMessage(), e);
@@ -321,7 +355,19 @@ public class ChallengeServiceImpl implements ChallengeService {
             // Invalidate list caches
             cacheService.invalidateRecentChallenges();
             cacheService.invalidateTrendingChallenges();
-            
+            cacheService.invalidateHashtagChallenges();
+
+            // Invalidate user challenges cache for all affected users
+            userIds.forEach(cacheService::invalidateUserChallenges);
+
+            // Invalidate participants cache for affected challenges
+            challenges.stream()
+                    .map(Challenge::getId)
+                    .forEach(cacheService::invalidateChallengeParticipants);
+
+            // Invalidate feed caches
+            cacheService.invalidateAllFeeds();
+
             logger.info("Disabled {} challenges for {} users and invalidated caches", challenges.size(), userIds.size());
 
         } catch (Exception e) {
@@ -410,6 +456,15 @@ public class ChallengeServiceImpl implements ChallengeService {
                 
                 // Invalidate trending challenges cache since participant counts changed
                 cacheService.invalidateTrendingChallenges();
+
+                // Invalidate participants cache for this challenge
+                cacheService.invalidateChallengeParticipants(challengeId);
+
+                // Invalidate user challenges cache for users who joined
+                successfulUserIds.forEach(cacheService::invalidateUserChallenges);
+
+                // Invalidate feed caches since new participants may affect feeds
+                cacheService.invalidateFeed("FOLLOWING");
             }
 
             // Return appropriate response based on results
@@ -492,6 +547,15 @@ public class ChallengeServiceImpl implements ChallengeService {
                 
                 // Invalidate trending challenges cache since participant counts changed
                 cacheService.invalidateTrendingChallenges();
+
+                // Invalidate participants cache for this challenge
+                cacheService.invalidateChallengeParticipants(challengeId);
+
+                // Invalidate user challenges cache for users who left
+                successfulUserIds.forEach(cacheService::invalidateUserChallenges);
+
+                // Invalidate feed caches
+                cacheService.invalidateFeed("FOLLOWING");
             }
 
             // Return appropriate response based on results
@@ -522,6 +586,14 @@ public class ChallengeServiceImpl implements ChallengeService {
         logger.info("Getting active participants for challenge {}", challengeId);
 
         try {
+            // Try cache first
+            Optional<ChallengeParticipantsResponse> cached = cacheService.getCachedChallengeParticipants(challengeId, ChallengeParticipantsResponse.class);
+            if (cached.isPresent()) {
+                logger.info("Cache hit for challenge participants: challengeId={}", challengeId);
+                return cached.get();
+            }
+            logger.debug("Cache miss for challenge participants: challengeId={}, fetching from DB", challengeId);
+
             List<UserChallenge> activeUserChallenges = userChallengeRepository.findActiveByChallengeId(challengeId);
 
             if (activeUserChallenges.isEmpty()) {
@@ -540,7 +612,12 @@ public class ChallengeServiceImpl implements ChallengeService {
 
             logger.info("Found {} active participants for challenge {}", users.size(), challengeId);
 
-            return ChallengeParticipantsResponse.create(challengeId, users);
+            ChallengeParticipantsResponse response = ChallengeParticipantsResponse.create(challengeId, users);
+
+            // Cache the response asynchronously
+            cacheService.cacheChallengeParticipants(challengeId, response);
+
+            return response;
 
         } catch (Exception e) {
             logger.error("Error fetching participants for challenge {}: {}", challengeId, e.getMessage(), e);
@@ -562,6 +639,14 @@ public class ChallengeServiceImpl implements ChallengeService {
         logger.info("Getting challenges by hashtags: {}, page: {}, pageSize: {}", hashtags, page, pageSize);
 
         try {
+            // Try cache first
+            Optional<ChallengesByHashtagResponse> cached = cacheService.getCachedHashtagChallenges(hashtags, page, pageSize, ChallengesByHashtagResponse.class);
+            if (cached.isPresent()) {
+                logger.info("Cache hit for hashtag challenges: hashtags={}, page={}", hashtags, page);
+                return cached.get();
+            }
+            logger.debug("Cache miss for hashtag challenges: hashtags={}, fetching from DB", hashtags);
+
             // Batch query: Get all active challenges matching any of the hashtags (single query per hashtag)
             List<Challenge> matchingChallenges = hashtags.stream()
                     .flatMap(hashtag -> challengeRepository.findByHashtagsContaining(hashtag).stream())
@@ -606,7 +691,12 @@ public class ChallengeServiceImpl implements ChallengeService {
             logger.info("Found {} challenges for hashtags '{}' (showing page {}/{})",
                     totalCount, hashtags, page, (int) Math.ceil((double) totalCount / pageSize));
 
-            return ChallengesByHashtagResponse.create(hashtags, paginatedChallenges, page, pageSize, totalCount);
+            ChallengesByHashtagResponse response = ChallengesByHashtagResponse.create(hashtags, paginatedChallenges, page, pageSize, totalCount);
+
+            // Cache the response asynchronously
+            cacheService.cacheHashtagChallenges(hashtags, page, pageSize, response);
+
+            return response;
 
         } catch (Exception e) {
             logger.error("Error fetching challenges by hashtags {}: {}", hashtags, e.getMessage(), e);

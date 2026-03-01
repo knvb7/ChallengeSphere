@@ -1,10 +1,6 @@
 package com.ironside.challengesphere.service.impl;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 import java.util.stream.Collectors;
 
 import org.apache.logging.log4j.LogManager;
@@ -54,9 +50,6 @@ public class FeedServiceImpl implements FeedService {
     @Autowired
     private RedisCacheServiceImpl cacheService;
 
-    // Cache key prefixes
-    private static final String FEED_CACHE_PREFIX = "feed:";
-
     @Override
     @Transactional(readOnly = true)
     public FeedResponse getFeed(GetFeedRequest request) throws ChallengeSphereException {
@@ -80,6 +73,13 @@ public class FeedServiceImpl implements FeedService {
         }
 
         try {
+            // Try cache first
+            Optional<FeedResponse> cached = cacheService.getCachedFeed("FOLLOWING", userId, page, pageSize, FeedResponse.class);
+            if (cached.isPresent()) {
+                logger.debug("Cache hit for following feed: userId={}, page={}", userId, page);
+                return cached.get();
+            }
+
             // Validate user exists
             if (!userRepository.existsById(userId)) {
                 throw new ChallengeSphereException("User not found: " + userId, HttpStatus.NOT_FOUND, logger);
@@ -98,8 +98,13 @@ public class FeedServiceImpl implements FeedService {
             logger.info("Returning {} items for following feed, page {}/{}", 
                     feedItems.size(), page, submissionsPage.getTotalPages());
 
-            return FeedResponse.create(feedItems, page, pageSize, 
+            FeedResponse response = FeedResponse.create(feedItems, page, pageSize,
                     submissionsPage.getTotalElements(), "FOLLOWING");
+
+            // Cache the response asynchronously
+            cacheService.cacheFeed("FOLLOWING", userId, page, pageSize, response);
+
+            return response;
 
         } catch (ChallengeSphereException e) {
             throw e;
@@ -115,6 +120,13 @@ public class FeedServiceImpl implements FeedService {
         logger.info("Getting trending feed, page: {}, pageSize: {}", page, pageSize);
 
         try {
+            // Try cache first
+            Optional<FeedResponse> cached = cacheService.getCachedFeed("TRENDING", currentUserId, page, pageSize, FeedResponse.class);
+            if (cached.isPresent()) {
+                logger.debug("Cache hit for trending feed: page={}", page);
+                return cached.get();
+            }
+
             Pageable pageable = PageRequest.of(page - 1, pageSize);
             Page<Submission> submissionsPage = submissionRepository.findTrendingSubmissions(pageable);
 
@@ -128,8 +140,13 @@ public class FeedServiceImpl implements FeedService {
             logger.info("Returning {} trending items, page {}/{}", 
                     feedItems.size(), page, submissionsPage.getTotalPages());
 
-            return FeedResponse.create(feedItems, page, pageSize, 
+            FeedResponse response = FeedResponse.create(feedItems, page, pageSize,
                     submissionsPage.getTotalElements(), "TRENDING");
+
+            // Cache the response asynchronously
+            cacheService.cacheFeed("TRENDING", currentUserId, page, pageSize, response);
+
+            return response;
 
         } catch (Exception e) {
             logger.error("Error getting trending feed: {}", e.getMessage(), e);
@@ -143,6 +160,13 @@ public class FeedServiceImpl implements FeedService {
         logger.info("Getting explore feed, page: {}, pageSize: {}", page, pageSize);
 
         try {
+            // Try cache first
+            Optional<FeedResponse> cached = cacheService.getCachedFeed("EXPLORE", currentUserId, page, pageSize, FeedResponse.class);
+            if (cached.isPresent()) {
+                logger.debug("Cache hit for explore feed: page={}", page);
+                return cached.get();
+            }
+
             Pageable pageable = PageRequest.of(page - 1, pageSize);
             Page<Submission> submissionsPage = submissionRepository.findPublicSubmissions(pageable);
 
@@ -156,8 +180,13 @@ public class FeedServiceImpl implements FeedService {
             logger.info("Returning {} explore items, page {}/{}", 
                     feedItems.size(), page, submissionsPage.getTotalPages());
 
-            return FeedResponse.create(feedItems, page, pageSize, 
+            FeedResponse response = FeedResponse.create(feedItems, page, pageSize,
                     submissionsPage.getTotalElements(), "EXPLORE");
+
+            // Cache the response asynchronously
+            cacheService.cacheFeed("EXPLORE", currentUserId, page, pageSize, response);
+
+            return response;
 
         } catch (Exception e) {
             logger.error("Error getting explore feed: {}", e.getMessage(), e);
@@ -176,6 +205,13 @@ public class FeedServiceImpl implements FeedService {
         }
 
         try {
+            // Try cache first (use challengeId as the user key for challenge-specific feeds)
+            Optional<FeedResponse> cached = cacheService.getCachedFeed("CHALLENGE:" + challengeId, currentUserId, page, pageSize, FeedResponse.class);
+            if (cached.isPresent()) {
+                logger.debug("Cache hit for challenge feed: challengeId={}, page={}", challengeId, page);
+                return cached.get();
+            }
+
             // Validate challenge exists
             if (!challengeRepository.existsById(challengeId)) {
                 throw new ChallengeSphereException("Challenge not found: " + challengeId, HttpStatus.NOT_FOUND, logger);
@@ -198,7 +234,12 @@ public class FeedServiceImpl implements FeedService {
 
             List<FeedItemResponse> feedItems = enrichSubmissions(paginatedSubmissions, currentUserId);
 
-            return FeedResponse.create(feedItems, page, pageSize, totalItems, "CHALLENGE");
+            FeedResponse response = FeedResponse.create(feedItems, page, pageSize, totalItems, "CHALLENGE");
+
+            // Cache the response asynchronously
+            cacheService.cacheFeed("CHALLENGE:" + challengeId, currentUserId, page, pageSize, response);
+
+            return response;
 
         } catch (ChallengeSphereException e) {
             throw e;
@@ -219,6 +260,16 @@ public class FeedServiceImpl implements FeedService {
         }
 
         try {
+            // Try cache first (only for non-own profile views since own profile shows private submissions)
+            boolean isOwnProfile = targetUserId.equals(currentUserId);
+            if (!isOwnProfile) {
+                Optional<FeedResponse> cached = cacheService.getCachedFeed("USER:" + targetUserId, currentUserId, page, pageSize, FeedResponse.class);
+                if (cached.isPresent()) {
+                    logger.debug("Cache hit for user feed: targetUserId={}, page={}", targetUserId, page);
+                    return cached.get();
+                }
+            }
+
             // Validate user exists
             if (!userRepository.existsById(targetUserId)) {
                 throw new ChallengeSphereException("User not found: " + targetUserId, HttpStatus.NOT_FOUND, logger);
@@ -226,8 +277,7 @@ public class FeedServiceImpl implements FeedService {
 
             // Get submissions - if viewing own profile, show all; otherwise only public
             List<Submission> submissions;
-            boolean isOwnProfile = targetUserId.equals(currentUserId);
-            
+
             if (isOwnProfile) {
                 submissions = submissionRepository.findActiveByUserId(targetUserId);
             } else {
@@ -252,7 +302,14 @@ public class FeedServiceImpl implements FeedService {
 
             List<FeedItemResponse> feedItems = enrichSubmissions(paginatedSubmissions, currentUserId);
 
-            return FeedResponse.create(feedItems, page, pageSize, totalItems, "USER");
+            FeedResponse response = FeedResponse.create(feedItems, page, pageSize, totalItems, "USER");
+
+            // Cache only non-own profile views
+            if (!isOwnProfile) {
+                cacheService.cacheFeed("USER:" + targetUserId, currentUserId, page, pageSize, response);
+            }
+
+            return response;
 
         } catch (ChallengeSphereException e) {
             throw e;

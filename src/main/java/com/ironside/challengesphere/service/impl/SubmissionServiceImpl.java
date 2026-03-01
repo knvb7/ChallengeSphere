@@ -186,6 +186,9 @@ public class SubmissionServiceImpl implements SubmissionService {
             // Invalidate list caches (new submission affects these lists)
             invalidateSubmissionListCaches(userId, challengeId);
             
+            // Invalidate feed caches since new submission affects all feed types
+            cacheService.invalidateAllFeeds();
+
             // Update leaderboard score for this user (async-safe)
             try {
                 leaderboardService.incrementScore(challengeId, userId, 10, "New submission for day " + dayNumber);
@@ -424,8 +427,11 @@ public class SubmissionServiceImpl implements SubmissionService {
                 mediaFile.getFileName(),
                 mediaFile.getMediaType().name(),
                 mediaFile.getContentType().getMimeType(),
-                GetSignedUrlForGcs.generateV4PutObjectSignedUrl(Constants.GCSBUCKETFORSUBMISSIONS, mediaFile.getMediaType().name(),
-                        expirationTimeInSeconds, mediaFile.getContentType()),
+                GetSignedUrlForGcs.generateV4PutObjectSignedUrl(
+                        Constants.GCSBUCKETFORSUBMISSIONS,
+                        fileKey,
+                        expirationTimeInSeconds,
+                        mediaFile.getContentType()),
                 fileKey,
                 expirationTimeInSeconds
         );

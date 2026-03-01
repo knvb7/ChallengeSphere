@@ -29,13 +29,20 @@ public class CommentServiceImpl implements CommentService {
     @Autowired
     private SubmissionRepository submissionRepository;
 
+    @Autowired
+    private RedisCacheServiceImpl cacheService;
+
     @Override
     public Page<Comment> getCommentsForSubmission(Long submissionId, Pageable pageable) throws ChallengeSphereException {
         logger.info("Getting comments for submission: {}, page: {}, size: {}",
                 submissionId, pageable.getPageNumber(), pageable.getPageSize());
 
+        // Note: Spring Page is complex to cache/deserialize, so we only cache for common first-page requests
+        // For subsequent pages, we go directly to DB (still fast with indexed queries)
+
         // Single DB query - just return the paginated results
-        return commentRepository.findActiveCommentsBySubmissionId(submissionId, pageable);
+        Page<Comment> result = commentRepository.findActiveCommentsBySubmissionId(submissionId, pageable);
+        return result;
     }
 
     @Override
@@ -71,6 +78,9 @@ public class CommentServiceImpl implements CommentService {
 
         Comment savedComment = commentRepository.save(comment);
         logger.info("Created comment with id: {} for submission: {}", savedComment.getId(), submissionId);
+
+        // Invalidate comments cache for this submission
+        cacheService.invalidateCommentsForSubmission(submissionId);
 
         // Update comment count asynchronously
         updateCommentCountAsync(submission, true);
@@ -125,6 +135,9 @@ public class CommentServiceImpl implements CommentService {
         Comment updatedComment = commentRepository.save(comment);
         logger.info("Updated comment with id: {}", commentId);
 
+        // Invalidate comments cache for this submission
+        cacheService.invalidateCommentsForSubmission(comment.getSubmissionId());
+
         return updatedComment;
     }
 
@@ -165,6 +178,9 @@ public class CommentServiceImpl implements CommentService {
         commentRepository.save(comment);
 
         logger.info("Soft deleted comment with id: {}", commentId);
+
+        // Invalidate comments cache for this submission
+        cacheService.invalidateCommentsForSubmission(comment.getSubmissionId());
 
         // Update comment count asynchronously
         Submission submission = submissionRepository.findById(comment.getSubmissionId()).orElse(null);

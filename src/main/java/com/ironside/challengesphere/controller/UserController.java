@@ -42,7 +42,7 @@ public class UserController {
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
 
-    @GetMapping("/getUser")
+    @GetMapping
     public ResponseEntity<User> getUser(
             @RequestParam(required = false) Long userId,
             @RequestParam(required = false) String emailId,
@@ -57,7 +57,7 @@ public class UserController {
         return ResponseEntity.ok(user);
     }
 
-    @PutMapping("/updateUserDetails")
+    @PutMapping
     public ResponseEntity<User> updateUserDetails(@Valid @RequestBody UpdateUserRequest updateUserRequest) throws ChallengeSphereException {
         User updatedUser = userService.updateUserDetails(updateUserRequest);
         return ResponseEntity.ok(updatedUser);
@@ -89,19 +89,33 @@ public class UserController {
         return ResponseEntity.ok(response);
     }
 
-    @PostMapping("/getFollowers")
-    public ResponseEntity<FollowersFollowingResponse> getFollowers(@Valid @RequestBody GetFollowersFollowingRequest request) throws ChallengeSphereException {
+    @GetMapping("/{userId}/followers")
+    public ResponseEntity<FollowersFollowingResponse> getFollowers(
+            @PathVariable Long userId,
+            @RequestParam(defaultValue = "1") Integer page,
+            @RequestParam(defaultValue = "10") Integer pageSize) throws ChallengeSphereException {
+        GetFollowersFollowingRequest request = new GetFollowersFollowingRequest();
+        request.setUserId(userId);
+        request.setPage(page);
+        request.setPageSize(pageSize);
         FollowersFollowingResponse response = userService.getFollowers(request);
         return ResponseEntity.ok(response);
     }
 
-    @PostMapping("/getFollowing")
-    public ResponseEntity<FollowersFollowingResponse> getFollowing(@Valid @RequestBody GetFollowersFollowingRequest request) throws ChallengeSphereException {
+    @GetMapping("/{userId}/following")
+    public ResponseEntity<FollowersFollowingResponse> getFollowing(
+            @PathVariable Long userId,
+            @RequestParam(defaultValue = "1") Integer page,
+            @RequestParam(defaultValue = "10") Integer pageSize) throws ChallengeSphereException {
+        GetFollowersFollowingRequest request = new GetFollowersFollowingRequest();
+        request.setUserId(userId);
+        request.setPage(page);
+        request.setPageSize(pageSize);
         FollowersFollowingResponse response = userService.getFollowing(request);
         return ResponseEntity.ok(response);
     }
 
-    @PutMapping("/toggleActivation")
+    @PatchMapping("/activation")
     public ResponseEntity<ToggleUserActivationResponse> toggleUserActivation(@Valid @RequestBody ToggleActivateUserRequest request) throws ChallengeSphereException {
         ToggleUserActivationResponse response = userService.toggleUserActivation(request);
         return ResponseEntity.ok(response);

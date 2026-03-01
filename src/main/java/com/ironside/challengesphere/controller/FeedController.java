@@ -113,7 +113,7 @@ public class FeedController {
             @RequestParam(defaultValue = "20") int pageSize,
             @RequestParam(required = false) Long currentUserId) throws ChallengeSphereException {
         logger.info("User feed request: targetUserId={}, page={}, pageSize={}", targetUserId, page, pageSize);
-        FeedResponse response = feedService.getUserFeed(targetUserId, page, pageSize, currentUserId);
+        FeedResponse response = feedService. getUserFeed(targetUserId, page, pageSize, currentUserId);
         return ResponseEntity.ok(response);
     }
 }

@@ -1,7 +1,6 @@
 package com.ironside.challengesphere.service;
 
 import com.ironside.challengesphere.api.request.ToggleActivateUserRequest;
-import com.ironside.challengesphere.api.request.FollowActionRequest;
 import com.ironside.challengesphere.api.request.GetFollowersFollowingRequest;
 import com.ironside.challengesphere.api.request.GetUserPayload;
 import com.ironside.challengesphere.api.request.UpdateUserRequest;

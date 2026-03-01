@@ -40,7 +40,7 @@ public class SubmissionController {
      * Generate presigned URLs for media upload (Instagram-style)
      * POST /api/v1/submissions/presigned-urls
      */
-    @PostMapping("/presignedUrls")
+    @PostMapping("/presigned-urls")
     public ResponseEntity<PresignedUrlsResponse> generatePresignedUrls(
             @Valid @RequestBody GeneratePresignedUrlsRequest request) throws ChallengeSphereException {
         logger.info("Received request to generate presigned URLs for user: {} with {} files",

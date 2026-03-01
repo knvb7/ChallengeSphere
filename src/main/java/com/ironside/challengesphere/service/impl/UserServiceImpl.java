@@ -75,7 +75,6 @@ public class UserServiceImpl implements UserService {
             // 2. Try cache by emailId (secondary key stored as user:<email>)
             if (emailId != null && !emailId.trim().isEmpty()) {
                 String emailKey = emailId.trim();
-                logger.debug("Cache miss for emailId: {}, fetching from DB", emailId);
                 Optional<User> user = userRepository.findByEmailId(emailKey);
                 if (user.isPresent()) {
                     logger.info("User found by emailId: {}", emailId);
@@ -89,7 +88,6 @@ public class UserServiceImpl implements UserService {
             // 3. Try cache by phone
             if (phone != null && !phone.trim().isEmpty()) {
                 String phoneKey = phone.trim();
-                logger.debug("Cache miss for phone: {}, fetching from DB", phone);
                 Optional<User> user = userRepository.findByPhone(phoneKey);
                 if (user.isPresent()) {
                     logger.info("User found by phone: {}", phone);
@@ -129,12 +127,20 @@ public class UserServiceImpl implements UserService {
                    userId, updateUserRequest.getEmailId(), updateUserRequest.getPhone(), updateUserRequest.getUsername());
 
         try {
-            User user = userRepository.findById(userId)
-                    .orElseThrow(() -> new ChallengeSphereException(
-                            "User not found with id: " + userId,
-                            HttpStatus.NOT_FOUND,
-                            logger
-                    ));
+            Optional<User> cachedUserOpt = cacheService.getCachedUserProfile(userId, User.class);
+            User user;
+            if (cachedUserOpt.isPresent()) {
+                user = cachedUserOpt.get();
+                logger.debug("Cache hit for userId: {} in updateUserDetails", userId);
+            } else {
+                user = userRepository.findById(userId)
+                        .orElseThrow(() -> new ChallengeSphereException(
+                                "User not found with id: " + userId,
+                                HttpStatus.NOT_FOUND,
+                                logger
+                        ));
+                logger.debug("Cache miss for userId: {}, loaded from DB", userId);
+            }
 
             if (updateUserRequest.getEmailId() != null && !updateUserRequest.getEmailId().trim().isEmpty()) {
                 user.setEmailId(updateUserRequest.getEmailId().trim());
@@ -148,7 +154,6 @@ public class UserServiceImpl implements UserService {
                 user.setUsername(updateUserRequest.getUsername().trim());
                 logger.debug("Updated username for user {}", userId);
             }
-            //TODO: Might need to hash the password here before saving
             if (updateUserRequest.getHashedPassword() != null && !updateUserRequest.getHashedPassword().trim().isEmpty()) {
                 user.setHashedPassword(updateUserRequest.getHashedPassword());
                 logger.debug("Updated hashedPassword for user {}", userId);
@@ -187,12 +192,7 @@ public class UserServiceImpl implements UserService {
             }
 
             User updatedUser = userRepository.save(user);
-            
-            // Invalidate user cache after update
-            cacheService.invalidateUserProfile(userId);
-            // Re-cache the updated user
             cacheService.cacheUserProfile(userId, updatedUser);
-            
             logger.info("Successfully updated user details for userId: {}", userId);
             return updatedUser;
 
@@ -422,6 +422,10 @@ public class UserServiceImpl implements UserService {
             user.setActive(newStatus);
             userRepository.save(user);
 
+            // Invalidate all user-related caches
+            cacheService.invalidateAllUserCaches(userId);
+            cacheService.invalidateUserChallenges(userId);
+
             String action = newStatus ? "activated" : "deactivated";
             logger.info("User {} successfully {} (changed from {} to {})", userId, action, currentStatus, newStatus);
 
@@ -508,6 +512,9 @@ public class UserServiceImpl implements UserService {
             User savedUser = userRepository.save(newUser);
             logger.info("Successfully registered user with id: {}, username: {}", savedUser.getId(), savedUser.getUsername());
 
+            // Cache the new user profile for immediate use
+            cacheService.cacheUserProfile(savedUser.getId(), savedUser);
+
             return UserRegistrationResponse.success(savedUser);
 
         } catch (ChallengeSphereException e) {
@@ -546,12 +553,16 @@ public class UserServiceImpl implements UserService {
                 int currentFollowing = follower.getFollowing() != null ? follower.getFollowing() : 0;
                 follower.setFollowing(isFollow ? currentFollowing + 1 : Math.max(0, currentFollowing - 1));
                 userRepository.save(follower);
+                // Update cached profile with new follow counts
+                cacheService.cacheUserProfile(followerId, follower);
             }
             User following = userRepository.findById(followingId).orElse(null);
             if (following != null) {
                 int currentFollowers = following.getFollowers() != null ? following.getFollowers() : 0;
                 following.setFollowers(isFollow ? currentFollowers + 1 : Math.max(0, currentFollowers - 1));
                 userRepository.save(following);
+                // Update cached profile with new follower counts
+                cacheService.cacheUserProfile(followingId, following);
             }
             logger.debug("Updated follow counts for followerId: {}, followingId: {}, action: {}",
                         followerId, followingId, isFollow ? "follow" : "unfollow");
