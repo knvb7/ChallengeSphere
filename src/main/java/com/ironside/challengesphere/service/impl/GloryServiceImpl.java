@@ -45,9 +45,14 @@ public class GloryServiceImpl implements GloryService {
         Optional<Glory> existingGlory = gloryRepository.findBySubmissionIdAndUserId(submissionId, userId);
         boolean isGiven = false;
         if (existingGlory.isPresent()) {
-            gloryRepository.delete(existingGlory.get());
-            logger.info("Toggled existing glory to active={} for submission: {} by user: {}",
-                    false, submissionId, userId);
+            Glory glory = existingGlory.get();
+            // Toggle: if active → deactivate, if inactive → reactivate
+            boolean wasActive = Boolean.TRUE.equals(glory.getActive());
+            glory.setActive(!wasActive);
+            gloryRepository.save(glory);
+            isGiven = !wasActive;
+            logger.info("Toggled glory active={} for submission: {} by user: {}",
+                    isGiven, submissionId, userId);
         } else {
             Glory newGlory = new Glory();
             newGlory.setSubmissionId(submissionId);

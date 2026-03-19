@@ -21,6 +21,8 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import jakarta.validation.Valid;
+import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api/v1/users")
@@ -30,6 +32,9 @@ public class UserController {
 
     @Autowired
     private UserService userService;
+
+//    @Autowired
+//    private AuthService authService;
 
     /**
      * Register a new user
@@ -119,5 +124,41 @@ public class UserController {
     public ResponseEntity<ToggleUserActivationResponse> toggleUserActivation(@Valid @RequestBody ToggleActivateUserRequest request) throws ChallengeSphereException {
         ToggleUserActivationResponse response = userService.toggleUserActivation(request);
         return ResponseEntity.ok(response);
+    }
+
+    @PutMapping("/{userId}/profile-picture")
+    public ResponseEntity<Map<String, Object>> uploadProfilePicture(
+            @PathVariable Long userId,
+            @RequestBody Map<String, String> body) throws ChallengeSphereException {
+        String profilePicUrl = body.getOrDefault("profilePicUrl", "");
+        UpdateUserRequest request = new UpdateUserRequest();
+        request.setUserId(userId);
+        request.setProfilePicUrl(profilePicUrl);
+        userService.updateUserDetails(request);
+        return ResponseEntity.ok(Map.of("success", true, "profilePicUrl", profilePicUrl));
+    }
+
+    @PostMapping("/block")
+    public ResponseEntity<Map<String, Object>> blockUser(@RequestBody Map<String, Long> body) {
+        // TODO: persist block relationship
+        return ResponseEntity.ok(Map.of("success", true, "message", "User blocked"));
+    }
+
+    @PostMapping("/unblock")
+    public ResponseEntity<Map<String, Object>> unblockUser(@RequestBody Map<String, Long> body) {
+        // TODO: persist unblock
+        return ResponseEntity.ok(Map.of("success", true, "message", "User unblocked"));
+    }
+
+    @PostMapping("/report")
+    public ResponseEntity<Map<String, Object>> reportUser(@RequestBody Map<String, Object> body) {
+        // TODO: persist report
+        return ResponseEntity.ok(Map.of("success", true, "message", "User reported"));
+    }
+
+    @GetMapping("/{userId}/blocked")
+    public ResponseEntity<Map<String, Object>> getBlockedUsers(@PathVariable Long userId) {
+        // TODO: return actual blocked users
+        return ResponseEntity.ok(Map.of("users", List.of(), "totalCount", 0, "hasMore", false));
     }
 }

@@ -2,6 +2,7 @@ package com.ironside.challengesphere.repository;
 
 import com.ironside.challengesphere.model.Report;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
@@ -42,9 +43,11 @@ public interface ReportRepository extends JpaRepository<Report, Long> {
     @Query(value = "SELECT COUNT(*) FROM challengesphere.reports WHERE status = :status", nativeQuery = true)
     Long countReportsByStatus(@Param("status") String status);
 
+    @Modifying
     @Query(value = "UPDATE challengesphere.reports SET status = :status WHERE id = :id", nativeQuery = true)
     void updateReportStatus(@Param("id") Long id, @Param("status") String status);
 
+    @Modifying
     @Query(value = "UPDATE challengesphere.reports SET active = :active WHERE id = :id", nativeQuery = true)
     void updateReportActiveStatus(@Param("id") Long id, @Param("active") Boolean active);
 }

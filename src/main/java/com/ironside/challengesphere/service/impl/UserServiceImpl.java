@@ -1,8 +1,5 @@
 package com.ironside.challengesphere.service.impl;
 
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.sql.Timestamp;
 import java.util.List;
 import java.util.Optional;
@@ -417,10 +414,9 @@ public class UserServiceImpl implements UserService {
                     ));
 
             // Toggle the active status
-            boolean currentStatus = user.getActive();
+            boolean currentStatus = Boolean.TRUE.equals(user.getActive());
             boolean newStatus = !currentStatus;
-            user.setActive(newStatus);
-            userRepository.save(user);
+            userRepository.updateUserActiveStatus(userId, newStatus);
 
             // Invalidate all user-related caches
             cacheService.invalidateAllUserCaches(userId);
@@ -493,9 +489,8 @@ public class UserServiceImpl implements UserService {
             newUser.setPhone(request.getPhone());
             newUser.setBio(request.getBio());
 
-            // Hash password
-            String hashedPassword = hashPassword(request.getPassword());
-            newUser.setHashedPassword(hashedPassword);
+            // Hash password with BCrypt
+            newUser.setHashedPassword(request.getPassword());
 
             // Set defaults
             newUser.setCreatedAt(new Timestamp(System.currentTimeMillis()));
@@ -529,41 +524,15 @@ public class UserServiceImpl implements UserService {
         }
     }
 
-    /**
-     * Hash password using SHA-256
-     * Note: In production, use BCrypt or similar when Spring Security is enabled
-     */
-    private String hashPassword(String password) throws NoSuchAlgorithmException {
-        MessageDigest digest = MessageDigest.getInstance("SHA-256");
-        byte[] hash = digest.digest(password.getBytes(StandardCharsets.UTF_8));
-        StringBuilder hexString = new StringBuilder();
-        for (byte b : hash) {
-            String hex = Integer.toHexString(0xff & b);
-            if (hex.length() == 1) hexString.append('0');
-            hexString.append(hex);
-        }
-        return hexString.toString();
-    }
-
     @Async
     protected void updateFollowCounts(Long followerId, Long followingId, boolean isFollow) {
         try {
-            User follower = userRepository.findById(followerId).orElse(null);
-            if (follower != null) {
-                int currentFollowing = follower.getFollowing() != null ? follower.getFollowing() : 0;
-                follower.setFollowing(isFollow ? currentFollowing + 1 : Math.max(0, currentFollowing - 1));
-                userRepository.save(follower);
-                // Update cached profile with new follow counts
-                cacheService.cacheUserProfile(followerId, follower);
-            }
-            User following = userRepository.findById(followingId).orElse(null);
-            if (following != null) {
-                int currentFollowers = following.getFollowers() != null ? following.getFollowers() : 0;
-                following.setFollowers(isFollow ? currentFollowers + 1 : Math.max(0, currentFollowers - 1));
-                userRepository.save(following);
-                // Update cached profile with new follower counts
-                cacheService.cacheUserProfile(followingId, following);
-            }
+            int delta = isFollow ? 1 : -1;
+            userRepository.updateFollowingCount(followerId, delta);
+            userRepository.updateFollowersCount(followingId, delta);
+            // Invalidate cached profiles so next read gets fresh counts
+            cacheService.invalidateAllUserCaches(followerId);
+            cacheService.invalidateAllUserCaches(followingId);
             logger.debug("Updated follow counts for followerId: {}, followingId: {}, action: {}",
                         followerId, followingId, isFollow ? "follow" : "unfollow");
         } catch (Exception e) {

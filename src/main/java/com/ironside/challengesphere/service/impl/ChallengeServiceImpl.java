@@ -19,6 +19,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.ironside.challengesphere.api.request.ChallengeCreateRequest;
+import com.ironside.challengesphere.api.request.ChallengeUpdateRequest;
 import com.ironside.challengesphere.api.request.GetChallengeParticipantsRequest;
 import com.ironside.challengesphere.api.request.GetChallengesByHashtagRequest;
 import com.ironside.challengesphere.api.request.GetPopularChallengesRequest;
@@ -920,5 +921,36 @@ public class ChallengeServiceImpl implements ChallengeService {
         // Fallback to empty list (no engagement data yet)
         logger.debug("No trending data available, returning empty list");
         return List.of();
+    }
+
+    @Override
+    @Transactional
+    public Challenge updateChallenge(Long id, ChallengeUpdateRequest request) throws ChallengeSphereException {
+        logger.info("Updating challenge id: {}", id);
+
+        Challenge challenge = challengeRepository.findById(id)
+                .orElseThrow(() -> new ChallengeSphereException(
+                        "Challenge not found with id: " + id,
+                        HttpStatus.NOT_FOUND,
+                        logger
+                ));
+
+        if (request.getTitle() != null && !request.getTitle().isBlank()) {
+            challenge.setTitle(request.getTitle());
+        }
+        if (request.getDescription() != null && !request.getDescription().isBlank()) {
+            challenge.setDescription(request.getDescription());
+        }
+        if (request.getNumberOfDays() != null) {
+            challenge.setNumberOfDays(request.getNumberOfDays());
+        }
+        if (request.getActive() != null) {
+            challenge.setActive(request.getActive());
+        }
+
+        Challenge updated = challengeRepository.save(challenge);
+        cacheService.cacheChallenge(id, updated);
+        logger.info("Challenge {} updated successfully", id);
+        return updated;
     }
 }

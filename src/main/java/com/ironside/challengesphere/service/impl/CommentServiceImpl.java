@@ -2,9 +2,7 @@ package com.ironside.challengesphere.service.impl;
 
 import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.model.Comment;
-import com.ironside.challengesphere.model.Submission;
 import com.ironside.challengesphere.repository.CommentRepository;
-import com.ironside.challengesphere.repository.SubmissionRepository;
 import com.ironside.challengesphere.service.CommentService;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -12,11 +10,11 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
-import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.sql.Timestamp;
+import java.util.UUID;
 
 @Service
 public class CommentServiceImpl implements CommentService {
@@ -27,36 +25,21 @@ public class CommentServiceImpl implements CommentService {
     private CommentRepository commentRepository;
 
     @Autowired
-    private SubmissionRepository submissionRepository;
-
-    @Autowired
     private RedisCacheServiceImpl cacheService;
 
     @Override
-    public Page<Comment> getCommentsForSubmission(Long submissionId, Pageable pageable) throws ChallengeSphereException {
-        logger.info("Getting comments for submission: {}, page: {}, size: {}",
-                submissionId, pageable.getPageNumber(), pageable.getPageSize());
+    public Page<Comment> getCommentsForPost(UUID postId, Pageable pageable) throws ChallengeSphereException {
+        logger.info("Getting comments for post: {}, page: {}, size: {}",
+                postId, pageable.getPageNumber(), pageable.getPageSize());
 
-        // Note: Spring Page is complex to cache/deserialize, so we only cache for common first-page requests
-        // For subsequent pages, we go directly to DB (still fast with indexed queries)
-
-        // Single DB query - just return the paginated results
-        Page<Comment> result = commentRepository.findActiveCommentsBySubmissionId(submissionId, pageable);
+        Page<Comment> result = commentRepository.findActiveCommentsByPostId(postId, pageable);
         return result;
     }
 
     @Override
     @Transactional
-    public Comment createComment(Long submissionId, Long userId, String content) throws ChallengeSphereException {
-        logger.info("Creating comment for submission: {} by user: {}", submissionId, userId);
-
-        // Validate submission exists (needed for creation)
-        Submission submission = submissionRepository.findById(submissionId)
-                .orElseThrow(() -> new ChallengeSphereException(
-                        "Submission not found with id: " + submissionId,
-                        HttpStatus.NOT_FOUND,
-                        logger
-                ));
+    public Comment createComment(UUID postId, Long userId, String content) throws ChallengeSphereException {
+        logger.info("Creating comment for post: {} by user: {}", postId, userId);
 
         // Validate content
         if (content == null || content.trim().isEmpty()) {
@@ -69,7 +52,7 @@ public class CommentServiceImpl implements CommentService {
 
         // Create comment
         Comment comment = new Comment();
-        comment.setSubmissionId(submissionId);
+        comment.setPostId(postId);
         comment.setUserId(userId);
         comment.setContent(content.trim());
         comment.setCreatedAt(new Timestamp(System.currentTimeMillis()));
@@ -77,13 +60,10 @@ public class CommentServiceImpl implements CommentService {
         comment.setActive(true);
 
         Comment savedComment = commentRepository.save(comment);
-        logger.info("Created comment with id: {} for submission: {}", savedComment.getId(), submissionId);
+        logger.info("Created comment with id: {} for post: {}", savedComment.getId(), postId);
 
-        // Invalidate comments cache for this submission
-        cacheService.invalidateCommentsForSubmission(submissionId);
-
-        // Update comment count asynchronously
-        updateCommentCountAsync(submission, true);
+        // Invalidate comments cache for this post
+        cacheService.invalidateCommentsForPost(postId);
 
         return savedComment;
     }
@@ -135,8 +115,8 @@ public class CommentServiceImpl implements CommentService {
         Comment updatedComment = commentRepository.save(comment);
         logger.info("Updated comment with id: {}", commentId);
 
-        // Invalidate comments cache for this submission
-        cacheService.invalidateCommentsForSubmission(comment.getSubmissionId());
+        // Invalidate comments cache for this post
+        cacheService.invalidateCommentsForPost(comment.getPostId());
 
         return updatedComment;
     }
@@ -179,31 +159,7 @@ public class CommentServiceImpl implements CommentService {
 
         logger.info("Soft deleted comment with id: {}", commentId);
 
-        // Invalidate comments cache for this submission
-        cacheService.invalidateCommentsForSubmission(comment.getSubmissionId());
-
-        // Update comment count asynchronously
-        Submission submission = submissionRepository.findById(comment.getSubmissionId()).orElse(null);
-        if (submission != null) {
-            updateCommentCountAsync(submission, false);
-        }
-    }
-
-    @Async
-    @Transactional
-    public void updateCommentCountAsync(Submission submission, boolean isAdded) {
-        try {
-            if (submission != null) {
-                Long currentCount = submission.getCommentsCount();
-                Long newCount = isAdded ? currentCount + 1 : Math.max(0, currentCount - 1);
-                submission.setCommentsCount(newCount);
-                submissionRepository.save(submission);
-                logger.info("Updated comment count to {} for submission: {} ({})",
-                        newCount, submission.getId(), isAdded ? "increased" : "decreased");
-            }
-        } catch (Exception e) {
-            logger.error("Error updating comment count for submission {}: {}",
-                    submission.getId(), e.getMessage(), e);
-        }
+        // Invalidate comments cache for this post
+        cacheService.invalidateCommentsForPost(comment.getPostId());
     }
 }

@@ -90,7 +90,7 @@ public interface SubmissionRepository extends JpaRepository<Submission, Long> {
     Optional<Submission> findByIdAndUserId(@Param("submissionId") Long submissionId, @Param("userId") Long userId);
 
     // Find all submissions for a specific date
-    @Query(value = "SELECT * FROM challengesphere.submissions WHERE submission_date = :date AND active = true ORDER BY created_at DESC", nativeQuery = true)
+    @Query(value = "SELECT * FROM challengesphere.submissions WHERE DATE(submission_time) = :date AND active = true ORDER BY created_at DESC", nativeQuery = true)
     List<Submission> findBySubmissionDate(@Param("date") LocalDate date);
 
     // Find recent submissions by challenge (limit)
@@ -106,7 +106,7 @@ public interface SubmissionRepository extends JpaRepository<Submission, Long> {
     Long countActiveByChallengeId(@Param("challengeId") Long challengeId);
 
     // Find submissions with most glories (trending)
-    @Query(value = "SELECT * FROM challengesphere.submissions WHERE challenge_id = :challengeId AND active = true AND is_private = false ORDER BY glory_count DESC, created_at DESC LIMIT :limit", nativeQuery = true)
+    @Query(value = "SELECT * FROM challengesphere.submissions WHERE challenge_id = :challengeId AND active = true AND is_private = false ORDER BY glories_count DESC, created_at DESC LIMIT :limit", nativeQuery = true)
     List<Submission> findTrendingByChallengeId(@Param("challengeId") Long challengeId, @Param("limit") int limit);
 
     // Find all submissions by multiple challenge IDs
@@ -114,7 +114,7 @@ public interface SubmissionRepository extends JpaRepository<Submission, Long> {
     List<Submission> findByChallengeIdIn(@Param("challengeIds") List<Long> challengeIds);
 
     // Find submissions by user in a date range
-    @Query(value = "SELECT * FROM challengesphere.submissions WHERE user_id = :userId AND submission_date BETWEEN :startDate AND :endDate AND active = true ORDER BY submission_date DESC", nativeQuery = true)
+    @Query(value = "SELECT * FROM challengesphere.submissions WHERE user_id = :userId AND DATE(submission_time) BETWEEN :startDate AND :endDate AND active = true ORDER BY submission_time DESC", nativeQuery = true)
     List<Submission> findByUserIdAndDateRange(@Param("userId") Long userId, @Param("startDate") LocalDate startDate, @Param("endDate") LocalDate endDate);
 
     // Check if submission exists for a specific user, challenge, and day

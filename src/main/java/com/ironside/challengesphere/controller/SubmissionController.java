@@ -95,4 +95,19 @@ public class SubmissionController {
         SubmissionsResponse response = submissionService.getSubmissionsByUser(userId, page, pageSize);
         return ResponseEntity.ok(response);
     }
+
+    /**
+     * Get a single submission by ID
+     * GET /api/v1/submissions/{submissionId}
+     */
+    @GetMapping("/{submissionId}")
+    public ResponseEntity<com.ironside.challengesphere.model.Submission> getSubmissionById(
+            @PathVariable Long submissionId) {
+        logger.info("Getting submission by id: {}", submissionId);
+        com.ironside.challengesphere.model.Submission submission = submissionService.getSubmissionById(submissionId);
+        if (submission == null) {
+            return ResponseEntity.notFound().build();
+        }
+        return ResponseEntity.ok(submission);
+    }
 }

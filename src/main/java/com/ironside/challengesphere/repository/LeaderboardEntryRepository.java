@@ -82,7 +82,7 @@ public interface LeaderboardEntryRepository extends JpaRepository<LeaderboardEnt
      */
     @Query(value = "WITH ranked AS (" +
            "  SELECT *, ROW_NUMBER() OVER (ORDER BY score DESC) as rn " +
-           "  FROM leaderboard_entries " +
+           "  FROM challengesphere.leaderboard_entries " +
            "  WHERE challenge_id = :challengeId AND status = 'ACTIVE'" +
            "), user_rank AS (" +
            "  SELECT rn FROM ranked WHERE user_id = :userId" +
@@ -168,12 +168,12 @@ public interface LeaderboardEntryRepository extends JpaRepository<LeaderboardEnt
      * Call this after scores change to recalculate ranks
      */
     @Modifying
-    @Query(value = "UPDATE leaderboard_entries le " +
+    @Query(value = "UPDATE challengesphere.leaderboard_entries le " +
            "SET previous_rank = current_rank, " +
            "    current_rank = ranked.rn, " +
            "    updated_at = NOW() " +
            "FROM (SELECT id, ROW_NUMBER() OVER (ORDER BY score DESC) as rn " +
-           "      FROM leaderboard_entries " +
+           "      FROM challengesphere.leaderboard_entries " +
            "      WHERE challenge_id = :challengeId AND status = 'ACTIVE') ranked " +
            "WHERE le.id = ranked.id AND le.challenge_id = :challengeId",
            nativeQuery = true)

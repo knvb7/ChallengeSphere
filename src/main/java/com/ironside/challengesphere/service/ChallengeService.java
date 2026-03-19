@@ -6,6 +6,7 @@ import java.util.Optional;
 import org.springframework.stereotype.Service;
 
 import com.ironside.challengesphere.api.request.ChallengeCreateRequest;
+import com.ironside.challengesphere.api.request.ChallengeUpdateRequest;
 import com.ironside.challengesphere.api.request.GetChallengeParticipantsRequest;
 import com.ironside.challengesphere.api.request.GetChallengesByHashtagRequest;
 import com.ironside.challengesphere.api.request.GetPopularChallengesRequest;
@@ -27,6 +28,7 @@ import com.ironside.challengesphere.model.Challenge;
 public interface ChallengeService {
     UserChallengesResponse getUserChallenges(GetUserChallengesRequest request) throws ChallengeSphereException;
     ChallengeCreateResponse createChallenge(ChallengeCreateRequest request) throws ChallengeSphereException;
+    Challenge updateChallenge(Long id, ChallengeUpdateRequest request) throws ChallengeSphereException;
     Optional<Challenge> getChallengeById(Long challengeId) throws ChallengeSphereException;
     List<Challenge> getChallengeByIds(List<Long> challengeId) throws ChallengeSphereException;
     void deleteChallenges(List<Long> challengeIds);

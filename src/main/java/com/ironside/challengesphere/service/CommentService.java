@@ -5,18 +5,20 @@ import com.ironside.challengesphere.model.Comment;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 
+import java.util.UUID;
+
 public interface CommentService {
     
     /**
-     * Get paginated comments for a submission
+     * Get paginated comments for a post
      */
-    Page<Comment> getCommentsForSubmission(Long submissionId, Pageable pageable) throws ChallengeSphereException;
-    
+    Page<Comment> getCommentsForPost(UUID postId, Pageable pageable) throws ChallengeSphereException;
+
     /**
-     * Create a new comment on a submission
+     * Create a new comment on a post
      */
-    Comment createComment(Long submissionId, Long userId, String content) throws ChallengeSphereException;
-    
+    Comment createComment(UUID postId, Long userId, String content) throws ChallengeSphereException;
+
     /**
      * Edit an existing comment
      */

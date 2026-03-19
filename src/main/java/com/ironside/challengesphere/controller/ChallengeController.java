@@ -11,6 +11,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -19,6 +20,7 @@ import org.springframework.web.bind.annotation.RestController;
 import com.ironside.challengesphere.api.request.BulkChallengeUpdateRequest;
 import com.ironside.challengesphere.api.request.BulkUserChallengeUpdateRequest;
 import com.ironside.challengesphere.api.request.ChallengeCreateRequest;
+import com.ironside.challengesphere.api.request.ChallengeUpdateRequest;
 import com.ironside.challengesphere.api.request.GetChallengeParticipantsRequest;
 import com.ironside.challengesphere.api.request.GetChallengesByHashtagRequest;
 import com.ironside.challengesphere.api.request.GetPopularChallengesRequest;
@@ -161,11 +163,18 @@ public class ChallengeController {
     @GetMapping("/trending/ids")
     public ResponseEntity<List<Long>> getTrendingChallengeIds(
             @RequestParam(defaultValue = "10") int limit) {
-        
+
         logger.info("GET /api/v1/challenges/trending/ids - limit: {}", limit);
         List<Long> trendingIds = challengeService.getTrendingChallengeIds(limit);
         return ResponseEntity.ok(trendingIds);
     }
-    
-    
+
+    @PutMapping("/{id}")
+    public ResponseEntity<Challenge> updateChallenge(
+            @PathVariable Long id,
+            @RequestBody ChallengeUpdateRequest request) throws ChallengeSphereException {
+        logger.info("PUT /api/v1/challenges/{}", id);
+        Challenge updated = challengeService.updateChallenge(id, request);
+        return ResponseEntity.ok(updated);
+    }
 }

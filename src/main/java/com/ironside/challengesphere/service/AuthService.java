@@ -1,30 +1,16 @@
-//package com.ironside.challengesphere.service;
-//
-//import com.ironside.challengesphere.api.response.AuthResponse;
-//
-//public interface AuthService {
-//
-//    /**
-//     * Authenticates user using username and password
-//     *
-//     * @param username username for login
-//     * @param password raw password
-//     * @return AuthResponse with JWT tokens
-//     */
-//    AuthResponse authenticateUser(String username, String password);
-//
-//    /**
-//     * Refreshes the JWT token using a refresh token
-//     *
-//     * @param refreshToken refresh token previously issued
-//     * @return AuthResponse with new JWT tokens
-//     */
-//    AuthResponse refreshToken(String refreshToken);
-//
-//    /**
-//     * Gets the currently authenticated user
-//     *
-//     * @return currently authenticated User
-//     */
-//    User getCurrentUser();
-//}
+package com.ironside.challengesphere.service;
+
+import com.ironside.challengesphere.api.request.GoogleAuthRequest;
+import com.ironside.challengesphere.api.request.LoginRequest;
+import com.ironside.challengesphere.api.request.UserRegistrationRequest;
+import com.ironside.challengesphere.api.response.AuthResponse;
+import com.ironside.challengesphere.exception.ChallengeSphereException;
+import com.ironside.challengesphere.model.User;
+
+public interface AuthService {
+    AuthResponse register(UserRegistrationRequest request) throws ChallengeSphereException;
+    AuthResponse login(LoginRequest request) throws ChallengeSphereException;
+    AuthResponse refresh(String refreshToken) throws ChallengeSphereException;
+    AuthResponse loginWithGoogle(GoogleAuthRequest request) throws ChallengeSphereException;
+    User getCurrentUser() throws ChallengeSphereException;
+}

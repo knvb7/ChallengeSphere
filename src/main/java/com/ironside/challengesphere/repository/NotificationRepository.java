@@ -2,6 +2,7 @@ package com.ironside.challengesphere.repository;
 
 import com.ironside.challengesphere.model.Notification;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
@@ -38,9 +39,11 @@ public interface NotificationRepository extends JpaRepository<Notification, Long
     @Query(value = "SELECT COUNT(*) FROM challengesphere.notifications WHERE user_id = :userId AND type = :type", nativeQuery = true)
     Long countNotificationsByUserIdAndType(@Param("userId") Long userId, @Param("type") String type);
 
+    @Modifying
     @Query(value = "DELETE FROM challengesphere.notifications WHERE user_id = :userId", nativeQuery = true)
     void deleteByUserId(@Param("userId") Long userId);
 
+    @Modifying
     @Query(value = "DELETE FROM challengesphere.notifications WHERE user_id = :userId AND type = :type", nativeQuery = true)
     void deleteByUserIdAndType(@Param("userId") Long userId, @Param("type") String type);
 }

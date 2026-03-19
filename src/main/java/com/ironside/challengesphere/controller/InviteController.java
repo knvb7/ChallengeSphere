@@ -1,0 +1,89 @@
+package com.ironside.challengesphere.controller;
+
+import com.ironside.challengesphere.api.request.CreateInviteLinkRequest;
+import com.ironside.challengesphere.api.request.RedeemInviteRequest;
+import com.ironside.challengesphere.api.response.ChallengeInvitesResponse;
+import com.ironside.challengesphere.api.response.InviteLinkResponse;
+import com.ironside.challengesphere.api.response.RedeemInviteResponse;
+import com.ironside.challengesphere.exception.ChallengeSphereException;
+import com.ironside.challengesphere.service.InviteService;
+import jakarta.validation.Valid;
+import lombok.RequiredArgsConstructor;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/api/v1/invites")
+@RequiredArgsConstructor
+public class InviteController {
+    private static final Logger logger = LogManager.getLogger(InviteController.class);
+
+    @Autowired
+    private InviteService inviteService;
+
+    /**
+     * Generate an invite link for a challenge.
+     * POST /api/v1/invites
+     */
+    @PostMapping
+    public ResponseEntity<InviteLinkResponse> generateInviteLink(
+            @Valid @RequestBody CreateInviteLinkRequest request) throws ChallengeSphereException {
+        logger.info("POST /api/v1/invites - Generate invite for challenge {}", request.getChallengeId());
+        InviteLinkResponse response = inviteService.generateInviteLink(request);
+        return ResponseEntity.status(HttpStatus.CREATED).body(response);
+    }
+
+    /**
+     * Redeem an invite code to join a challenge.
+     * POST /api/v1/invites/redeem
+     */
+    @PostMapping("/redeem")
+    public ResponseEntity<RedeemInviteResponse> redeemInvite(
+            @Valid @RequestBody RedeemInviteRequest request) throws ChallengeSphereException {
+        logger.info("POST /api/v1/invites/redeem - code: {}", request.getInviteCode());
+        RedeemInviteResponse response = inviteService.redeemInvite(request);
+        return ResponseEntity.ok(response);
+    }
+
+    /**
+     * Get invite link details / preview (before joining).
+     * GET /api/v1/invites/{inviteCode}
+     */
+    @GetMapping("/{inviteCode}")
+    public ResponseEntity<InviteLinkResponse> getInviteDetails(
+            @PathVariable String inviteCode) throws ChallengeSphereException {
+        logger.info("GET /api/v1/invites/{}", inviteCode);
+        InviteLinkResponse response = inviteService.getInviteDetails(inviteCode);
+        return ResponseEntity.ok(response);
+    }
+
+    /**
+     * Get all invite links for a challenge.
+     * GET /api/v1/invites/challenge/{challengeId}
+     */
+    @GetMapping("/challenge/{challengeId}")
+    public ResponseEntity<ChallengeInvitesResponse> getInvitesForChallenge(
+            @PathVariable Long challengeId) throws ChallengeSphereException {
+        logger.info("GET /api/v1/invites/challenge/{}", challengeId);
+        ChallengeInvitesResponse response = inviteService.getInvitesForChallenge(challengeId);
+        return ResponseEntity.ok(response);
+    }
+
+    /**
+     * Deactivate an invite link.
+     * DELETE /api/v1/invites/{inviteId}?userId=X
+     */
+    @DeleteMapping("/{inviteId}")
+    public ResponseEntity<Void> deactivateInvite(
+            @PathVariable Long inviteId,
+            @RequestParam Long userId) throws ChallengeSphereException {
+        logger.info("DELETE /api/v1/invites/{} by user {}", inviteId, userId);
+        inviteService.deactivateInvite(inviteId, userId);
+        return ResponseEntity.noContent().build();
+    }
+}
+

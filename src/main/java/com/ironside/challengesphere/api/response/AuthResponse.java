@@ -3,6 +3,7 @@ package com.ironside.challengesphere.api.response;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import com.fasterxml.jackson.annotation.JsonInclude;
+import com.ironside.challengesphere.model.User;
 import lombok.Builder;
 import lombok.NoArgsConstructor;
 
@@ -15,6 +16,7 @@ import java.time.Instant;
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public class AuthResponse {
     private String accessToken;
+    private String refreshToken;
     private String tokenType = "Bearer";
     private Long expiresIn;
     private Instant issuedAt;
@@ -22,6 +24,7 @@ public class AuthResponse {
     private String username;
     private String email;
     private String userId;
+    private User user;
     
     public AuthResponse(String accessToken) {
         this.accessToken = accessToken;
