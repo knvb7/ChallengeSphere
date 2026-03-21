@@ -12,8 +12,6 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.UUID;
-
 @RestController
 @RequestMapping("/api/v1/comments")
 public class CommentController {
@@ -24,31 +22,30 @@ public class CommentController {
     private CommentService commentService;
 
     /**
-     * Get paginated comments for a post
-     * GET /api/v1/comments/post/{postId}
+     * Get paginated comments for a submission
+     * GET /api/v1/comments/submission/{submissionId}
      */
-    @GetMapping("/post/{postId}")
-    public ResponseEntity<Page<Comment>> getCommentsForPost(
-            @PathVariable UUID postId,
+    @GetMapping("/submission/{submissionId}")
+    public ResponseEntity<Page<Comment>> getCommentsForSubmission(
+            @PathVariable Long submissionId,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) throws ChallengeSphereException {
-        logger.info("Get comments for post: {}, page: {}, size: {}", postId, page, size);
+        logger.info("Get comments for submission: {}, page: {}, size: {}", submissionId, page, size);
         Pageable pageable = PageRequest.of(page, size);
-        Page<Comment> comments = commentService.getCommentsForPost(postId, pageable);
-        return ResponseEntity.ok(comments);
+        return ResponseEntity.ok(commentService.getCommentsForSubmission(submissionId, pageable));
     }
 
     /**
-     * Create a new comment on a post
+     * Create a new comment on a submission
      * POST /api/v1/comments
      */
     @PostMapping("")
     public ResponseEntity<Comment> createComment(
-            @RequestParam UUID postId,
+            @RequestParam Long submissionId,
             @RequestParam Long userId,
             @RequestParam String content) throws ChallengeSphereException {
-        logger.info("Create comment for post: {} by user: {}", postId, userId);
-        Comment comment = commentService.createComment(postId, userId, content);
+        logger.info("Create comment for submission: {} by user: {}", submissionId, userId);
+        Comment comment = commentService.createComment(submissionId, userId, content);
         return ResponseEntity.ok(comment);
     }
 

@@ -1761,7 +1761,6 @@ public class RedisCacheServiceImpl {
 
     /**
      * Invalidate comments cache for a submission (ASYNC - non-blocking)
-     * @deprecated Use {@link #invalidateCommentsForPost(java.util.UUID)} instead
      */
     public void invalidateCommentsForSubmission(Long submissionId) {
         if (submissionId == null) {
@@ -1773,18 +1772,6 @@ public class RedisCacheServiceImpl {
         });
     }
 
-    /**
-     * Invalidate comments cache for a post (ASYNC - non-blocking)
-     */
-    public void invalidateCommentsForPost(java.util.UUID postId) {
-        if (postId == null) {
-            return;
-        }
-        executeAsync(() -> {
-            deleteByPattern(COMMENTS_PREFIX + postId + ":*");
-            logger.debug("Invalidated comments cache for post: postId={}", postId);
-        });
-    }
 
     // ==================== USE CASE 15: GLORY CACHING ====================
 
