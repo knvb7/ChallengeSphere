@@ -7,6 +7,7 @@ import java.util.Optional;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
@@ -16,20 +17,22 @@ import com.ironside.challengesphere.model.Submission;
 @Repository
 public interface SubmissionRepository extends JpaRepository<Submission, Long> {
 
-    // Feed query - get submissions from users that the current user follows
+    // Feed query - get submissions from users that the current user follows, plus the current user's own posts
     @Query(value = "SELECT s.* FROM challengesphere.submissions s " +
-            "INNER JOIN challengesphere.follows f ON s.user_id = f.following_id " +
-            "WHERE f.follower_id = :userId " +
-            "AND f.active = true " +
-            "AND s.active = true " +
+            "WHERE s.active = true " +
             "AND s.is_private = false " +
+            "AND (s.user_id = :userId OR EXISTS (" +
+            "  SELECT 1 FROM challengesphere.follows f " +
+            "  WHERE f.follower_id = :userId AND f.following_id = s.user_id AND f.active = true" +
+            ")) " +
             "ORDER BY s.created_at DESC",
             countQuery = "SELECT COUNT(*) FROM challengesphere.submissions s " +
-                    "INNER JOIN challengesphere.follows f ON s.user_id = f.following_id " +
-                    "WHERE f.follower_id = :userId " +
-                    "AND f.active = true " +
-                    "AND s.active = true " +
-                    "AND s.is_private = false",
+                    "WHERE s.active = true " +
+                    "AND s.is_private = false " +
+                    "AND (s.user_id = :userId OR EXISTS (" +
+                    "  SELECT 1 FROM challengesphere.follows f " +
+                    "  WHERE f.follower_id = :userId AND f.following_id = s.user_id AND f.active = true" +
+                    "))",
             nativeQuery = true)
     Page<Submission> findFeedForUser(@Param("userId") Long userId, Pageable pageable);
 
@@ -132,4 +135,24 @@ public interface SubmissionRepository extends JpaRepository<Submission, Long> {
     // Find submissions by challenge for multiple users (for leaderboard batch fetch)
     @Query(value = "SELECT * FROM challengesphere.submissions WHERE challenge_id = :challengeId AND user_id IN :userIds AND active = true", nativeQuery = true)
     List<Submission> findByChallengeIdAndUserIdIn(@Param("challengeId") Long challengeId, @Param("userIds") List<Long> userIds);
+
+    // Atomically increment glory count (avoids optimistic locking conflicts)
+    @Modifying(clearAutomatically = true)
+    @Query(value = "UPDATE challengesphere.submissions SET glories_count = glories_count + 1, version = version + 1 WHERE id = :submissionId", nativeQuery = true)
+    void incrementGloryCount(@Param("submissionId") Long submissionId);
+
+    // Atomically decrement glory count (avoids optimistic locking conflicts)
+    @Modifying(clearAutomatically = true)
+    @Query(value = "UPDATE challengesphere.submissions SET glories_count = GREATEST(0, glories_count - 1), version = version + 1 WHERE id = :submissionId", nativeQuery = true)
+    void decrementGloryCount(@Param("submissionId") Long submissionId);
+
+    // Atomically increment comment count (avoids optimistic locking conflicts)
+    @Modifying(clearAutomatically = true)
+    @Query(value = "UPDATE challengesphere.submissions SET comments_count = comments_count + 1, version = version + 1 WHERE id = :submissionId", nativeQuery = true)
+    void incrementCommentCount(@Param("submissionId") Long submissionId);
+
+    // Atomically decrement comment count (avoids optimistic locking conflicts)
+    @Modifying(clearAutomatically = true)
+    @Query(value = "UPDATE challengesphere.submissions SET comments_count = GREATEST(0, comments_count - 1), version = version + 1 WHERE id = :submissionId", nativeQuery = true)
+    void decrementCommentCount(@Param("submissionId") Long submissionId);
 }

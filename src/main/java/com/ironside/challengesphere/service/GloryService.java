@@ -27,4 +27,15 @@ public interface GloryService {
      * Get glory count for a submission
      */
     Long getGloryCount(Long submissionId) throws ChallengeSphereException;
+
+    /**
+     * Toggle unglory (not genuine) for a submission.
+     * @return true if ungloried, false if unglory was removed
+     */
+    boolean toggleUnglory(Long submissionId, Long userId) throws ChallengeSphereException;
+
+    /**
+     * Check if a user has ungloried a submission
+     */
+    boolean hasUserUngloried(Long submissionId, Long userId) throws ChallengeSphereException;
 }

@@ -21,6 +21,7 @@ public class SubmissionResponse {
     private Long gloriesCount;
     private Long commentsCount;
     private Integer version;
+    private Boolean hasGivenGlory;
 
     public static SubmissionResponse success(Submission submission, List<String> mediaUrls) {
         SubmissionResponse response = new SubmissionResponse();
@@ -37,6 +38,12 @@ public class SubmissionResponse {
         response.setGloriesCount(submission.getGloriesCount());
         response.setCommentsCount(submission.getCommentsCount());
         response.setVersion(submission.getVersion());
+        return response;
+    }
+
+    public static SubmissionResponse success(Submission submission, List<String> mediaUrls, Boolean hasGivenGlory) {
+        SubmissionResponse response = success(submission, mediaUrls);
+        response.setHasGivenGlory(hasGivenGlory);
         return response;
     }
 

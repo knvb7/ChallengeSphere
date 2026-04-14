@@ -1,5 +1,6 @@
 package com.ironside.challengesphere.controller;
 
+import com.ironside.challengesphere.api.response.CommentResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.model.Comment;
 import com.ironside.challengesphere.service.CommentService;
@@ -26,7 +27,7 @@ public class CommentController {
      * GET /api/v1/comments/submission/{submissionId}
      */
     @GetMapping("/submission/{submissionId}")
-    public ResponseEntity<Page<Comment>> getCommentsForSubmission(
+    public ResponseEntity<Page<CommentResponse>> getCommentsForSubmission(
             @PathVariable Long submissionId,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) throws ChallengeSphereException {

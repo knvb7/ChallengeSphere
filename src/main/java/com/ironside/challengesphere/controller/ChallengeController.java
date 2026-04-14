@@ -21,6 +21,7 @@ import com.ironside.challengesphere.api.request.BulkChallengeUpdateRequest;
 import com.ironside.challengesphere.api.request.BulkUserChallengeUpdateRequest;
 import com.ironside.challengesphere.api.request.ChallengeCreateRequest;
 import com.ironside.challengesphere.api.request.ChallengeUpdateRequest;
+import com.ironside.challengesphere.api.request.GeneratePresignedUrlsRequest;
 import com.ironside.challengesphere.api.request.GetChallengeParticipantsRequest;
 import com.ironside.challengesphere.api.request.GetChallengesByHashtagRequest;
 import com.ironside.challengesphere.api.request.GetPopularChallengesRequest;
@@ -28,11 +29,15 @@ import com.ironside.challengesphere.api.request.GetUserChallengesRequest;
 import com.ironside.challengesphere.api.request.JoinChallengeRequest;
 import com.ironside.challengesphere.api.request.LeaveChallengeRequest;
 import com.ironside.challengesphere.api.response.ChallengeCreateResponse;
+import com.ironside.challengesphere.api.response.ChallengeDetailResponse;
 import com.ironside.challengesphere.api.response.ChallengeParticipantsResponse;
+import com.ironside.challengesphere.api.response.ChallengeProgressResponse;
 import com.ironside.challengesphere.api.response.ChallengesByHashtagResponse;
 import com.ironside.challengesphere.api.response.JoinChallengeResponse;
 import com.ironside.challengesphere.api.response.LeaveChallengeResponse;
+import com.ironside.challengesphere.api.response.MyChallengesResponse;
 import com.ironside.challengesphere.api.response.PopularChallengesResponse;
+import com.ironside.challengesphere.api.response.PresignedUrlsResponse;
 import com.ironside.challengesphere.api.response.RecentChallengesResponse;
 import com.ironside.challengesphere.api.response.UserChallengesResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
@@ -176,5 +181,36 @@ public class ChallengeController {
         logger.info("PUT /api/v1/challenges/{}", id);
         Challenge updated = challengeService.updateChallenge(id, request);
         return ResponseEntity.ok(updated);
+    }
+
+    @GetMapping("/{challengeId}/detail")
+    public ResponseEntity<ChallengeDetailResponse> getChallengeDetail(
+            @PathVariable Long challengeId,
+            @RequestParam(required = false) Long currentUserId) throws ChallengeSphereException {
+        logger.info("GET /api/v1/challenges/{}/detail", challengeId);
+        return ResponseEntity.ok(challengeService.getChallengeDetail(challengeId, currentUserId));
+    }
+
+    @GetMapping("/{challengeId}/my-progress")
+    public ResponseEntity<ChallengeProgressResponse> getChallengeProgress(
+            @PathVariable Long challengeId,
+            @RequestParam Long userId) throws ChallengeSphereException {
+        logger.info("GET /api/v1/challenges/{}/my-progress?userId={}", challengeId, userId);
+        return ResponseEntity.ok(challengeService.getChallengeProgress(challengeId, userId));
+    }
+
+    @GetMapping("/my")
+    public ResponseEntity<MyChallengesResponse> getMyChallenges(
+            @RequestParam Long userId,
+            @RequestParam(defaultValue = "active") String status) throws ChallengeSphereException {
+        logger.info("GET /api/v1/challenges/my?userId={}&status={}", userId, status);
+        return ResponseEntity.ok(challengeService.getMyChallenges(userId, status));
+    }
+
+    @PostMapping("/presigned-urls")
+    public ResponseEntity<PresignedUrlsResponse> generateChallengePresignedUrls(
+            @Valid @RequestBody GeneratePresignedUrlsRequest request) throws ChallengeSphereException {
+        logger.info("POST /api/v1/challenges/presigned-urls for userId={}", request.getUserId());
+        return ResponseEntity.ok(challengeService.generateChallengePresignedUrls(request));
     }
 }

@@ -3,8 +3,10 @@ package com.ironside.challengesphere.api.request;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Positive;
+import jakarta.validation.constraints.Size;
 import lombok.Data;
 import java.time.LocalDate;
+import java.util.List;
 
 @Data
 public class ChallengeCreateRequest {
@@ -29,4 +31,7 @@ public class ChallengeCreateRequest {
     private Integer numberOfDays;
 
     private String reminderTime; // e.g. "08:00 AM"
+
+    @Size(max = 5, message = "A challenge can have at most 5 cover photos")
+    private List<String> coverPhotoUrls; // GCS URLs after upload via presigned URL flow
 }

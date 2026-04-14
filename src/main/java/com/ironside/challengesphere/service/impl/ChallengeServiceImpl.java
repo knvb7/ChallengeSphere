@@ -20,6 +20,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import com.ironside.challengesphere.api.request.ChallengeCreateRequest;
 import com.ironside.challengesphere.api.request.ChallengeUpdateRequest;
+import com.ironside.challengesphere.api.request.GeneratePresignedUrlsRequest;
 import com.ironside.challengesphere.api.request.GetChallengeParticipantsRequest;
 import com.ironside.challengesphere.api.request.GetChallengesByHashtagRequest;
 import com.ironside.challengesphere.api.request.GetPopularChallengesRequest;
@@ -27,11 +28,15 @@ import com.ironside.challengesphere.api.request.GetUserChallengesRequest;
 import com.ironside.challengesphere.api.request.JoinChallengeRequest;
 import com.ironside.challengesphere.api.request.LeaveChallengeRequest;
 import com.ironside.challengesphere.api.response.ChallengeCreateResponse;
+import com.ironside.challengesphere.api.response.ChallengeDetailResponse;
 import com.ironside.challengesphere.api.response.ChallengeParticipantsResponse;
+import com.ironside.challengesphere.api.response.ChallengeProgressResponse;
 import com.ironside.challengesphere.api.response.ChallengesByHashtagResponse;
 import com.ironside.challengesphere.api.response.JoinChallengeResponse;
 import com.ironside.challengesphere.api.response.LeaveChallengeResponse;
+import com.ironside.challengesphere.api.response.MyChallengesResponse;
 import com.ironside.challengesphere.api.response.PopularChallengesResponse;
+import com.ironside.challengesphere.api.response.PresignedUrlsResponse;
 import com.ironside.challengesphere.api.response.RecentChallengesResponse;
 import com.ironside.challengesphere.api.response.UserChallengesResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
@@ -39,6 +44,7 @@ import com.ironside.challengesphere.model.Challenge;
 import com.ironside.challengesphere.model.User;
 import com.ironside.challengesphere.model.UserChallenge;
 import com.ironside.challengesphere.repository.ChallengeRepository;
+import com.ironside.challengesphere.repository.SubmissionRepository;
 import com.ironside.challengesphere.repository.UserChallengeRepository;
 import com.ironside.challengesphere.repository.UserRepository;
 import com.ironside.challengesphere.service.ChallengeService;
@@ -55,7 +61,11 @@ public class ChallengeServiceImpl implements ChallengeService {
 
     @Autowired
     private UserChallengeRepository userChallengeRepository;
-    
+
+    @Autowired
+    private SubmissionRepository submissionRepository;
+
+
     @Autowired
     private RedisCacheServiceImpl cacheService;
 
@@ -105,12 +115,12 @@ public class ChallengeServiceImpl implements ChallengeService {
 
         try {
             // Try cache first
-            Optional<UserChallengesResponse> cached = cacheService.getCachedUserChallenges(userId, page, pageSize, activeFilter, UserChallengesResponse.class);
-            if (cached.isPresent()) {
-                logger.info("Cache hit for user challenges: userId={}, page={}", userId, page);
-                return cached.get();
-            }
-            logger.debug("Cache miss for user challenges: userId={}, fetching from DB", userId);
+//            Optional<UserChallengesResponse> cached = cacheService.getCachedUserChallenges(userId, page, pageSize, activeFilter, UserChallengesResponse.class);
+//            if (cached.isPresent()) {
+//                logger.info("Cache hit for user challenges: userId={}, page={}", userId, page);
+//                return cached.get();
+//            }
+//            logger.debug("Cache miss for user challenges: userId={}, fetching from DB", userId);
 
             List<Challenge> createdChallenges = challengeRepository.findByCreatorId(userId);
             List<Challenge> ownedChallenges = challengeRepository.findByCurrentOwnerId(userId);
@@ -138,7 +148,7 @@ public class ChallengeServiceImpl implements ChallengeService {
             UserChallengesResponse response = UserChallengesResponse.create(userId, paginatedChallenges, page, pageSize, totalCount);
 
             // Cache the response asynchronously
-            cacheService.cacheUserChallenges(userId, page, pageSize, activeFilter, response);
+//            cacheService.cacheUserChallenges(userId, page, pageSize, activeFilter, response);
 
             return response;
 
@@ -179,6 +189,9 @@ public class ChallengeServiceImpl implements ChallengeService {
             challenge.setActive(true);
             challenge.setCreatedAt(new Timestamp(System.currentTimeMillis()));
             challenge.setNumberOfDays(request.getNumberOfDays());
+            if (request.getCoverPhotoUrls() != null && !request.getCoverPhotoUrls().isEmpty()) {
+                challenge.setCoverPhotoUrls(String.join(",", request.getCoverPhotoUrls()));
+            }
 
             Challenge savedChallenge = challengeRepository.save(challenge);
             logger.info("Successfully created challenge with id: {} for user: {}", savedChallenge.getId(), request.getCreatorUserId());
@@ -213,7 +226,8 @@ public class ChallengeServiceImpl implements ChallengeService {
                     savedChallenge.getCreatedAt(),
                     savedChallenge.getCreatorId(),
                     savedChallenge.getCurrentOwnerId(),
-                    savedChallenge.getNumberOfDays()
+                    savedChallenge.getNumberOfDays(),
+                    savedChallenge.getCoverPhotoUrls()
             );
 
         } catch (ChallengeSphereException e) {
@@ -547,16 +561,16 @@ public class ChallengeServiceImpl implements ChallengeService {
                 logger.info("Successfully deactivated {} users from challenge {}", successfulUserIds.size(), challengeId);
                 
                 // Invalidate trending challenges cache since participant counts changed
-                cacheService.invalidateTrendingChallenges();
+//                cacheService.invalidateTrendingChallenges();
 
                 // Invalidate participants cache for this challenge
-                cacheService.invalidateChallengeParticipants(challengeId);
+//                cacheService.invalidateChallengeParticipants(challengeId);
 
                 // Invalidate user challenges cache for users who left
                 successfulUserIds.forEach(cacheService::invalidateUserChallenges);
 
                 // Invalidate feed caches
-                cacheService.invalidateFeed("FOLLOWING");
+//                cacheService.invalidateFeed("FOLLOWING");
             }
 
             // Return appropriate response based on results
@@ -947,10 +961,219 @@ public class ChallengeServiceImpl implements ChallengeService {
         if (request.getActive() != null) {
             challenge.setActive(request.getActive());
         }
+        if (request.getCoverPhotoUrls() != null) {
+            challenge.setCoverPhotoUrls(request.getCoverPhotoUrls().isEmpty()
+                    ? null
+                    : String.join(",", request.getCoverPhotoUrls()));
+        }
 
         Challenge updated = challengeRepository.save(challenge);
         cacheService.cacheChallenge(id, updated);
         logger.info("Challenge {} updated successfully", id);
         return updated;
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public ChallengeDetailResponse getChallengeDetail(Long challengeId, Long currentUserId) throws ChallengeSphereException {
+        logger.info("Fetching challenge detail: challengeId={}, currentUserId={}", challengeId, currentUserId);
+        try {
+            Challenge challenge = challengeRepository.findById(challengeId)
+                    .orElseThrow(() -> new ChallengeSphereException(
+                            "Challenge not found with id: " + challengeId,
+                            HttpStatus.NOT_FOUND, logger));
+
+            int participantCount = userChallengeRepository.countActiveByChallengeId(challengeId);
+
+            boolean isJoined = false;
+            if (currentUserId != null) {
+                isJoined = userChallengeRepository.findByUserIdAndChallengeId(currentUserId, challengeId)
+                        .map(uc -> Boolean.TRUE.equals(uc.getActive()))
+                        .orElse(false);
+            }
+
+            return ChallengeDetailResponse.from(challenge, participantCount, isJoined);
+        } catch (ChallengeSphereException e) {
+            throw e;
+        } catch (Exception e) {
+            logger.error("Error fetching challenge detail for id {}: {}", challengeId, e.getMessage(), e);
+            throw new ChallengeSphereException("Failed to fetch challenge detail", HttpStatus.INTERNAL_SERVER_ERROR, logger);
+        }
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public ChallengeProgressResponse getChallengeProgress(Long challengeId, Long userId) throws ChallengeSphereException {
+        logger.info("Fetching challenge progress: challengeId={}, userId={}", challengeId, userId);
+        try {
+            Challenge challenge = challengeRepository.findById(challengeId)
+                    .orElseThrow(() -> new ChallengeSphereException(
+                            "Challenge not found with id: " + challengeId,
+                            HttpStatus.NOT_FOUND, logger));
+
+            List<com.ironside.challengesphere.model.Submission> submissions =
+                    submissionRepository.findActiveByUserIdAndChallengeId(userId, challengeId);
+
+            Map<Integer, com.ironside.challengesphere.model.Submission> byDay = submissions.stream()
+                    .collect(Collectors.toMap(
+                            com.ironside.challengesphere.model.Submission::getDayNumber,
+                            s -> s,
+                            (a, b) -> a // keep first if duplicate day
+                    ));
+
+            int totalDays = challenge.getNumberOfDays();
+            List<ChallengeProgressResponse.DayProgress> days = new ArrayList<>();
+            for (int d = 1; d <= totalDays; d++) {
+                com.ironside.challengesphere.model.Submission s = byDay.get(d);
+                if (s != null) {
+                    String thumbnail = firstUrl(s.getMediaUrls());
+                    days.add(ChallengeProgressResponse.DayProgress.submitted(
+                            d, s.getId(), thumbnail, s.getGloriesCount(), s.getSubmissionTime()));
+                } else {
+                    days.add(ChallengeProgressResponse.DayProgress.empty(d));
+                }
+            }
+
+            List<Integer> submittedDayNumbers = new ArrayList<>(byDay.keySet());
+            int currentStreak = computeCurrentStreak(submittedDayNumbers);
+            int longestStreak = computeLongestStreak(submittedDayNumbers);
+            int daysCompleted = submittedDayNumbers.size();
+            int completionPct = totalDays > 0 ? (int) Math.round((daysCompleted * 100.0) / totalDays) : 0;
+
+            ChallengeProgressResponse response = new ChallengeProgressResponse();
+            response.setChallengeId(challengeId);
+            response.setChallengeTitle(challenge.getTitle());
+            response.setTotalDays(totalDays);
+            response.setDaysCompleted(daysCompleted);
+            response.setCompletionPercentage(completionPct);
+            response.setCurrentStreak(currentStreak);
+            response.setLongestStreak(longestStreak);
+            response.setDays(days);
+            return response;
+        } catch (ChallengeSphereException e) {
+            throw e;
+        } catch (Exception e) {
+            logger.error("Error fetching progress: challengeId={}, userId={}: {}", challengeId, userId, e.getMessage(), e);
+            throw new ChallengeSphereException("Failed to fetch challenge progress", HttpStatus.INTERNAL_SERVER_ERROR, logger);
+        }
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public MyChallengesResponse getMyChallenges(Long userId, String status) throws ChallengeSphereException {
+        logger.info("Fetching my challenges: userId={}, status={}", userId, status);
+        try {
+            List<UserChallenge> userChallenges = userChallengeRepository.findActiveByUserId(userId);
+            boolean filterCompleted = "completed".equalsIgnoreCase(status);
+
+            userChallenges = userChallenges.stream()
+                    .filter(uc -> Boolean.TRUE.equals(uc.getCompleted()) == filterCompleted)
+                    .toList();
+
+            List<Long> challengeIds = userChallenges.stream().map(UserChallenge::getChallengeId).toList();
+            Map<Long, Challenge> challengeMap = challengeRepository.findAllById(challengeIds)
+                    .stream().collect(Collectors.toMap(Challenge::getId, c -> c));
+
+            List<MyChallengesResponse.ChallengeSummary> summaries = new ArrayList<>();
+            for (UserChallenge uc : userChallenges) {
+                Challenge c = challengeMap.get(uc.getChallengeId());
+                if (c == null) continue;
+
+                List<com.ironside.challengesphere.model.Submission> subs =
+                        submissionRepository.findActiveByUserIdAndChallengeId(userId, uc.getChallengeId());
+
+                List<Integer> submittedDays = subs.stream()
+                        .map(com.ironside.challengesphere.model.Submission::getDayNumber)
+                        .collect(Collectors.toList());
+
+                int daysCompleted = submittedDays.size();
+                int totalDays = c.getNumberOfDays();
+                int completionPct = totalDays > 0 ? (int) Math.round((daysCompleted * 100.0) / totalDays) : 0;
+
+                MyChallengesResponse.ChallengeSummary summary = MyChallengesResponse.ChallengeSummary.from(c);
+                summary.setDaysCompleted(daysCompleted);
+                summary.setCurrentStreak(computeCurrentStreak(submittedDays));
+                summary.setCompletionPercentage(completionPct);
+                summary.setJoinedAt(uc.getJoinedAt());
+                summary.setCompleted(Boolean.TRUE.equals(uc.getCompleted()));
+                summaries.add(summary);
+            }
+
+            return MyChallengesResponse.create(summaries);
+        } catch (Exception e) {
+            logger.error("Error fetching my challenges for userId={}: {}", userId, e.getMessage(), e);
+            throw new ChallengeSphereException("Failed to fetch my challenges", HttpStatus.INTERNAL_SERVER_ERROR, logger);
+        }
+    }
+
+    @Override
+    public PresignedUrlsResponse generateChallengePresignedUrls(GeneratePresignedUrlsRequest request) throws ChallengeSphereException {
+        logger.info("Generating challenge presigned URLs for userId={}, files={}", request.getUserId(), request.getMediaFiles().size());
+        try {
+            if (!userRepository.existsById(request.getUserId())) {
+                throw new ChallengeSphereException("User not found with id: " + request.getUserId(), HttpStatus.NOT_FOUND, logger);
+            }
+            if (request.getMediaFiles().size() > 5) {
+                throw new ChallengeSphereException("A challenge can have at most 5 cover photos", HttpStatus.BAD_REQUEST, logger);
+            }
+
+            long expiry = 3600L;
+            List<PresignedUrlsResponse.PresignedUrlInfo> urls = new ArrayList<>();
+            for (GeneratePresignedUrlsRequest.MediaFileInfo file : request.getMediaFiles()) {
+                String ext = getFileExtension(file.getFileName());
+                String key = String.format("challenges/user_%d/covers/%d_%s%s",
+                        request.getUserId(), System.currentTimeMillis(), java.util.UUID.randomUUID(), ext);
+                urls.add(new PresignedUrlsResponse.PresignedUrlInfo(
+                        file.getFileName(),
+                        file.getMediaType().name(),
+                        file.getContentType().getMimeType(),
+                        com.ironside.challengesphere.util.GetSignedUrlForGcs.generateV4PutObjectSignedUrl(
+                                com.ironside.challengesphere.util.Constants.GCSBUCKETFORSUBMISSIONS,
+                                key, expiry, file.getContentType()),
+                        key, expiry));
+            }
+            return PresignedUrlsResponse.success(request.getUserId(), urls);
+        } catch (ChallengeSphereException e) {
+            throw e;
+        } catch (Exception e) {
+            logger.error("Error generating challenge presigned URLs for userId={}: {}", request.getUserId(), e.getMessage(), e);
+            throw new ChallengeSphereException("Failed to generate presigned URLs", HttpStatus.INTERNAL_SERVER_ERROR, logger);
+        }
+    }
+
+    private String firstUrl(String raw) {
+        if (raw == null || raw.isBlank()) return null;
+        String[] parts = raw.split(",");
+        return parts.length > 0 ? parts[0].trim() : null;
+    }
+
+    private int computeCurrentStreak(List<Integer> days) {
+        if (days.isEmpty()) return 0;
+        List<Integer> sorted = days.stream().sorted(java.util.Comparator.reverseOrder()).toList();
+        int streak = 1;
+        for (int i = 1; i < sorted.size(); i++) {
+            if (sorted.get(i) == sorted.get(i - 1) - 1) streak++;
+            else break;
+        }
+        return streak;
+    }
+
+    private int computeLongestStreak(List<Integer> days) {
+        if (days.isEmpty()) return 0;
+        List<Integer> sorted = days.stream().sorted().toList();
+        int longest = 1, current = 1;
+        for (int i = 1; i < sorted.size(); i++) {
+            if (sorted.get(i) == sorted.get(i - 1) + 1) {
+                longest = Math.max(longest, ++current);
+            } else {
+                current = 1;
+            }
+        }
+        return longest;
+    }
+
+    private String getFileExtension(String fileName) {
+        if (fileName == null || !fileName.contains(".")) return "";
+        return fileName.substring(fileName.lastIndexOf("."));
     }
 }

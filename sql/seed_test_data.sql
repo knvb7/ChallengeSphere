@@ -36,14 +36,48 @@ VALUES
 SELECT setval('challengesphere.users_id_seq', 4);
 
 -- ======================== CHALLENGES (IDs 1-5) ========================
-INSERT INTO challengesphere.challenges (id, hashtags, categories, title, description, benefits, private, start_date, active, creator_id, current_owner_id, number_of_days)
+INSERT INTO challengesphere.challenges (id, hashtags, categories, title, description, benefits, private, start_date, active, creator_id, current_owner_id, number_of_days, cover_photo_urls)
 OVERRIDING SYSTEM VALUE
 VALUES
-  (1, '#fitness,#pushups',        'Fitness,Health',      '100 Pushups Challenge',  'Do 100 pushups every day for 30 days. Track your progress and push your limits!',   'Builds upper body strength, discipline, and consistency', false, '2026-03-01', true, 1, 1, 30),
-  (2, '#reading,#books',          'Education,Lifestyle', '30 Days of Reading',     'Read at least 30 pages every day for a month. Share your book picks and progress!', 'Improves focus, knowledge, and vocabulary',               false, '2026-03-05', true, 1, 1, 30),
-  (3, '#coding,#leetcode',        'Tech,Education',      'LeetCode Daily Grind',   'Solve one LeetCode problem every day. Easy, Medium, or Hard — your choice!',       'Sharpens problem-solving and interview readiness',        false, '2026-03-10', true, 2, 2, 60),
-  (4, '#meditation,#mindfulness', 'Health,Wellness',     '21-Day Meditation',      'Meditate for at least 10 minutes daily. Build inner calm and focus.',               'Reduces stress, improves focus and emotional health',     true,  '2026-03-15', true, 3, 3, 21),
-  (5, '#nosugar,#health',         'Health,Diet',         'No Sugar for 14 Days',   'Cut out added sugar completely for 2 weeks. Document your meals and how you feel.', 'Better energy levels, clearer skin, weight management',   false, '2026-03-12', true, 1, 1, 14);
+  (1,
+   '#fitness,#pushups', 'Fitness,Health',
+   '100 Pushups Challenge',
+   'Do 100 pushups every day for 30 days. Track your progress and push your limits!',
+   'Builds upper body strength, discipline, and consistency',
+   false, '2026-03-01', true, 1, 1, 30,
+   'https://images.unsplash.com/photo-1571019614242-c5c5dee9f50b?w=800,https://images.unsplash.com/photo-1534438327276-14e5300c3a48?w=800,https://images.unsplash.com/photo-1583454110551-21f2fa2afe61?w=800,https://images.unsplash.com/photo-1517836357463-d25dfeac3438?w=800,https://images.unsplash.com/photo-1601422407692-ec4eeec1d9b3?w=800'),
+
+  (2,
+   '#reading,#books', 'Education,Lifestyle',
+   '30 Days of Reading',
+   'Read at least 30 pages every day for a month. Share your book picks and progress!',
+   'Improves focus, knowledge, and vocabulary',
+   false, '2026-03-05', true, 1, 1, 30,
+   'https://images.unsplash.com/photo-1512820790803-83ca734da794?w=800,https://images.unsplash.com/photo-1524995997946-a1c2e315a42f?w=800,https://images.unsplash.com/photo-1507842217343-583bb7270b66?w=800,https://images.unsplash.com/photo-1544947950-fa07a98d237f?w=800'),
+
+  (3,
+   '#coding,#leetcode', 'Tech,Education',
+   'LeetCode Daily Grind',
+   'Solve one LeetCode problem every day. Easy, Medium, or Hard — your choice!',
+   'Sharpens problem-solving and interview readiness',
+   false, '2026-03-10', true, 2, 2, 60,
+   'https://images.unsplash.com/photo-1555066931-4365d14bab8c?w=800,https://images.unsplash.com/photo-1542831371-29b0f74f9713?w=800,https://images.unsplash.com/photo-1461749280684-dccba630e2f6?w=800,https://images.unsplash.com/photo-1607705703571-c5a8695f18f6?w=800,https://images.unsplash.com/photo-1516116216624-53e697fedbea?w=800'),
+
+  (4,
+   '#meditation,#mindfulness', 'Health,Wellness',
+   '21-Day Meditation',
+   'Meditate for at least 10 minutes daily. Build inner calm and focus.',
+   'Reduces stress, improves focus and emotional health',
+   true, '2026-03-15', true, 3, 3, 21,
+   'https://images.unsplash.com/photo-1506126613408-eca07ce68773?w=800,https://images.unsplash.com/photo-1545389336-cf090694435e?w=800,https://images.unsplash.com/photo-1499728603263-13726abce5fd?w=800'),
+
+  (5,
+   '#nosugar,#health', 'Health,Diet',
+   'No Sugar for 14 Days',
+   'Cut out added sugar completely for 2 weeks. Document your meals and how you feel.',
+   'Better energy levels, clearer skin, weight management',
+   false, '2026-03-12', true, 1, 1, 14,
+   'https://images.unsplash.com/photo-1490645935967-10de6ba17061?w=800,https://images.unsplash.com/photo-1610832958506-aa56368176cf?w=800,https://images.unsplash.com/photo-1568702846914-96b305d2ebb1?w=800,https://images.unsplash.com/photo-1504674900247-0877df9cc836?w=800');
 
 SELECT setval('challengesphere.challenges_id_seq', 5);
 

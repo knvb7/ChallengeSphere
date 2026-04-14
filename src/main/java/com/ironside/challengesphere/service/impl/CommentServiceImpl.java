@@ -1,22 +1,28 @@
 package com.ironside.challengesphere.service.impl;
 
+import com.ironside.challengesphere.api.response.CommentResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.model.Comment;
-import com.ironside.challengesphere.model.Submission;
+import com.ironside.challengesphere.model.User;
 import com.ironside.challengesphere.repository.CommentRepository;
 import com.ironside.challengesphere.repository.SubmissionRepository;
+import com.ironside.challengesphere.repository.UserRepository;
 import com.ironside.challengesphere.service.CommentService;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
-import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.sql.Timestamp;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 @Service
 public class CommentServiceImpl implements CommentService {
@@ -30,13 +36,30 @@ public class CommentServiceImpl implements CommentService {
     private SubmissionRepository submissionRepository;
 
     @Autowired
+    private UserRepository userRepository;
+
+    @Autowired
     private RedisCacheServiceImpl cacheService;
 
     @Override
-    public Page<Comment> getCommentsForSubmission(Long submissionId, Pageable pageable) throws ChallengeSphereException {
+    public Page<CommentResponse> getCommentsForSubmission(Long submissionId, Pageable pageable) throws ChallengeSphereException {
         logger.info("Getting comments for submission: {}, page: {}, size: {}",
                 submissionId, pageable.getPageNumber(), pageable.getPageSize());
-        return commentRepository.findActiveCommentsBySubmissionId(submissionId, pageable);
+
+        Page<Comment> comments = commentRepository.findActiveCommentsBySubmissionId(submissionId, pageable);
+
+        // Batch-fetch all authors for this page — avoids N+1
+        Set<Long> userIds = comments.getContent().stream()
+                .map(Comment::getUserId)
+                .collect(Collectors.toSet());
+        Map<Long, User> userMap = userRepository.findAllById(userIds).stream()
+                .collect(Collectors.toMap(User::getId, u -> u));
+
+        List<CommentResponse> enriched = comments.getContent().stream()
+                .map(c -> CommentResponse.from(c, userMap.get(c.getUserId())))
+                .collect(Collectors.toList());
+
+        return new PageImpl<>(enriched, pageable, comments.getTotalElements());
     }
 
     @Override
@@ -44,12 +67,13 @@ public class CommentServiceImpl implements CommentService {
     public Comment createComment(Long submissionId, Long userId, String content) throws ChallengeSphereException {
         logger.info("Creating comment for submission: {} by user: {}", submissionId, userId);
 
-        Submission submission = submissionRepository.findById(submissionId)
-                .orElseThrow(() -> new ChallengeSphereException(
-                        "Submission not found with id: " + submissionId,
-                        HttpStatus.NOT_FOUND,
-                        logger
-                ));
+        if (!submissionRepository.existsById(submissionId)) {
+            throw new ChallengeSphereException(
+                    "Submission not found with id: " + submissionId,
+                    HttpStatus.NOT_FOUND,
+                    logger
+            );
+        }
 
         if (content == null || content.trim().isEmpty()) {
             throw new ChallengeSphereException(
@@ -70,8 +94,7 @@ public class CommentServiceImpl implements CommentService {
         Comment savedComment = commentRepository.save(comment);
         logger.info("Created comment with id: {} for submission: {}", savedComment.getId(), submissionId);
 
-        cacheService.invalidateCommentsForSubmission(submissionId);
-        updateCommentCountAsync(submission, true);
+        submissionRepository.incrementCommentCount(submissionId);
 
         return savedComment;
     }
@@ -104,7 +127,7 @@ public class CommentServiceImpl implements CommentService {
         Comment updatedComment = commentRepository.save(comment);
         logger.info("Updated comment with id: {}", commentId);
 
-        cacheService.invalidateCommentsForSubmission(comment.getSubmissionId());
+        // cacheService.invalidateCommentsForSubmission(comment.getSubmissionId());
         return updatedComment;
     }
 
@@ -133,29 +156,7 @@ public class CommentServiceImpl implements CommentService {
 
         logger.info("Soft deleted comment with id: {}", commentId);
 
-        cacheService.invalidateCommentsForSubmission(comment.getSubmissionId());
-
-        Submission submission = submissionRepository.findById(comment.getSubmissionId()).orElse(null);
-        if (submission != null) {
-            updateCommentCountAsync(submission, false);
-        }
-    }
-
-    @Async
-    @Transactional
-    public void updateCommentCountAsync(Submission submission, boolean isAdded) {
-        try {
-            if (submission != null) {
-                Long currentCount = submission.getCommentsCount();
-                Long newCount = isAdded ? currentCount + 1 : Math.max(0, currentCount - 1);
-                submission.setCommentsCount(newCount);
-                submissionRepository.save(submission);
-                logger.info("Updated comment count to {} for submission: {} ({})",
-                        newCount, submission.getId(), isAdded ? "increased" : "decreased");
-            }
-        } catch (Exception e) {
-            logger.error("Error updating comment count for submission {}: {}",
-                    submission.getId(), e.getMessage(), e);
-        }
+        // cacheService.invalidateCommentsForSubmission(comment.getSubmissionId());
+        submissionRepository.decrementCommentCount(comment.getSubmissionId());
     }
 }

@@ -24,15 +24,20 @@ import com.ironside.challengesphere.api.response.SubmissionResponse;
 import com.ironside.challengesphere.api.response.SubmissionsResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.model.Challenge;
+import com.ironside.challengesphere.model.Follow;
 import com.ironside.challengesphere.model.Submission;
 import com.ironside.challengesphere.model.User;
 import com.ironside.challengesphere.model.UserChallenge;
 import com.ironside.challengesphere.repository.ChallengeRepository;
+import com.ironside.challengesphere.repository.FollowRepository;
 import com.ironside.challengesphere.repository.SubmissionRepository;
 import com.ironside.challengesphere.repository.UserChallengeRepository;
 import com.ironside.challengesphere.repository.UserRepository;
 import com.ironside.challengesphere.service.LeaderboardService;
 import com.ironside.challengesphere.service.SubmissionService;
+
+import java.util.Set;
+import java.util.stream.Collectors;
 
 @Service
 public class SubmissionServiceImpl implements SubmissionService {
@@ -63,8 +68,11 @@ public class SubmissionServiceImpl implements SubmissionService {
     private UserChallengeRepository userChallengeRepository;
     
     @Autowired
+    private FollowRepository followRepository;
+
+    @Autowired
     private RedisCacheServiceImpl cacheService;
-    
+
     @Autowired
     private LeaderboardService leaderboardService;
 
@@ -141,13 +149,13 @@ public class SubmissionServiceImpl implements SubmissionService {
                 );
             }
 
-            // Check if submission already exists for this day
+            // Enforce max 5 submissions per day per user per challenge
             List<Submission> existingSubmissions = submissionRepository.findByUserChallengeAndDay(userId, challengeId, dayNumber);
-            if (!existingSubmissions.isEmpty()) {
-                logger.warn("Submission already exists for user: {}, challenge: {}, day: {}", userId, challengeId, dayNumber);
+            if (existingSubmissions.size() >= 5) {
+                logger.warn("Submission limit reached for user: {}, challenge: {}, day: {}", userId, challengeId, dayNumber);
                 throw new ChallengeSphereException(
-                        "A submission already exists for day " + dayNumber + ". Please update the existing submission instead.",
-                        HttpStatus.CONFLICT,
+                        "You have reached the maximum of 5 submissions for day " + dayNumber + ".",
+                        HttpStatus.TOO_MANY_REQUESTS,
                         logger
                 );
             }
@@ -185,9 +193,16 @@ public class SubmissionServiceImpl implements SubmissionService {
             
             // Invalidate list caches (new submission affects these lists)
             invalidateSubmissionListCaches(userId, challengeId);
-            
-            // Invalidate feed caches since new submission affects all feed types
-            cacheService.invalidateAllFeeds();
+
+            // Push new submission into followers' cached timelines (fan-out on write)
+            // fanOutNewSubmission(userId, savedSubmission.getId(),
+            //         (double) savedSubmission.getCreatedAt().getTime());
+
+            // Invalidate global/non-timeline feeds that this submission affects
+            // cacheService.invalidateFeed("TRENDING");
+            // cacheService.invalidateFeed("EXPLORE");
+            // cacheService.invalidateFeed("CHALLENGE:" + challengeId);
+            // cacheService.invalidateFeed("USER:" + userId);
 
             // Update leaderboard score for this user (async-safe)
             try {
@@ -220,14 +235,14 @@ public class SubmissionServiceImpl implements SubmissionService {
 
         try {
             // Try cache first for first page (most common request)
-            String cacheKey = USER_CHALLENGE_SUBMISSIONS_PREFIX + userId + ":" + challengeId;
-            if (page == 1) {
-                SubmissionsResponse cachedResponse = cacheService.get(cacheKey + ":page1:" + pageSize, SubmissionsResponse.class);
-                if (cachedResponse != null) {
-                    logger.debug("Cache hit for user-challenge submissions: userId={}, challengeId={}", userId, challengeId);
-                    return cachedResponse;
-                }
-            }
+            // String cacheKey = USER_CHALLENGE_SUBMISSIONS_PREFIX + userId + ":" + challengeId;
+            // if (page == 1) {
+            //     SubmissionsResponse cachedResponse = cacheService.get(cacheKey + ":page1:" + pageSize, SubmissionsResponse.class);
+            //     if (cachedResponse != null) {
+            //         logger.debug("Cache hit for user-challenge submissions: userId={}, challengeId={}", userId, challengeId);
+            //         return cachedResponse;
+            //     }
+            // }
 
             List<Submission> allSubmissions = submissionRepository.findByUserIdAndChallengeId(userId, challengeId);
 
@@ -243,12 +258,12 @@ public class SubmissionServiceImpl implements SubmissionService {
                     totalCount, userId, challengeId, page, (int) Math.ceil((double) totalCount / pageSize));
 
             SubmissionsResponse response = SubmissionsResponse.create(paginatedSubmissions, page, pageSize, totalCount);
-            
+
             // Cache first page results
-            if (page == 1) {
-                cacheService.save(cacheKey + ":page1:" + pageSize, response, SUBMISSIONS_LIST_TTL);
-            }
-            
+            // if (page == 1) {
+            //     cacheService.save(cacheKey + ":page1:" + pageSize, response, SUBMISSIONS_LIST_TTL);
+            // }
+
             return response;
 
         } catch (Exception e) {
@@ -268,14 +283,14 @@ public class SubmissionServiceImpl implements SubmissionService {
 
         try {
             // Try cache first for first page
-            String cacheKey = CHALLENGE_SUBMISSIONS_PREFIX + challengeId;
-            if (page == 1) {
-                SubmissionsResponse cachedResponse = cacheService.get(cacheKey + ":page1:" + pageSize, SubmissionsResponse.class);
-                if (cachedResponse != null) {
-                    logger.debug("Cache hit for challenge submissions: challengeId={}", challengeId);
-                    return cachedResponse;
-                }
-            }
+            // String cacheKey = CHALLENGE_SUBMISSIONS_PREFIX + challengeId;
+            // if (page == 1) {
+            //     SubmissionsResponse cachedResponse = cacheService.get(cacheKey + ":page1:" + pageSize, SubmissionsResponse.class);
+            //     if (cachedResponse != null) {
+            //         logger.debug("Cache hit for challenge submissions: challengeId={}", challengeId);
+            //         return cachedResponse;
+            //     }
+            // }
 
             List<Submission> allSubmissions = submissionRepository.findActiveByChallengeId(challengeId);
 
@@ -291,12 +306,12 @@ public class SubmissionServiceImpl implements SubmissionService {
                     totalCount, challengeId, page, (int) Math.ceil((double) totalCount / pageSize));
 
             SubmissionsResponse response = SubmissionsResponse.create(paginatedSubmissions, page, pageSize, totalCount);
-            
+
             // Cache first page results
-            if (page == 1) {
-                cacheService.save(cacheKey + ":page1:" + pageSize, response, SUBMISSIONS_LIST_TTL);
-            }
-            
+            // if (page == 1) {
+            //     cacheService.save(cacheKey + ":page1:" + pageSize, response, SUBMISSIONS_LIST_TTL);
+            // }
+
             return response;
 
         } catch (Exception e) {
@@ -316,14 +331,14 @@ public class SubmissionServiceImpl implements SubmissionService {
 
         try {
             // Try cache first for first page
-            String cacheKey = USER_SUBMISSIONS_PREFIX + userId;
-            if (page == 1) {
-                SubmissionsResponse cachedResponse = cacheService.get(cacheKey + ":page1:" + pageSize, SubmissionsResponse.class);
-                if (cachedResponse != null) {
-                    logger.debug("Cache hit for user submissions: userId={}", userId);
-                    return cachedResponse;
-                }
-            }
+            // String cacheKey = USER_SUBMISSIONS_PREFIX + userId;
+            // if (page == 1) {
+            //     SubmissionsResponse cachedResponse = cacheService.get(cacheKey + ":page1:" + pageSize, SubmissionsResponse.class);
+            //     if (cachedResponse != null) {
+            //         logger.debug("Cache hit for user submissions: userId={}", userId);
+            //         return cachedResponse;
+            //     }
+            // }
 
             List<Submission> allSubmissions = submissionRepository.findActiveByUserId(userId);
 
@@ -339,12 +354,12 @@ public class SubmissionServiceImpl implements SubmissionService {
                     totalCount, userId, page, (int) Math.ceil((double) totalCount / pageSize));
 
             SubmissionsResponse response = SubmissionsResponse.create(paginatedSubmissions, page, pageSize, totalCount);
-            
+
             // Cache first page results
-            if (page == 1) {
-                cacheService.save(cacheKey + ":page1:" + pageSize, response, SUBMISSIONS_LIST_TTL);
-            }
-            
+            // if (page == 1) {
+            //     cacheService.save(cacheKey + ":page1:" + pageSize, response, SUBMISSIONS_LIST_TTL);
+            // }
+
             return response;
 
         } catch (Exception e) {
@@ -456,13 +471,13 @@ public class SubmissionServiceImpl implements SubmissionService {
         if (submission == null || submission.getId() == null) {
             return;
         }
-        try {
-            String cacheKey = SUBMISSION_PREFIX + submission.getId();
-            cacheService.save(cacheKey, submission, SUBMISSION_TTL);
-            logger.debug("Cached submission: id={}", submission.getId());
-        } catch (Exception e) {
-            logger.warn("Failed to cache submission: id={}, error={}", submission.getId(), e.getMessage());
-        }
+        // try {
+        //     String cacheKey = SUBMISSION_PREFIX + submission.getId();
+        //     cacheService.save(cacheKey, submission, SUBMISSION_TTL);
+        //     logger.debug("Cached submission: id={}", submission.getId());
+        // } catch (Exception e) {
+        //     logger.warn("Failed to cache submission: id={}, error={}", submission.getId(), e.getMessage());
+        // }
     }
 
     /**
@@ -470,16 +485,17 @@ public class SubmissionServiceImpl implements SubmissionService {
      * @return cached submission or null if not found
      */
     private Submission getCachedSubmission(Long submissionId) {
-        if (submissionId == null) {
-            return null;
-        }
-        try {
-            String cacheKey = SUBMISSION_PREFIX + submissionId;
-            return cacheService.get(cacheKey, Submission.class);
-        } catch (Exception e) {
-            logger.warn("Failed to get cached submission: id={}, error={}", submissionId, e.getMessage());
-            return null;
-        }
+        // if (submissionId == null) {
+        //     return null;
+        // }
+        // try {
+        //     String cacheKey = SUBMISSION_PREFIX + submissionId;
+        //     return cacheService.get(cacheKey, Submission.class);
+        // } catch (Exception e) {
+        //     logger.warn("Failed to get cached submission: id={}, error={}", submissionId, e.getMessage());
+        //     return null;
+        // }
+        return null;
     }
 
     /**
@@ -491,21 +507,17 @@ public class SubmissionServiceImpl implements SubmissionService {
         if (submissionId == null) {
             return null;
         }
-        
+
         // Try cache first
-        Submission cached = getCachedSubmission(submissionId);
-        if (cached != null) {
-            logger.debug("Cache hit for submission: id={}", submissionId);
-            return cached;
-        }
-        
-        // Fallback to database
-        logger.debug("Cache miss for submission: id={}, fetching from DB", submissionId);
+        // Submission cached = getCachedSubmission(submissionId);
+        // if (cached != null) {
+        //     logger.debug("Cache hit for submission: id={}", submissionId);
+        //     return cached;
+        // }
+
+        // Fetch from database
+        logger.debug("Fetching submission from DB: id={}", submissionId);
         return submissionRepository.findById(submissionId)
-                .map(submission -> {
-                    cacheSubmission(submission);
-                    return submission;
-                })
                 .orElse(null);
     }
 
@@ -514,43 +526,55 @@ public class SubmissionServiceImpl implements SubmissionService {
      * This ensures fresh data is fetched on next request
      */
     private void invalidateSubmissionListCaches(Long userId, Long challengeId) {
-        try {
-            // Invalidate user-challenge combination cache
-            String userChallengeCachePattern = USER_CHALLENGE_SUBMISSIONS_PREFIX + userId + ":" + challengeId + "*";
-            cacheService.deleteByPattern(userChallengeCachePattern);
-            
-            // Invalidate challenge submissions cache
-            String challengeCachePattern = CHALLENGE_SUBMISSIONS_PREFIX + challengeId + "*";
-            cacheService.deleteByPattern(challengeCachePattern);
-            
-            // Invalidate user submissions cache
-            String userCachePattern = USER_SUBMISSIONS_PREFIX + userId + "*";
-            cacheService.deleteByPattern(userCachePattern);
-            
-            // Invalidate trending cache (new submission affects trending)
-            String trendingCachePattern = TRENDING_SUBMISSIONS_PREFIX + "*";
-            cacheService.deleteByPattern(trendingCachePattern);
-            
-            logger.debug("Invalidated submission list caches for userId={}, challengeId={}", userId, challengeId);
-        } catch (Exception e) {
-            logger.warn("Failed to invalidate submission list caches: userId={}, challengeId={}, error={}", 
-                userId, challengeId, e.getMessage());
-        }
+        // try {
+        //     String userChallengeCachePattern = USER_CHALLENGE_SUBMISSIONS_PREFIX + userId + ":" + challengeId + "*";
+        //     cacheService.deleteByPattern(userChallengeCachePattern);
+        //     String challengeCachePattern = CHALLENGE_SUBMISSIONS_PREFIX + challengeId + "*";
+        //     cacheService.deleteByPattern(challengeCachePattern);
+        //     String userCachePattern = USER_SUBMISSIONS_PREFIX + userId + "*";
+        //     cacheService.deleteByPattern(userCachePattern);
+        //     String trendingCachePattern = TRENDING_SUBMISSIONS_PREFIX + "*";
+        //     cacheService.deleteByPattern(trendingCachePattern);
+        //     logger.debug("Invalidated submission list caches for userId={}, challengeId={}", userId, challengeId);
+        // } catch (Exception e) {
+        //     logger.warn("Failed to invalidate submission list caches: userId={}, challengeId={}, error={}",
+        //         userId, challengeId, e.getMessage());
+        // }
     }
 
     /**
      * Invalidate a single submission cache
      */
     private void invalidateSubmissionCache(Long submissionId) {
-        if (submissionId == null) {
-            return;
-        }
-        try {
-            String cacheKey = SUBMISSION_PREFIX + submissionId;
-            cacheService.delete(cacheKey);
-            logger.debug("Invalidated submission cache: id={}", submissionId);
-        } catch (Exception e) {
-            logger.warn("Failed to invalidate submission cache: id={}, error={}", submissionId, e.getMessage());
-        }
+        // if (submissionId == null) {
+        //     return;
+        // }
+        // try {
+        //     String cacheKey = SUBMISSION_PREFIX + submissionId;
+        //     cacheService.delete(cacheKey);
+        //     logger.debug("Invalidated submission cache: id={}", submissionId);
+        // } catch (Exception e) {
+        //     logger.warn("Failed to invalidate submission cache: id={}, error={}", submissionId, e.getMessage());
+        // }
+    }
+
+    /**
+     * Fan out a new submission to all followers' cached timelines.
+     * Uses cached follower IDs from Redis; falls back to DB if not available.
+     */
+    private void fanOutNewSubmission(Long authorId, Long submissionId, double score) {
+        // try {
+        //     Set<Long> followerIds = cacheService.getCachedFollowerIds(authorId);
+        //     if (followerIds.isEmpty()) {
+        //         followerIds = followRepository.findActiveFollowsByFollowingId(authorId)
+        //                 .stream()
+        //                 .map(Follow::getFollowerId)
+        //                 .collect(Collectors.toSet());
+        //     }
+        //     followerIds.add(authorId);
+        //     cacheService.fanOutToFollowerTimelines(followerIds, submissionId, score);
+        // } catch (Exception e) {
+        //     logger.warn("Failed to fan out submission {}: {}", submissionId, e.getMessage());
+        // }
     }
 }

@@ -13,12 +13,17 @@ import com.ironside.challengesphere.api.request.GetPopularChallengesRequest;
 import com.ironside.challengesphere.api.request.GetUserChallengesRequest;
 import com.ironside.challengesphere.api.request.JoinChallengeRequest;
 import com.ironside.challengesphere.api.request.LeaveChallengeRequest;
+import com.ironside.challengesphere.api.request.GeneratePresignedUrlsRequest;
 import com.ironside.challengesphere.api.response.ChallengeCreateResponse;
+import com.ironside.challengesphere.api.response.ChallengeDetailResponse;
 import com.ironside.challengesphere.api.response.ChallengeParticipantsResponse;
+import com.ironside.challengesphere.api.response.ChallengeProgressResponse;
 import com.ironside.challengesphere.api.response.ChallengesByHashtagResponse;
 import com.ironside.challengesphere.api.response.JoinChallengeResponse;
 import com.ironside.challengesphere.api.response.LeaveChallengeResponse;
+import com.ironside.challengesphere.api.response.MyChallengesResponse;
 import com.ironside.challengesphere.api.response.PopularChallengesResponse;
+import com.ironside.challengesphere.api.response.PresignedUrlsResponse;
 import com.ironside.challengesphere.api.response.RecentChallengesResponse;
 import com.ironside.challengesphere.api.response.UserChallengesResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
@@ -53,4 +58,12 @@ public interface ChallengeService {
      * @return List of trending challenge IDs
      */
     List<Long> getTrendingChallengeIds(int limit);
+
+    ChallengeDetailResponse getChallengeDetail(Long challengeId, Long currentUserId) throws ChallengeSphereException;
+
+    ChallengeProgressResponse getChallengeProgress(Long challengeId, Long userId) throws ChallengeSphereException;
+
+    MyChallengesResponse getMyChallenges(Long userId, String status) throws ChallengeSphereException;
+
+    PresignedUrlsResponse generateChallengePresignedUrls(GeneratePresignedUrlsRequest request) throws ChallengeSphereException;
 }

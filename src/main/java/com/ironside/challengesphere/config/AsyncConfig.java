@@ -30,17 +30,18 @@ public class AsyncConfig implements AsyncConfigurer {
         logger.info("Configuring async cache executor");
         
         ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
-        executor.setCorePoolSize(Runtime.getRuntime().availableProcessors());
+        int corePoolSize = Runtime.getRuntime().availableProcessors();
+        executor.setCorePoolSize(corePoolSize);
         executor.setMaxPoolSize(10);
         executor.setQueueCapacity(100);
         executor.setThreadNamePrefix("cache-async-");
         executor.setWaitForTasksToCompleteOnShutdown(true);
         executor.setAwaitTerminationSeconds(30);
-        executor.setRejectedExecutionHandler((r, e) -> 
+        executor.setRejectedExecutionHandler((r, e) ->
             logger.warn("Cache async task rejected due to thread pool exhaustion"));
         executor.initialize();
-        
-        logger.info("Async cache executor configured: corePoolSize=4, maxPoolSize=10, queueCapacity=100");
+
+        logger.info("Async cache executor configured: corePoolSize={}, maxPoolSize=10, queueCapacity=100", corePoolSize);
         return executor;
     }
 

@@ -1,6 +1,8 @@
 package com.ironside.challengesphere.api.response;
 
 import java.util.List;
+import java.sql.Timestamp;
+import java.time.LocalDate;
 
 import com.ironside.challengesphere.model.Challenge;
 
@@ -34,44 +36,45 @@ public class RecentChallengesResponse {
     @AllArgsConstructor
     public static class ChallengeInfo {
         private Long id;
-        private String title;
-        private String description;
         private String hashtags;
         private String categories;
+        private String title;
+        private String description;
         private String benefits;
-        private Integer numberOfDays;
-        private String startDate;
-        private Long creatorId;
-        private String creatorUsername;
         private Boolean isPrivate;
+        private LocalDate startDate;
         private Boolean active;
-        private String createdAt;
-        
-        // Engagement metrics from Redis
+        private Timestamp createdAt;
+        private Long creatorId;
+        private Long currentOwnerId;
+        private Integer numberOfDays;
+        private String coverPhotoUrls;
         private long viewCount;
         private long engagementScore;
         private int participantCount;
-        
+
         public static ChallengeInfo fromChallenge(Challenge challenge) {
             return ChallengeInfo.builder()
                     .id(challenge.getId())
-                    .title(challenge.getTitle())
-                    .description(challenge.getDescription())
                     .hashtags(challenge.getHashtags())
                     .categories(challenge.getCategories())
+                    .title(challenge.getTitle())
+                    .description(challenge.getDescription())
                     .benefits(challenge.getBenefits())
-                    .numberOfDays(challenge.getNumberOfDays())
-                    .startDate(challenge.getStartDate() != null ? challenge.getStartDate().toString() : null)
-                    .creatorId(challenge.getCreatorId())
                     .isPrivate(challenge.getIsPrivate())
+                    .startDate(challenge.getStartDate())
                     .active(challenge.getActive())
-                    .createdAt(challenge.getCreatedAt() != null ? challenge.getCreatedAt().toString() : null)
+                    .createdAt(challenge.getCreatedAt())
+                    .creatorId(challenge.getCreatorId())
+                    .currentOwnerId(challenge.getCurrentOwnerId())
+                    .numberOfDays(challenge.getNumberOfDays())
+                    .coverPhotoUrls(challenge.getCoverPhotoUrls())
                     .viewCount(0)
                     .engagementScore(0)
                     .participantCount(0)
                     .build();
         }
-        
+
         public static ChallengeInfo fromChallenge(Challenge challenge, long viewCount, long engagementScore, int participantCount) {
             ChallengeInfo info = fromChallenge(challenge);
             info.setViewCount(viewCount);
@@ -112,4 +115,3 @@ public class RecentChallengesResponse {
                 .build();
     }
 }
-

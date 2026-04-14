@@ -1,8 +1,10 @@
 package com.ironside.challengesphere.api.request;
 
+import jakarta.validation.constraints.Size;
 import lombok.Data;
 
 import java.sql.Timestamp;
+import java.util.List;
 
 @Data
 public class ChallengeUpdateRequest {
@@ -12,5 +14,8 @@ public class ChallengeUpdateRequest {
     private Integer numberOfDays;
     private String reminderTime;
     private Boolean active;
+
+    @Size(max = 5, message = "A challenge can have at most 5 cover photos")
+    private List<String> coverPhotoUrls; // replaces all existing cover photos when provided
 }
 

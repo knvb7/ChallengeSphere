@@ -10,6 +10,8 @@ import java.util.Set;
 import java.util.TreeSet;
 import java.util.stream.Collectors;
 
+import org.springframework.data.domain.PageRequest;
+
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -93,20 +95,21 @@ public class LeaderboardServiceImpl implements LeaderboardService {
                             logger
                     ));
             
-            // Get top entries from Redis leaderboard
-            List<RedisCacheServiceImpl.LeaderboardEntry> redisEntries = 
-                    cacheService.getTopScoresWithRank(challengeId, limit);
-            
-            // If Redis is empty, try to rebuild from database
-            if (redisEntries.isEmpty()) {
-                logger.info("Leaderboard cache empty for challenge {}, rebuilding from DB", challengeId);
-                rebuildLeaderboard(challengeId);
-                redisEntries = cacheService.getTopScoresWithRank(challengeId, limit);
-            }
-            
-            // If still empty, return empty leaderboard
-            if (redisEntries.isEmpty()) {
-                logger.info("No leaderboard entries found for challenge {}", challengeId);
+            // ── Read directly from DB (Redis caching temporarily disabled) ──────
+            // TODO: re-enable Redis reads once cache population is confirmed working
+            // List<RedisCacheServiceImpl.LeaderboardEntry> redisEntries =
+            //         cacheService.getTopScoresWithRank(challengeId, limit);
+            // if (redisEntries.isEmpty()) {
+            //     rebuildLeaderboard(challengeId);
+            //     redisEntries = cacheService.getTopScoresWithRank(challengeId, limit);
+            // }
+
+            List<LeaderboardEntry> dbEntries =
+                    leaderboardEntryRepository.findTopWithUserByChallengeId(
+                            challengeId, PageRequest.of(0, limit));
+
+            if (dbEntries.isEmpty()) {
+                logger.info("No leaderboard entries found in DB for challenge {}", challengeId);
                 return LeaderboardResponse.success(
                         challengeId,
                         challenge.getTitle(),
@@ -115,45 +118,28 @@ public class LeaderboardServiceImpl implements LeaderboardService {
                         0
                 );
             }
-            
-            // Extract user IDs from leaderboard entries
-            List<Long> userIds = redisEntries.stream()
-                    .map(entry -> Long.parseLong(entry.userId()))
-                    .collect(Collectors.toList());
-            
-            // Batch fetch user details
-            Map<Long, User> userMap = userRepository.findAllById(userIds).stream()
-                    .collect(Collectors.toMap(User::getId, user -> user));
-            
-            // Batch fetch submission counts per user for this challenge
-            Map<Long, Long> submissionCounts = getSubmissionCounts(challengeId, userIds);
-            
-            // Batch fetch glory counts per user for this challenge
-            Map<Long, Long> gloryCounts = getGloryCounts(challengeId, userIds);
-            
-            // Build response entries
+
+            // Build response entries from DB rows (user already joined via JOIN FETCH)
             List<LeaderboardEntryDTO> entries = new ArrayList<>();
-            for (RedisCacheServiceImpl.LeaderboardEntry redisEntry : redisEntries) {
-                Long entryUserId = Long.parseLong(redisEntry.userId());
-                User user = userMap.get(entryUserId);
-                
-                if (user != null) {
-                    entries.add(LeaderboardEntryDTO.builder()
-                            .userId(entryUserId)
-                            .username(user.getUsername())
-                            .displayName(user.getUsername()) // Using username as display name
-                            .profilePictureUrl(user.getProfilePicUrl())
-                            .rank(redisEntry.rank())
-                            .score(redisEntry.score())
-                            .submissionCount(submissionCounts.getOrDefault(entryUserId, 0L).intValue())
-                            .gloriesCount(gloryCounts.getOrDefault(entryUserId, 0L))
-                            .currentStreak(calculateStreak(challengeId, entryUserId))
-                            .build());
-                }
+            for (int i = 0; i < dbEntries.size(); i++) {
+                LeaderboardEntry le = dbEntries.get(i);
+                User user = le.getUser();
+                entries.add(LeaderboardEntryDTO.builder()
+                        .userId(user.getId())
+                        .username(user.getUsername())
+                        .displayName(user.getUsername())
+                        .profilePictureUrl(user.getProfilePicUrl())
+                        .rank(i + 1L)
+                        .score(le.getScore())
+                        .submissionCount(le.getSubmissionCount())
+                        .gloriesCount((long) le.getGloryPoints())
+                        .currentStreak(le.getStreakDays())
+                        .build());
             }
-            
-            // Get total participants
-            int totalParticipants = (int) cacheService.getLeaderboardSize(challengeId);
+
+            // Get total participants from DB
+            // int totalParticipants = (int) cacheService.getLeaderboardSize(challengeId);
+            int totalParticipants = leaderboardEntryRepository.countParticipants(challengeId).intValue();
             
             // Build response
             LeaderboardResponse response;
@@ -197,35 +183,41 @@ public class LeaderboardServiceImpl implements LeaderboardService {
     @Override
     public UserRankDTO getUserRank(Long challengeId, Long userId) throws ChallengeSphereException {
         logger.debug("Getting user rank for challenge: {}, user: {}", challengeId, userId);
-        
+
         try {
-            Optional<Long> rankOpt = cacheService.getUserRank(challengeId, userId);
-            Optional<Double> scoreOpt = cacheService.getUserScore(challengeId, userId);
-            long totalParticipants = cacheService.getLeaderboardSize(challengeId);
-            
-            if (rankOpt.isEmpty() || scoreOpt.isEmpty()) {
+            // ── Read directly from DB (Redis caching temporarily disabled) ──────
+            // TODO: re-enable Redis reads once cache population is confirmed working
+            // Optional<Long> rankOpt = cacheService.getUserRank(challengeId, userId);
+            // Optional<Double> scoreOpt = cacheService.getUserScore(challengeId, userId);
+            // long totalParticipants = cacheService.getLeaderboardSize(challengeId);
+
+            Optional<LeaderboardEntry> entryOpt =
+                    leaderboardEntryRepository.findByChallengeIdAndUserId(challengeId, userId);
+
+            if (entryOpt.isEmpty()) {
                 logger.debug("User {} not found in leaderboard for challenge {}", userId, challengeId);
                 return null;
             }
-            
-            long rank = rankOpt.get();
-            double score = scoreOpt.get();
-            
-            // Calculate percentile (what percentage of users is this user better than)
-            double percentile = totalParticipants > 1 
-                    ? ((double) (totalParticipants - rank) / (totalParticipants - 1)) * 100 
+
+            LeaderboardEntry entry = entryOpt.get();
+            Integer rank = leaderboardEntryRepository.getUserRank(challengeId, userId);
+            long totalParticipants = leaderboardEntryRepository.countParticipants(challengeId);
+
+            long resolvedRank = rank != null ? rank.longValue() : totalParticipants;
+            double percentile = totalParticipants > 1
+                    ? ((double) (totalParticipants - resolvedRank) / (totalParticipants - 1)) * 100
                     : 100.0;
-            
+
             return UserRankDTO.builder()
                     .userId(userId)
-                    .rank(rank)
-                    .score(score)
+                    .rank(resolvedRank)
+                    .score(entry.getScore())
                     .totalParticipants(totalParticipants)
-                    .percentile(Math.round(percentile * 100.0) / 100.0) // Round to 2 decimal places
+                    .percentile(Math.round(percentile * 100.0) / 100.0)
                     .build();
-                    
+
         } catch (Exception e) {
-            logger.error("Error getting user rank for challenge {}, user {}: {}", 
+            logger.error("Error getting user rank for challenge {}, user {}: {}",
                 challengeId, userId, e.getMessage(), e);
             return null;
         }

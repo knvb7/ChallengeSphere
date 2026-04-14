@@ -10,6 +10,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -50,7 +51,6 @@ public class RedisCacheServiceImpl {
     @Qualifier("cacheExecutor")
     private Executor cacheExecutor;
 
-    // Cache key prefixes for different entities
     private static final String CHALLENGE_PREFIX = "challenge:";
     private static final String USER_PREFIX = "user:";
     private static final String SUBMISSION_PREFIX = "submission:";
@@ -60,8 +60,6 @@ public class RedisCacheServiceImpl {
     private static final String RECENT_CHALLENGES_KEY = "recent:challenges";
     private static final String TRENDING_CHALLENGES_KEY = "trending:challenges";
     private static final String VERIFICATION_PREFIX = "verification:";
-
-    // Cache key prefixes for new use cases
     private static final String USER_CHALLENGES_PREFIX = "user:challenges:";
     private static final String CHALLENGE_PARTICIPANTS_PREFIX = "challenge:participants:";
     private static final String HASHTAG_CHALLENGES_PREFIX = "challenge:hashtag:";
@@ -69,22 +67,22 @@ public class RedisCacheServiceImpl {
     private static final String GLORY_COUNT_PREFIX = "glory:count:";
     private static final String GLORY_CHECK_PREFIX = "glory:check:";
     private static final String FEED_PREFIX = "feed:";
-
-    // Default TTL values
+    private static final String FEED_TIMELINE_PREFIX = "feed:timeline:";
+    private static final String DIRTY_LOGIN_SET_KEY = "dirty:last_login";
     private static final Duration DEFAULT_CHALLENGE_TTL = Duration.ofHours(1);
     private static final Duration DEFAULT_SESSION_TTL = Duration.ofHours(24);
     private static final Duration DEFAULT_SUBMISSION_TTL = Duration.ofMinutes(30);
     private static final Duration DEFAULT_USER_PROFILE_TTL = Duration.ofMinutes(30);
     private static final Duration DEFAULT_LEADERBOARD_TTL = Duration.ofDays(7);
     private static final Duration DEFAULT_VERIFICATION_TTL = Duration.ofMinutes(10);
-
-    // Additional TTL values for new use cases
     private static final Duration USER_CHALLENGES_TTL = Duration.ofMinutes(15);
     private static final Duration CHALLENGE_PARTICIPANTS_TTL = Duration.ofMinutes(10);
     private static final Duration HASHTAG_CHALLENGES_TTL = Duration.ofMinutes(10);
     private static final Duration COMMENTS_TTL = Duration.ofMinutes(10);
     private static final Duration GLORY_TTL = Duration.ofMinutes(15);
     private static final Duration FEED_TTL = Duration.ofMinutes(5);
+    private static final Duration FEED_TIMELINE_TTL = Duration.ofHours(1);
+    private static final int FEED_TIMELINE_MAX_SIZE = 500;
 
     // ==================== HEALTH CHECK ====================
 
@@ -1038,10 +1036,7 @@ public class RedisCacheServiceImpl {
     // ==================== USE CASE 7: USER PROFILE CACHING ====================
 
     // Additional cache keys for user-related data
-    private static final String USER_FOLLOWERS_PREFIX = "user:followers:";
-    private static final String USER_FOLLOWING_PREFIX = "user:following:";
     private static final String USER_STATS_PREFIX = "user:stats:";
-    private static final Duration USER_FOLLOWERS_TTL = Duration.ofMinutes(15);
     private static final Duration USER_STATS_TTL = Duration.ofMinutes(10);
 
     /**
@@ -1085,138 +1080,137 @@ public class RedisCacheServiceImpl {
         });
     }
 
+    // ==================== FOLLOW RELATIONSHIP SORTED SETS ====================
+    //
+    // Instead of caching serialized paginated JSON blobs and invalidating on every
+    // follow/unfollow, we model the relationship directly in Redis Sorted Sets:
+    //   follows:following:{userId} → members = followed user IDs, scores = timestamps
+    //   follows:followers:{userId} → members = follower user IDs, scores = timestamps
+    //
+    // On follow:  ZADD to both sets — O(log N), zero invalidation
+    // On unfollow: ZREM from both sets — O(log N), zero invalidation
+    // On read page: ZREVRANGE with offset+limit — O(log N + M)
+    // Total count: ZCARD — O(1)
+
+    private static final String FOLLOW_FOLLOWING_PREFIX = "follows:following:";
+    private static final String FOLLOW_FOLLOWERS_PREFIX = "follows:followers:";
+
     /**
-     * Cache user's followers list (ASYNC - non-blocking)
+     * Record a follow relationship in both sorted sets.
+     * Called after DB persist — fire-and-forget.
      */
-    public <T> void cacheUserFollowers(Long userId, T followers) {
-        if (userId == null || followers == null) {
-            return;
-        }
+    public void addFollow(Long followerId, Long followingId, long timestampMillis) {
+        if (followerId == null || followingId == null) return;
         executeAsync(() -> {
-            String key = USER_FOLLOWERS_PREFIX + userId;
-            if (save(key, followers, USER_FOLLOWERS_TTL)) {
-                logger.debug("Cached followers for user: userId={}", userId);
+            try {
+                double score = timestampMillis;
+                redisTemplate.opsForZSet().add(
+                        FOLLOW_FOLLOWING_PREFIX + followerId, followingId.toString(), score);
+                redisTemplate.opsForZSet().add(
+                        FOLLOW_FOLLOWERS_PREFIX + followingId, followerId.toString(), score);
+                logger.debug("ZADD follow: {} → {}", followerId, followingId);
+            } catch (Exception e) {
+                logger.warn("Failed to ZADD follow {}->{}: {}", followerId, followingId, e.getMessage());
             }
         });
     }
 
     /**
-     * Cache user's followers list with pagination (ASYNC - non-blocking)
+     * Remove a follow relationship from both sorted sets.
+     * Called after DB soft-delete — fire-and-forget.
      */
-    public <T> void cacheUserFollowers(Long userId, int page, int pageSize, T followers) {
-        if (userId == null || followers == null) {
-            return;
-        }
+    public void removeFollow(Long followerId, Long followingId) {
+        if (followerId == null || followingId == null) return;
         executeAsync(() -> {
-            String key = USER_FOLLOWERS_PREFIX + userId + ":page:" + page + ":size:" + pageSize;
-            if (save(key, followers, USER_FOLLOWERS_TTL)) {
-                logger.debug("Cached followers for user: userId={}, page={}, pageSize={}", userId, page, pageSize);
+            try {
+                redisTemplate.opsForZSet().remove(
+                        FOLLOW_FOLLOWING_PREFIX + followerId, followingId.toString());
+                redisTemplate.opsForZSet().remove(
+                        FOLLOW_FOLLOWERS_PREFIX + followingId, followerId.toString());
+                logger.debug("ZREM follow: {} → {}", followerId, followingId);
+            } catch (Exception e) {
+                logger.warn("Failed to ZREM follow {}->{}: {}", followerId, followingId, e.getMessage());
             }
         });
     }
 
     /**
-     * Get cached user followers (SYNC - needs result)
+     * Get a page of user IDs from a follow sorted set (newest first).
+     *
+     * @param key    the sorted set key (e.g. follows:followers:5)
+     * @param offset zero-based offset (page-1)*pageSize
+     * @param count  page size
+     * @return list of user IDs, or empty list on miss/error
      */
-    public <T> Optional<T> getCachedUserFollowers(Long userId, Class<T> type) {
-        if (userId == null) {
-            return Optional.empty();
+    public List<Long> getFollowPage(String key, long offset, long count) {
+        try {
+            Set<Object> members = redisTemplate.opsForZSet()
+                    .reverseRange(key, offset, offset + count - 1);
+            if (members == null || members.isEmpty()) {
+                return List.of();
+            }
+            return members.stream()
+                    .map(m -> Long.parseLong(m.toString()))
+                    .collect(Collectors.toList());
+        } catch (Exception e) {
+            logger.warn("Failed to ZREVRANGE {}: {}", key, e.getMessage());
+            return List.of();
         }
-        String key = USER_FOLLOWERS_PREFIX + userId;
-        return getOptional(key, type);
     }
 
     /**
-     * Get cached user followers with pagination (SYNC - needs result)
+     * Total member count of a follow sorted set — O(1).
+     *
+     * @return count, or -1 if the key does not exist / error
      */
-    public <T> Optional<T> getCachedUserFollowers(Long userId, int page, int pageSize, Class<T> type) {
-        if (userId == null) {
-            return Optional.empty();
+    public long getFollowCount(String key) {
+        try {
+            Long size = redisTemplate.opsForZSet().zCard(key);
+            return size != null ? size : -1;
+        } catch (Exception e) {
+            logger.warn("Failed to ZCARD {}: {}", key, e.getMessage());
+            return -1;
         }
-        String key = USER_FOLLOWERS_PREFIX + userId + ":page:" + page + ":size:" + pageSize;
-        return getOptional(key, type);
     }
 
     /**
-     * Invalidate user followers cache (ASYNC - non-blocking)
+     * Check whether a sorted set key exists (used to detect cold-start).
      */
-    public void invalidateUserFollowers(Long userId) {
-        if (userId == null) {
-            return;
+    public boolean followSetExists(String key) {
+        try {
+            return Boolean.TRUE.equals(redisTemplate.hasKey(key));
+        } catch (Exception e) {
+            return false;
         }
+    }
+
+    /**
+     * Bulk-load a list of follow relationships into a sorted set.
+     * Used for cold-start back-fill.
+     */
+    public void backfillFollowSet(String key, List<Long> userIds, List<Long> timestamps) {
+        if (userIds == null || userIds.isEmpty()) return;
         executeAsync(() -> {
-            String key = USER_FOLLOWERS_PREFIX + userId;
-            delete(key);
-            deleteByPattern(USER_FOLLOWERS_PREFIX + userId + ":page:*");
-            logger.debug("Invalidated followers cache: userId={}", userId);
-        });
-    }
-
-    /**
-     * Cache user's following list (ASYNC - non-blocking)
-     */
-    public <T> void cacheUserFollowing(Long userId, T following) {
-        if (userId == null || following == null) {
-            return;
-        }
-        executeAsync(() -> {
-            String key = USER_FOLLOWING_PREFIX + userId;
-            if (save(key, following, USER_FOLLOWERS_TTL)) {
-                logger.debug("Cached following for user: userId={}", userId);
+            try {
+                Set<ZSetOperations.TypedTuple<Object>> tuples = new java.util.LinkedHashSet<>();
+                for (int i = 0; i < userIds.size(); i++) {
+                    double score = (i < timestamps.size()) ? timestamps.get(i) : 0;
+                    tuples.add(ZSetOperations.TypedTuple.of(userIds.get(i).toString(), score));
+                }
+                redisTemplate.opsForZSet().add(key, tuples);
+                logger.debug("Backfilled {} members into {}", tuples.size(), key);
+            } catch (Exception e) {
+                logger.warn("Failed to backfill {}: {}", key, e.getMessage());
             }
         });
     }
 
-    /**
-     * Cache user's following list with pagination (ASYNC - non-blocking)
-     */
-    public <T> void cacheUserFollowing(Long userId, int page, int pageSize, T following) {
-        if (userId == null || following == null) {
-            return;
-        }
-        executeAsync(() -> {
-            String key = USER_FOLLOWING_PREFIX + userId + ":page:" + page + ":size:" + pageSize;
-            if (save(key, following, USER_FOLLOWERS_TTL)) {
-                logger.debug("Cached following for user: userId={}, page={}, pageSize={}", userId, page, pageSize);
-            }
-        });
+    public String getFollowingKey(Long userId) {
+        return FOLLOW_FOLLOWING_PREFIX + userId;
     }
 
-    /**
-     * Get cached user following (SYNC - needs result)
-     */
-    public <T> Optional<T> getCachedUserFollowing(Long userId, Class<T> type) {
-        if (userId == null) {
-            return Optional.empty();
-        }
-        String key = USER_FOLLOWING_PREFIX + userId;
-        return getOptional(key, type);
-    }
-
-    /**
-     * Get cached user following with pagination (SYNC - needs result)
-     */
-    public <T> Optional<T> getCachedUserFollowing(Long userId, int page, int pageSize, Class<T> type) {
-        if (userId == null) {
-            return Optional.empty();
-        }
-        String key = USER_FOLLOWING_PREFIX + userId + ":page:" + page + ":size:" + pageSize;
-        return getOptional(key, type);
-    }
-
-    /**
-     * Invalidate user following cache (ASYNC - non-blocking)
-     */
-    public void invalidateUserFollowing(Long userId) {
-        if (userId == null) {
-            return;
-        }
-        executeAsync(() -> {
-            String key = USER_FOLLOWING_PREFIX + userId;
-            delete(key);
-            deleteByPattern(USER_FOLLOWING_PREFIX + userId + ":page:*");
-            logger.debug("Invalidated following cache: userId={}", userId);
-        });
+    public String getFollowersKey(Long userId) {
+        return FOLLOW_FOLLOWERS_PREFIX + userId;
     }
 
     /**
@@ -1261,30 +1255,18 @@ public class RedisCacheServiceImpl {
 
     /**
      * Invalidate all user-related caches (ASYNC - non-blocking)
-     * Use when user is updated or deleted
+     * Use when user is updated or deleted.
+     * Note: follow sorted sets are long-lived and NOT invalidated here —
+     *       they are mutated in-place via addFollow/removeFollow.
      */
     public void invalidateAllUserCaches(Long userId) {
         if (userId == null) {
             return;
         }
-        // All these are already async internally
         invalidateUserProfile(userId);
-        invalidateUserFollowers(userId);
-        invalidateUserFollowing(userId);
         invalidateUserStats(userId);
     }
 
-    /**
-     * Invalidate follow-related caches (ASYNC - non-blocking)
-     * Use when follow/unfollow action occurs
-     */
-    public void invalidateFollowCaches(Long followerId, Long followingId) {
-        // All these are already async internally
-        invalidateUserFollowing(followerId);
-        invalidateUserStats(followerId);
-        invalidateUserFollowers(followingId);
-        invalidateUserStats(followingId);
-    }
 
     /**
      * Batch cache multiple user profiles (ASYNC - non-blocking)
@@ -1906,5 +1888,183 @@ public class RedisCacheServiceImpl {
             deleteByPattern(FEED_PREFIX + "*:user:" + userId + ":*");
             logger.debug("Invalidated feed caches for userId={}", userId);
         });
+    }
+
+    // ==================== FOLLOWING FEED TIMELINE (sorted set per user) ====================
+    //
+    // Instead of caching entire FeedResponse JSON blobs, the FOLLOWING feed uses
+    // a Redis Sorted Set per user:  feed:timeline:{userId}
+    //   score  = submission createdAt millis  (natural chronological order)
+    //   member = submissionId
+    //
+    // On new submission → fan-out ZADD to each follower's set (if it exists)
+    // On read           → ZREVRANGE with offset+limit, then hydrate from DB
+    // On cache miss     → rebuild from DB, populate sorted set, set TTL
+
+    /**
+     * Fan out a new submission to all given followers' timelines (ASYNC).
+     * Only pushes into timelines that already exist (warm caches).
+     * Cold caches will pick up the submission on their next DB rebuild.
+     */
+    public void fanOutToFollowerTimelines(Set<Long> followerIds, Long submissionId, double score) {
+        if (followerIds == null || followerIds.isEmpty() || submissionId == null) return;
+        executeAsync(() -> {
+            int pushed = 0;
+            for (Long followerId : followerIds) {
+                try {
+                    String key = FEED_TIMELINE_PREFIX + followerId;
+                    if (Boolean.TRUE.equals(redisTemplate.hasKey(key))) {
+                        redisTemplate.opsForZSet().add(key, submissionId.toString(), score);
+                        // Trim oldest entries to cap memory
+                        Long size = redisTemplate.opsForZSet().zCard(key);
+                        if (size != null && size > FEED_TIMELINE_MAX_SIZE) {
+                            redisTemplate.opsForZSet().removeRange(key, 0, size - FEED_TIMELINE_MAX_SIZE - 1);
+                        }
+                        pushed++;
+                    }
+                } catch (Exception e) {
+                    logger.warn("Failed to push submission {} to timeline of user {}: {}",
+                            submissionId, followerId, e.getMessage());
+                }
+            }
+            logger.debug("Fan-out: pushed submission {} to {}/{} follower timelines",
+                    submissionId, pushed, followerIds.size());
+        });
+    }
+
+    /**
+     * Check if a user's timeline sorted set exists in cache.
+     */
+    public boolean timelineExists(Long userId) {
+        if (userId == null) return false;
+        try {
+            return Boolean.TRUE.equals(redisTemplate.hasKey(FEED_TIMELINE_PREFIX + userId));
+        } catch (Exception e) {
+            logger.warn("Error checking timeline existence for userId={}: {}", userId, e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Get submission IDs from a user's timeline (paginated, reverse chronological).
+     */
+    public List<Long> getTimelineIds(Long userId, int offset, int count) {
+        if (userId == null || count <= 0) return List.of();
+        try {
+            String key = FEED_TIMELINE_PREFIX + userId;
+            Set<Object> results = redisTemplate.opsForZSet().reverseRange(key, offset, (long) offset + count - 1);
+            if (results == null || results.isEmpty()) return List.of();
+            return results.stream()
+                    .map(o -> Long.parseLong(o.toString()))
+                    .collect(Collectors.toList());
+        } catch (Exception e) {
+            logger.error("Error reading timeline for userId={}: {}", userId, e.getMessage());
+            return List.of();
+        }
+    }
+
+    /**
+     * Get total number of entries in a user's timeline.
+     */
+    public long getTimelineSize(Long userId) {
+        if (userId == null) return 0;
+        try {
+            Long size = redisTemplate.opsForZSet().zCard(FEED_TIMELINE_PREFIX + userId);
+            return size != null ? size : 0;
+        } catch (Exception e) {
+            logger.warn("Error getting timeline size for userId={}: {}", userId, e.getMessage());
+            return 0;
+        }
+    }
+
+    /**
+     * Rebuild a user's timeline sorted set from DB data.
+     * Typically called on cache miss (first feed request after TTL expiry).
+     */
+    public void rebuildTimeline(Long userId, List<Long> submissionIds, List<Double> scores) {
+        if (userId == null || submissionIds == null || scores == null
+                || submissionIds.isEmpty() || submissionIds.size() != scores.size()) return;
+        try {
+            String key = FEED_TIMELINE_PREFIX + userId;
+            Set<ZSetOperations.TypedTuple<Object>> tuples = new java.util.LinkedHashSet<>();
+            for (int i = 0; i < submissionIds.size(); i++) {
+                tuples.add(ZSetOperations.TypedTuple.of(submissionIds.get(i).toString(), scores.get(i)));
+            }
+            redisTemplate.opsForZSet().add(key, tuples);
+            redisTemplate.expire(key, FEED_TIMELINE_TTL);
+            logger.debug("Rebuilt timeline for userId={} with {} entries", userId, submissionIds.size());
+        } catch (Exception e) {
+            logger.error("Error rebuilding timeline for userId={}: {}", userId, e.getMessage());
+        }
+    }
+
+    /**
+     * Invalidate a user's timeline sorted set (ASYNC).
+     * Call on follow/unfollow so the next read rebuilds from DB.
+     */
+    public void invalidateTimeline(Long userId) {
+        if (userId == null) return;
+        executeAsync(() -> {
+            delete(FEED_TIMELINE_PREFIX + userId);
+            logger.debug("Invalidated timeline for userId={}", userId);
+        });
+    }
+
+    /**
+     * Get all follower IDs from the cached followers sorted set.
+     * Returns empty set if the sorted set doesn't exist.
+     */
+    public Set<Long> getCachedFollowerIds(Long userId) {
+        if (userId == null) return Set.of();
+        try {
+            Set<Object> members = redisTemplate.opsForZSet().range(FOLLOW_FOLLOWERS_PREFIX + userId, 0, -1);
+            if (members == null || members.isEmpty()) return Set.of();
+            return members.stream()
+                    .map(o -> Long.parseLong(o.toString()))
+                    .collect(Collectors.toSet());
+        } catch (Exception e) {
+            logger.warn("Error getting cached follower IDs for userId={}: {}", userId, e.getMessage());
+            return Set.of();
+        }
+    }
+
+    // ==================== DIRTY LOGIN SET (for hourly DB flush) ====================
+
+    /**
+     * Mark a userId as needing a last_login_at DB update.
+     * Uses a Redis Set so duplicates are naturally de-duped — O(1).
+     * Called from stampLastLogin() on every getUser() hit.
+     */
+    public void markLoginDirty(Long userId) {
+        if (userId == null) return;
+        executeAsync(() -> {
+            try {
+                redisTemplate.opsForSet().add(DIRTY_LOGIN_SET_KEY, userId.toString());
+                logger.debug("Marked userId={} as dirty-login", userId);
+            } catch (Exception e) {
+                logger.warn("Failed to mark dirty login for userId={}: {}", userId, e.getMessage());
+            }
+        });
+    }
+
+    /**
+     * Atomically drain all dirty user IDs from the Redis set.
+     * Uses SPOP in a loop so no ID is lost even if the scheduler crashes mid-way.
+     *
+     * @return list of user IDs that need a DB flush, or empty list on error
+     */
+    public List<Long> drainDirtyLogins() {
+        List<Long> ids = new ArrayList<>();
+        try {
+            // SPOP removes and returns a member — repeat until empty
+            Object member;
+            while ((member = redisTemplate.opsForSet().pop(DIRTY_LOGIN_SET_KEY)) != null) {
+                ids.add(Long.parseLong(member.toString()));
+            }
+            logger.debug("Drained {} dirty-login user IDs from Redis", ids.size());
+        } catch (Exception e) {
+            logger.warn("Failed to drain dirty logins: {}", e.getMessage());
+        }
+        return ids;
     }
 }

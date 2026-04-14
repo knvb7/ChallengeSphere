@@ -1,5 +1,6 @@
 package com.ironside.challengesphere.controller;
 
+import com.ironside.challengesphere.api.response.GloryCheckResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.model.Glory;
 import com.ironside.challengesphere.service.GloryService;
@@ -44,18 +45,32 @@ public class GloryController {
     }
 
     /**
-     * Check if user has given glory to a submission
-     * GET /api/v1/glories/check
+     * Check glory + unglory state for a user on a submission
+     * GET /api/v1/glories/check?submissionId=X&userId=Y
      */
     @GetMapping("/check")
-    public ResponseEntity<Boolean> hasUserGivenGlory(
+    public ResponseEntity<GloryCheckResponse> checkGloryStatus(
             @RequestParam Long submissionId,
             @RequestParam Long userId) throws ChallengeSphereException {
-        logger.info("Check if user {} has given glory to submission {}", userId, submissionId);
+        logger.info("Check glory status for user {} on submission {}", userId, submissionId);
         boolean hasGlory = gloryService.hasUserGivenGlory(submissionId, userId);
-        return ResponseEntity.ok(hasGlory);
+        boolean hasUngloried = gloryService.hasUserUngloried(submissionId, userId);
+        return ResponseEntity.ok(GloryCheckResponse.of(submissionId, userId, hasGlory, hasUngloried));
     }
 
+    /**
+     * Toggle unglory (not genuine) for a submission — Button 2
+     * POST /api/v1/glories/toggle-unglory
+     */
+    @PostMapping("/unglory/toggle")
+    public ResponseEntity<GloryCheckResponse> toggleUnglory(
+            @RequestParam Long submissionId,
+            @RequestParam Long userId) throws ChallengeSphereException {
+        logger.info("Toggle unglory request for submission: {} by user: {}", submissionId, userId);
+        boolean isUngloried = gloryService.toggleUnglory(submissionId, userId);
+        boolean hasGlory = gloryService.hasUserGivenGlory(submissionId, userId);
+        return ResponseEntity.ok(GloryCheckResponse.of(submissionId, userId, hasGlory, isUngloried));
+    }
     /**
      * Get glory count for a submission
      * GET /api/v1/glories/count/{submissionId}

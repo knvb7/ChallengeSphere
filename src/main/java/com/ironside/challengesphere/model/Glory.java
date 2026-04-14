@@ -24,5 +24,8 @@ public class Glory {
 
     @Column(name = "active", nullable = false)
     private Boolean active = true;
+
+    @Column(name = "ungloried", nullable = false)
+    private Boolean ungloried = false;
 }
 

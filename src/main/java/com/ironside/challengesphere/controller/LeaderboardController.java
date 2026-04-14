@@ -32,7 +32,6 @@ import lombok.RequiredArgsConstructor;
 @RestController
 @RequestMapping("/api/v1/leaderboard")
 @RequiredArgsConstructor
-@Tag(name = "Leaderboard", description = "Challenge leaderboard management APIs")
 public class LeaderboardController {
 
     private static final Logger logger = LogManager.getLogger(LeaderboardController.class);

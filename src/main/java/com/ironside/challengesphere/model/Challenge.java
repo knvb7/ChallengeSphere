@@ -51,4 +51,7 @@ public class Challenge {
 
     @Column(name = "number_of_days", nullable = false)
     private Integer numberOfDays;
+
+    @Column(name = "cover_photo_urls", columnDefinition = "TEXT")
+    private String coverPhotoUrls; // Comma-separated GCS URLs, up to 5
 }

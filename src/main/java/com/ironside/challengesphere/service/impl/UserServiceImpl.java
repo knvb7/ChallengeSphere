@@ -52,57 +52,57 @@ public class UserServiceImpl implements UserService {
                 userId, emailId, phone, username);
 
         try {
-            // 1. Try cache by userId (fastest path)
+            // 1. Fetch by userId from DB
             if (userId != null) {
-                Optional<User> cached = cacheService.getCachedUserProfile(userId, User.class);
-                if (cached.isPresent()) {
-                    logger.info("Cache hit for userId: {}", userId);
-                    return cached.get();
-                }
-                logger.info("Cache miss for userId: {}, fetching from DB", userId);
+                // Optional<User> cached = cacheService.getCachedUserProfile(userId, User.class);
+                // if (cached.isPresent()) {
+                //     logger.info("Cache hit for userId: {}", userId);
+                //     stampLastLogin(cached.get());
+                //     return cached.get();
+                // }
+                logger.info("Fetching from DB for userId: {}", userId);
                 Optional<User> user = userRepository.findById(userId);
                 if (user.isPresent()) {
                     logger.info("User found by userId: {}", userId);
                     final User found = user.get();
-                    cacheService.cacheUserProfile(userId, found); // async internally
+                    stampLastLogin(found);
                     return found;
                 }
             }
 
-            // 2. Try cache by emailId (secondary key stored as user:<email>)
+            // 2. Fetch by emailId from DB
             if (emailId != null && !emailId.trim().isEmpty()) {
                 String emailKey = emailId.trim();
                 Optional<User> user = userRepository.findByEmailId(emailKey);
                 if (user.isPresent()) {
                     logger.info("User found by emailId: {}", emailId);
                     final User found = user.get();
-                    // Cache by userId (canonical key) asynchronously
-                    cacheService.cacheUserProfile(found.getId(), found);
+                    stampLastLogin(found);
                     return found;
                 }
             }
 
-            // 3. Try cache by phone
+            // 3. Fetch by phone from DB
             if (phone != null && !phone.trim().isEmpty()) {
                 String phoneKey = phone.trim();
                 Optional<User> user = userRepository.findByPhone(phoneKey);
                 if (user.isPresent()) {
                     logger.info("User found by phone: {}", phone);
                     final User found = user.get();
-                    cacheService.cacheUserProfile(found.getId(), found);
+                    stampLastLogin(found);
                     return found;
                 }
             }
 
-            // 4. Try cache by username
+            // 4. Fetch by username from DB
             if (username != null && !username.trim().isEmpty()) {
                 String usernameKey = username.trim();
-                logger.debug("Cache miss for username: {}, fetching from DB", username);
+                logger.debug("Fetching from DB for username: {}", username);
                 Optional<User> user = userRepository.findByUsername(usernameKey);
                 if (user.isPresent()) {
                     logger.info("User found by username: {}", username);
                     final User found = user.get();
-                    cacheService.cacheUserProfile(found.getId(), found);
+                    stampLastLogin(found);
                     return found;
                 }
             }
@@ -117,6 +117,29 @@ public class UserServiceImpl implements UserService {
         throw new ChallengeSphereException("User not found with provided parameters", HttpStatus.NOT_FOUND, logger);
     }
 
+    /**
+     * Stamp last_login_at for the user.
+     * Strategy: cache-first, DB updated in hourly batch.
+     *  1. Update lastLoginAt on the in-memory User object → instant
+     *  2. Re-cache the updated profile in Redis → async internally
+     *  3. Mark userId in the Redis dirty-login set → async, O(1)
+     *     The hourly LastLoginFlushScheduler drains this set and batch-updates the DB.
+     */
+    private void stampLastLogin(User user) {
+        if (user == null || user.getId() == null) return;
+        try {
+            // Update last_login_at directly in DB
+            userRepository.updateLastLoginAt(user.getId());
+
+            // Cache-based stamping commented out — re-enable with cache layer
+            // user.setLastLoginAt(new Timestamp(System.currentTimeMillis()));
+            // cacheService.cacheUserProfile(user.getId(), user);
+            // cacheService.markLoginDirty(user.getId());
+        } catch (Exception e) {
+            logger.warn("Failed to stamp last_login_at for userId={}: {}", user.getId(), e.getMessage());
+        }
+    }
+
     @Override
     public User updateUserDetails(UpdateUserRequest updateUserRequest) throws ChallengeSphereException {
         Long userId = updateUserRequest.getUserId();
@@ -124,20 +147,20 @@ public class UserServiceImpl implements UserService {
                    userId, updateUserRequest.getEmailId(), updateUserRequest.getPhone(), updateUserRequest.getUsername());
 
         try {
-            Optional<User> cachedUserOpt = cacheService.getCachedUserProfile(userId, User.class);
+            // Optional<User> cachedUserOpt = cacheService.getCachedUserProfile(userId, User.class);
             User user;
-            if (cachedUserOpt.isPresent()) {
-                user = cachedUserOpt.get();
-                logger.debug("Cache hit for userId: {} in updateUserDetails", userId);
-            } else {
-                user = userRepository.findById(userId)
-                        .orElseThrow(() -> new ChallengeSphereException(
-                                "User not found with id: " + userId,
-                                HttpStatus.NOT_FOUND,
-                                logger
-                        ));
-                logger.debug("Cache miss for userId: {}, loaded from DB", userId);
-            }
+            // if (cachedUserOpt.isPresent()) {
+            //     user = cachedUserOpt.get();
+            //     logger.debug("Cache hit for userId: {} in updateUserDetails", userId);
+            // } else {
+            user = userRepository.findById(userId)
+                    .orElseThrow(() -> new ChallengeSphereException(
+                            "User not found with id: " + userId,
+                            HttpStatus.NOT_FOUND,
+                            logger
+                    ));
+            logger.debug("Loaded userId: {} from DB", userId);
+            // }
 
             if (updateUserRequest.getEmailId() != null && !updateUserRequest.getEmailId().trim().isEmpty()) {
                 user.setEmailId(updateUserRequest.getEmailId().trim());
@@ -189,7 +212,7 @@ public class UserServiceImpl implements UserService {
             }
 
             User updatedUser = userRepository.save(user);
-            cacheService.cacheUserProfile(userId, updatedUser);
+            // cacheService.cacheUserProfile(userId, updatedUser);
             logger.info("Successfully updated user details for userId: {}", userId);
             return updatedUser;
 
@@ -206,6 +229,7 @@ public class UserServiceImpl implements UserService {
     }
 
     @Override
+    @Transactional
     public FollowActionResponse follow(Long followerId, Long followingId) throws ChallengeSphereException {
         logger.info("User {} attempting to follow user {}", followerId, followingId);
 
@@ -241,10 +265,14 @@ public class UserServiceImpl implements UserService {
 
             followRepository.save(follow);
             updateFollowCounts(followerId, followingId, true);
-            
-            // Invalidate follow-related caches
-            cacheService.invalidateFollowCaches(followerId, followingId);
-            
+
+            // Mutate the sorted sets in-place — O(log N), no invalidation needed
+            // long ts = follow.getCreatedAt() != null ? follow.getCreatedAt().getTime() : System.currentTimeMillis();
+            // cacheService.addFollow(followerId, followingId, ts);
+
+            // Following set changed — rebuild timeline on next read
+            // cacheService.invalidateTimeline(followerId);
+
             logger.info("User {} successfully followed user {}", followerId, followingId);
             return FollowActionResponse.success(followerId, followingId, true);
 
@@ -262,6 +290,7 @@ public class UserServiceImpl implements UserService {
     }
 
     @Override
+    @Transactional
     public FollowActionResponse unfollow(Long followerId, Long followingId) throws ChallengeSphereException {
         logger.info("User {} attempting to unfollow user {}", followerId, followingId);
 
@@ -279,10 +308,13 @@ public class UserServiceImpl implements UserService {
             followRepository.save(follow);
 
             updateFollowCounts(followerId, followingId, false);
-            
-            // Invalidate follow-related caches
-            cacheService.invalidateFollowCaches(followerId, followingId);
-            
+
+            // Mutate the sorted sets in-place — O(log N), no invalidation needed
+            // cacheService.removeFollow(followerId, followingId);
+
+            // Following set changed — rebuild timeline on next read
+            // cacheService.invalidateTimeline(followerId);
+
             logger.info("User {} successfully unfollowed user {}", followerId, followingId);
             return FollowActionResponse.success(followerId, followingId, false);
 
@@ -305,39 +337,22 @@ public class UserServiceImpl implements UserService {
 
         logger.info("Getting followers for userId: {}, page: {}, pageSize: {}", userId, page, pageSize);
 
-        // Try to get from cache first
-        Optional<FollowersFollowingResponse> cachedFollowers = cacheService.getCachedUserFollowers(userId, page, pageSize, FollowersFollowingResponse.class);
-        if (cachedFollowers.isPresent()) {
-            logger.info("Returning cached followers for userId: {}, page: {}", userId, page);
-            return cachedFollowers.get();
-        }
-
         try {
-            List<Follow> allFollows = followRepository.findByFollowingId(userId);
+            // Cache-based follower lookup commented out — re-enable with cache layer
+            // String key = cacheService.getFollowersKey(userId);
+            long offset = (long) (page - 1) * pageSize;
+
+            // DB-only path
+            List<Follow> allFollows = followRepository.findActiveFollowsByFollowingId(userId);
             int totalCount = allFollows.size();
+            List<Long> pageIds = allFollows.stream().skip(offset).limit(pageSize)
+                    .map(Follow::getFollowerId).collect(Collectors.toList());
+            List<User> followers = pageIds.isEmpty() ? List.of() : userRepository.findAllById(pageIds);
 
-            // Calculate pagination
-            int offset = (page - 1) * pageSize;
+            logger.info("Found {} followers for userId: {} (page {})",
+                    followers.size(), userId, page);
 
-            // Get follower IDs for current page
-            List<Long> followerIds = allFollows.stream()
-                    .skip(offset)
-                    .limit(pageSize)
-                    .map(Follow::getFollowerId)
-                    .collect(Collectors.toList());
-
-            // Get follower User objects
-            List<User> followers = userRepository.findAllById(followerIds);
-
-            logger.info("Found {} followers for userId: {} (page {}/{})",
-                       followers.size(), userId, page, (int) Math.ceil((double) totalCount / pageSize));
-
-            FollowersFollowingResponse response = FollowersFollowingResponse.followers(userId, followers, page, pageSize, totalCount);
-            
-            // Cache the response
-            cacheService.cacheUserFollowers(userId, page, pageSize, response);
-            
-            return response;
+            return FollowersFollowingResponse.followers(userId, followers, page, pageSize, totalCount);
 
         } catch (Exception e) {
             logger.error("Error getting followers for userId: {}: {}", userId, e.getMessage(), e);
@@ -357,36 +372,22 @@ public class UserServiceImpl implements UserService {
 
         logger.info("Getting following for userId: {}, page: {}, pageSize: {}", userId, page, pageSize);
 
-        // Try to get from cache first
-        Optional<FollowersFollowingResponse> cachedFollowing = cacheService.getCachedUserFollowing(userId, page, pageSize, FollowersFollowingResponse.class);
-        if (cachedFollowing.isPresent()) {
-            logger.info("Returning cached following for userId: {}, page: {}", userId, page);
-            return cachedFollowing.get();
-        }
-
         try {
-            List<Follow> allFollows = followRepository.findByFollowerId(userId);
+            // Cache-based following lookup commented out — re-enable with cache layer
+            // String key = cacheService.getFollowingKey(userId);
+            long offset = (long) (page - 1) * pageSize;
+
+            // DB-only path
+            List<Follow> allFollows = followRepository.findActiveFollowsByFollowerId(userId);
             int totalCount = allFollows.size();
+            List<Long> pageIds = allFollows.stream().skip(offset).limit(pageSize)
+                    .map(Follow::getFollowingId).collect(Collectors.toList());
+            List<User> following = pageIds.isEmpty() ? List.of() : userRepository.findAllById(pageIds);
 
-            int offset = (page - 1) * pageSize;
+            logger.info("Found {} following for userId: {} (page {})",
+                    following.size(), userId, page);
 
-            List<Long> followingIds = allFollows.stream()
-                    .skip(offset)
-                    .limit(pageSize)
-                    .map(Follow::getFollowingId)
-                    .collect(Collectors.toList());
-
-            List<User> following = userRepository.findAllById(followingIds);
-
-            logger.info("Found {} following for userId: {} (page {}/{})",
-                       following.size(), userId, page, (int) Math.ceil((double) totalCount / pageSize));
-
-            FollowersFollowingResponse response = FollowersFollowingResponse.following(userId, following, page, pageSize, totalCount);
-            
-            // Cache the response
-            cacheService.cacheUserFollowing(userId, page, pageSize, response);
-            
-            return response;
+            return FollowersFollowingResponse.following(userId, following, page, pageSize, totalCount);
 
         } catch (Exception e) {
             logger.error("Error getting following for userId: {}: {}", userId, e.getMessage(), e);
@@ -419,8 +420,8 @@ public class UserServiceImpl implements UserService {
             userRepository.updateUserActiveStatus(userId, newStatus);
 
             // Invalidate all user-related caches
-            cacheService.invalidateAllUserCaches(userId);
-            cacheService.invalidateUserChallenges(userId);
+            // cacheService.invalidateAllUserCaches(userId);
+            // cacheService.invalidateUserChallenges(userId);
 
             String action = newStatus ? "activated" : "deactivated";
             logger.info("User {} successfully {} (changed from {} to {})", userId, action, currentStatus, newStatus);
@@ -494,6 +495,7 @@ public class UserServiceImpl implements UserService {
 
             // Set defaults
             newUser.setCreatedAt(new Timestamp(System.currentTimeMillis()));
+            newUser.setLastLoginAt(new Timestamp(System.currentTimeMillis()));
             newUser.setGenuinenessScore(100);
             newUser.setActive(true);
             newUser.setChallengesCreated(0);

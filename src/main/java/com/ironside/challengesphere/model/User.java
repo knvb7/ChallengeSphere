@@ -2,13 +2,15 @@ package com.ironside.challengesphere.model;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.*;
-import lombok.Data;
+import lombok.Getter;
 import lombok.NoArgsConstructor;
+import lombok.Setter;
 import java.sql.Timestamp;
 
 @Entity
 @Table(name = "users")
-@Data
+@Getter
+@Setter
 @NoArgsConstructor
 public class User {
 
@@ -25,6 +27,7 @@ public class User {
     @Column(name = "username", nullable = false, unique = true, length = 50)
     private String username;
 
+    @JsonIgnore
     @Column(name = "hashed_password", nullable = false, length = 255)
     private String hashedPassword;
 
@@ -60,4 +63,6 @@ public class User {
 
     @Column(name = "bio")
     private String bio;
+    @Column(name = "last_login_at")
+    private Timestamp lastLoginAt;
 }

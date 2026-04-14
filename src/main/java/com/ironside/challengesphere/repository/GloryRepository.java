@@ -26,4 +26,10 @@ public interface GloryRepository extends JpaRepository<Glory, Long> {
 
     @Query(value = "SELECT EXISTS(SELECT 1 FROM challengesphere.glories WHERE submission_id = :submissionId AND user_id = :userId AND active = true)", nativeQuery = true)
     boolean existsBySubmissionIdAndUserId(@Param("submissionId") Long submissionId, @Param("userId") Long userId);
+
+    @Query(value = "SELECT EXISTS(SELECT 1 FROM challengesphere.glories WHERE submission_id = :submissionId AND user_id = :userId AND ungloried = true)", nativeQuery = true)
+    boolean existsUngloriedBySubmissionIdAndUserId(@Param("submissionId") Long submissionId, @Param("userId") Long userId);
+
+    @Query(value = "SELECT COUNT(*) FROM challengesphere.glories WHERE submission_id = :submissionId AND ungloried = true", nativeQuery = true)
+    Long countUngloriedBySubmissionId(@Param("submissionId") Long submissionId);
 }
