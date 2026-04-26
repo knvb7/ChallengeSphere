@@ -18,12 +18,17 @@ import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.service.FeedService;
 
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
+
+import org.springframework.validation.annotation.Validated;
 
 /**
  * REST Controller for Feed operations
  * Provides endpoints for various feed types
  */
 @RestController
+@Validated
 @RequestMapping("/api/v1/feed")
 public class FeedController {
 
@@ -53,7 +58,7 @@ public class FeedController {
     public ResponseEntity<FeedResponse> getFollowingFeed(
             @PathVariable Long userId,
             @RequestParam(defaultValue = "1") int page,
-            @RequestParam(defaultValue = "20") int pageSize) throws ChallengeSphereException {
+            @RequestParam(defaultValue = "20") @Min(1) @Max(100) int pageSize) throws ChallengeSphereException {
         logger.info("Following feed request: userId={}, page={}, pageSize={}", userId, page, pageSize);
         FeedResponse response = feedService.getFollowingFeed(userId, page, pageSize);
         return ResponseEntity.ok(response);
@@ -66,7 +71,7 @@ public class FeedController {
     @GetMapping("/trending")
     public ResponseEntity<FeedResponse> getTrendingFeed(
             @RequestParam(defaultValue = "1") int page,
-            @RequestParam(defaultValue = "20") int pageSize,
+            @RequestParam(defaultValue = "20") @Min(1) @Max(100) int pageSize,
             @RequestParam(required = false) Long userId) throws ChallengeSphereException {
         logger.info("Trending feed request: page={}, pageSize={}, userId={}", page, pageSize, userId);
         FeedResponse response = feedService.getTrendingFeed(page, pageSize, userId);
@@ -80,7 +85,7 @@ public class FeedController {
     @GetMapping("/explore")
     public ResponseEntity<FeedResponse> getExploreFeed(
             @RequestParam(defaultValue = "1") int page,
-            @RequestParam(defaultValue = "20") int pageSize,
+            @RequestParam(defaultValue = "20") @Min(1) @Max(100) int pageSize,
             @RequestParam(required = false) Long userId) throws ChallengeSphereException {
         logger.info("Explore feed request: page={}, pageSize={}, userId={}", page, pageSize, userId);
         FeedResponse response = feedService.getExploreFeed(page, pageSize, userId);
@@ -95,7 +100,7 @@ public class FeedController {
     public ResponseEntity<FeedResponse> getChallengeFeed(
             @PathVariable Long challengeId,
             @RequestParam(defaultValue = "1") int page,
-            @RequestParam(defaultValue = "20") int pageSize,
+            @RequestParam(defaultValue = "20") @Min(1) @Max(100) int pageSize,
             @RequestParam(required = false) Long userId) throws ChallengeSphereException {
         logger.info("Challenge feed request: challengeId={}, page={}, pageSize={}", challengeId, page, pageSize);
         FeedResponse response = feedService.getChallengeFeed(challengeId, page, pageSize, userId);
@@ -110,7 +115,7 @@ public class FeedController {
     public ResponseEntity<FeedResponse> getUserFeed(
             @PathVariable Long targetUserId,
             @RequestParam(defaultValue = "1") int page,
-            @RequestParam(defaultValue = "20") int pageSize,
+            @RequestParam(defaultValue = "20") @Min(1) @Max(100) int pageSize,
             @RequestParam(required = false) Long currentUserId) throws ChallengeSphereException {
         logger.info("User feed request: targetUserId={}, page={}, pageSize={}", targetUserId, page, pageSize);
         FeedResponse response = feedService. getUserFeed(targetUserId, page, pageSize, currentUserId);

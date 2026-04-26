@@ -9,7 +9,6 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
-import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -38,7 +37,7 @@ public class UserServiceImpl implements UserService {
 
     @Autowired
     private FollowRepository followRepository;
-    
+
     @Autowired
     private RedisCacheServiceImpl cacheService;
 
@@ -52,20 +51,25 @@ public class UserServiceImpl implements UserService {
                 userId, emailId, phone, username);
 
         try {
-            // 1. Fetch by userId from DB
+            // 1. Fetch by userId — cache first, DB on miss or cache failure
             if (userId != null) {
-                // Optional<User> cached = cacheService.getCachedUserProfile(userId, User.class);
-                // if (cached.isPresent()) {
-                //     logger.info("Cache hit for userId: {}", userId);
-                //     stampLastLogin(cached.get());
-                //     return cached.get();
-                // }
+                try {
+                    Optional<User> cached = cacheService.getCachedUserProfile(userId, User.class);
+                    if (cached.isPresent()) {
+                        logger.info("Cache hit for userId: {}", userId);
+                        stampLastLogin(cached.get());
+                        return cached.get();
+                    }
+                } catch (Exception cacheEx) {
+                    logger.warn("Cache lookup failed for userId={}, falling back to DB: {}", userId, cacheEx.getMessage());
+                }
                 logger.info("Fetching from DB for userId: {}", userId);
                 Optional<User> user = userRepository.findById(userId);
                 if (user.isPresent()) {
                     logger.info("User found by userId: {}", userId);
                     final User found = user.get();
                     stampLastLogin(found);
+                    safeCacheUser(found);
                     return found;
                 }
             }
@@ -78,6 +82,7 @@ public class UserServiceImpl implements UserService {
                     logger.info("User found by emailId: {}", emailId);
                     final User found = user.get();
                     stampLastLogin(found);
+                    safeCacheUser(found);
                     return found;
                 }
             }
@@ -90,6 +95,7 @@ public class UserServiceImpl implements UserService {
                     logger.info("User found by phone: {}", phone);
                     final User found = user.get();
                     stampLastLogin(found);
+                    safeCacheUser(found);
                     return found;
                 }
             }
@@ -103,6 +109,7 @@ public class UserServiceImpl implements UserService {
                     logger.info("User found by username: {}", username);
                     final User found = user.get();
                     stampLastLogin(found);
+                    safeCacheUser(found);
                     return found;
                 }
             }
@@ -125,18 +132,24 @@ public class UserServiceImpl implements UserService {
      *  3. Mark userId in the Redis dirty-login set → async, O(1)
      *     The hourly LastLoginFlushScheduler drains this set and batch-updates the DB.
      */
+    @Transactional
     private void stampLastLogin(User user) {
         if (user == null || user.getId() == null) return;
         try {
-            // Update last_login_at directly in DB
             userRepository.updateLastLoginAt(user.getId());
-
-            // Cache-based stamping commented out — re-enable with cache layer
-            // user.setLastLoginAt(new Timestamp(System.currentTimeMillis()));
-            // cacheService.cacheUserProfile(user.getId(), user);
-            // cacheService.markLoginDirty(user.getId());
+            user.setLastLoginAt(new Timestamp(System.currentTimeMillis()));
+            safeCacheUser(user);
         } catch (Exception e) {
             logger.warn("Failed to stamp last_login_at for userId={}: {}", user.getId(), e.getMessage());
+        }
+    }
+
+    private void safeCacheUser(User user) {
+        if (user == null || user.getId() == null) return;
+        try {
+            cacheService.cacheUserProfile(user.getId(), user);
+        } catch (Exception e) {
+            logger.warn("Failed to cache user profile for userId={}: {}", user.getId(), e.getMessage());
         }
     }
 
@@ -212,7 +225,7 @@ public class UserServiceImpl implements UserService {
             }
 
             User updatedUser = userRepository.save(user);
-            // cacheService.cacheUserProfile(userId, updatedUser);
+            safeCacheUser(updatedUser);
             logger.info("Successfully updated user details for userId: {}", userId);
             return updatedUser;
 
@@ -338,8 +351,6 @@ public class UserServiceImpl implements UserService {
         logger.info("Getting followers for userId: {}, page: {}, pageSize: {}", userId, page, pageSize);
 
         try {
-            // Cache-based follower lookup commented out — re-enable with cache layer
-            // String key = cacheService.getFollowersKey(userId);
             long offset = (long) (page - 1) * pageSize;
 
             // DB-only path
@@ -373,8 +384,6 @@ public class UserServiceImpl implements UserService {
         logger.info("Getting following for userId: {}, page: {}, pageSize: {}", userId, page, pageSize);
 
         try {
-            // Cache-based following lookup commented out — re-enable with cache layer
-            // String key = cacheService.getFollowingKey(userId);
             long offset = (long) (page - 1) * pageSize;
 
             // DB-only path
@@ -418,10 +427,7 @@ public class UserServiceImpl implements UserService {
             boolean currentStatus = Boolean.TRUE.equals(user.getActive());
             boolean newStatus = !currentStatus;
             userRepository.updateUserActiveStatus(userId, newStatus);
-
-            // Invalidate all user-related caches
-            // cacheService.invalidateAllUserCaches(userId);
-            // cacheService.invalidateUserChallenges(userId);
+            safeInvalidateUser(userId);
 
             String action = newStatus ? "activated" : "deactivated";
             logger.info("User {} successfully {} (changed from {} to {})", userId, action, currentStatus, newStatus);
@@ -507,10 +513,8 @@ public class UserServiceImpl implements UserService {
 
             // Save user
             User savedUser = userRepository.save(newUser);
+            safeCacheUser(savedUser);
             logger.info("Successfully registered user with id: {}, username: {}", savedUser.getId(), savedUser.getUsername());
-
-            // Cache the new user profile for immediate use
-            cacheService.cacheUserProfile(savedUser.getId(), savedUser);
 
             return UserRegistrationResponse.success(savedUser);
 
@@ -526,19 +530,24 @@ public class UserServiceImpl implements UserService {
         }
     }
 
-    @Async
+    // Runs inside the caller's @Transactional boundary so counter updates and the follows-row
+    // write commit together. Any exception rolls back both — counters stay in sync with follows.
     protected void updateFollowCounts(Long followerId, Long followingId, boolean isFollow) {
+        int delta = isFollow ? 1 : -1;
+        userRepository.updateFollowingCount(followerId, delta);
+        userRepository.updateFollowersCount(followingId, delta);
+        safeInvalidateUser(followerId);
+        safeInvalidateUser(followingId);
+        logger.debug("Updated follow counts for followerId: {}, followingId: {}, action: {}",
+                followerId, followingId, isFollow ? "follow" : "unfollow");
+    }
+
+    private void safeInvalidateUser(Long userId) {
+        if (userId == null) return;
         try {
-            int delta = isFollow ? 1 : -1;
-            userRepository.updateFollowingCount(followerId, delta);
-            userRepository.updateFollowersCount(followingId, delta);
-            // Invalidate cached profiles so next read gets fresh counts
-            cacheService.invalidateAllUserCaches(followerId);
-            cacheService.invalidateAllUserCaches(followingId);
-            logger.debug("Updated follow counts for followerId: {}, followingId: {}, action: {}",
-                        followerId, followingId, isFollow ? "follow" : "unfollow");
+            cacheService.invalidateUserProfile(userId);
         } catch (Exception e) {
-            logger.error("Error updating follow counts: {}", e.getMessage(), e);
+            logger.warn("Failed to invalidate cached user profile for userId={}: {}", userId, e.getMessage());
         }
     }
 }

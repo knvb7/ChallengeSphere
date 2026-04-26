@@ -4,6 +4,10 @@ import com.ironside.challengesphere.api.response.CommentResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.model.Comment;
 import com.ironside.challengesphere.service.CommentService;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Size;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -11,9 +15,11 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.http.ResponseEntity;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
 @RestController
+@Validated
 @RequestMapping("/api/v1/comments")
 public class CommentController {
 
@@ -29,8 +35,8 @@ public class CommentController {
     @GetMapping("/submission/{submissionId}")
     public ResponseEntity<Page<CommentResponse>> getCommentsForSubmission(
             @PathVariable Long submissionId,
-            @RequestParam(defaultValue = "0") int page,
-            @RequestParam(defaultValue = "20") int size) throws ChallengeSphereException {
+            @RequestParam(defaultValue = "0") @Min(0) int page,
+            @RequestParam(defaultValue = "20") @Min(1) @Max(100) int size) throws ChallengeSphereException {
         logger.info("Get comments for submission: {}, page: {}, size: {}", submissionId, page, size);
         Pageable pageable = PageRequest.of(page, size);
         return ResponseEntity.ok(commentService.getCommentsForSubmission(submissionId, pageable));
@@ -44,7 +50,7 @@ public class CommentController {
     public ResponseEntity<Comment> createComment(
             @RequestParam Long submissionId,
             @RequestParam Long userId,
-            @RequestParam String content) throws ChallengeSphereException {
+            @RequestParam @NotBlank @Size(max = 2000) String content) throws ChallengeSphereException {
         logger.info("Create comment for submission: {} by user: {}", submissionId, userId);
         Comment comment = commentService.createComment(submissionId, userId, content);
         return ResponseEntity.ok(comment);
@@ -58,7 +64,7 @@ public class CommentController {
     public ResponseEntity<Comment> updateComment(
             @PathVariable Long commentId,
             @RequestParam Long userId,
-            @RequestParam String content) throws ChallengeSphereException {
+            @RequestParam @NotBlank @Size(max = 2000) String content) throws ChallengeSphereException {
         logger.info("Update comment: {} by user: {}", commentId, userId);
         Comment comment = commentService.updateComment(commentId, userId, content);
         return ResponseEntity.ok(comment);

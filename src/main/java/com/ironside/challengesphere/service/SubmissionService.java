@@ -19,9 +19,10 @@ public interface SubmissionService {
     PresignedUrlsResponse generatePresignedUrls(GeneratePresignedUrlsRequest request) throws ChallengeSphereException;
     
     /**
-     * Get a single submission by ID with caching
+     * Get a single submission by ID.
      * @param submissionId the submission ID
+     * @param callerId the id of the requesting user — required to authorize access to private submissions
      * @return the submission or null if not found
      */
-    Submission getSubmissionById(Long submissionId);
+    Submission getSubmissionById(Long submissionId, Long callerId) throws ChallengeSphereException;
 }

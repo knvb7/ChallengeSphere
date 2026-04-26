@@ -1,7 +1,6 @@
 package com.ironside.challengesphere.service.impl;
 
 import java.sql.Timestamp;
-import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -13,6 +12,10 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -24,7 +27,6 @@ import com.ironside.challengesphere.api.response.SubmissionResponse;
 import com.ironside.challengesphere.api.response.SubmissionsResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.model.Challenge;
-import com.ironside.challengesphere.model.Follow;
 import com.ironside.challengesphere.model.Submission;
 import com.ironside.challengesphere.model.User;
 import com.ironside.challengesphere.model.UserChallenge;
@@ -33,27 +35,15 @@ import com.ironside.challengesphere.repository.FollowRepository;
 import com.ironside.challengesphere.repository.SubmissionRepository;
 import com.ironside.challengesphere.repository.UserChallengeRepository;
 import com.ironside.challengesphere.repository.UserRepository;
+import com.ironside.challengesphere.repository.ModerationFlagRepository;
+import com.ironside.challengesphere.model.ModerationFlag;
+import com.ironside.challengesphere.service.ContentModerationService;
 import com.ironside.challengesphere.service.LeaderboardService;
 import com.ironside.challengesphere.service.SubmissionService;
-
-import java.util.Set;
-import java.util.stream.Collectors;
 
 @Service
 public class SubmissionServiceImpl implements SubmissionService {
     private static final Logger logger = LogManager.getLogger(SubmissionServiceImpl.class);
-
-    // Cache key prefixes
-    private static final String SUBMISSION_PREFIX = "submission:";
-    private static final String USER_CHALLENGE_SUBMISSIONS_PREFIX = "submissions:user_challenge:";
-    private static final String CHALLENGE_SUBMISSIONS_PREFIX = "submissions:challenge:";
-    private static final String USER_SUBMISSIONS_PREFIX = "submissions:user:";
-    private static final String TRENDING_SUBMISSIONS_PREFIX = "submissions:trending:";
-    
-    // Cache TTL values
-    private static final Duration SUBMISSION_TTL = Duration.ofMinutes(30);
-    private static final Duration SUBMISSIONS_LIST_TTL = Duration.ofMinutes(15);
-    private static final Duration TRENDING_TTL = Duration.ofMinutes(5);
 
     @Autowired
     private SubmissionRepository submissionRepository;
@@ -71,10 +61,13 @@ public class SubmissionServiceImpl implements SubmissionService {
     private FollowRepository followRepository;
 
     @Autowired
-    private RedisCacheServiceImpl cacheService;
+    private LeaderboardService leaderboardService;
 
     @Autowired
-    private LeaderboardService leaderboardService;
+    private ContentModerationService contentModerationService;
+
+    @Autowired
+    private ModerationFlagRepository moderationFlagRepository;
 
     @Value("${gcs.bucket.name}")
     private String bucketName;
@@ -102,6 +95,14 @@ public class SubmissionServiceImpl implements SubmissionService {
                             HttpStatus.NOT_FOUND,
                             logger
                     ));
+
+            if (Boolean.FALSE.equals(user.getActive())) {
+                throw new ChallengeSphereException(
+                        "Account is suspended — contact support.",
+                        HttpStatus.FORBIDDEN,
+                        logger
+                );
+            }
 
             // Validate challenge exists and is active
             Challenge challenge = challengeRepository.findById(challengeId)
@@ -149,6 +150,13 @@ public class SubmissionServiceImpl implements SubmissionService {
                 );
             }
 
+            // Serialize concurrent writers for the same (user, challenge, day) tuple so the
+            // 5-per-day cap is atomic. The lock is scoped to this transaction — two requests
+            // that land on the same tuple queue at the lock, and the second only proceeds
+            // once the first has committed (and its row is visible to the count below).
+            long lockKey = submissionDayLockKey(userId, challengeId, dayNumber);
+            submissionRepository.acquireSubmissionDayLock(lockKey);
+
             // Enforce max 5 submissions per day per user per challenge
             List<Submission> existingSubmissions = submissionRepository.findByUserChallengeAndDay(userId, challengeId, dayNumber);
             if (existingSubmissions.size() >= 5) {
@@ -156,6 +164,25 @@ public class SubmissionServiceImpl implements SubmissionService {
                 throw new ChallengeSphereException(
                         "You have reached the maximum of 5 submissions for day " + dayNumber + ".",
                         HttpStatus.TOO_MANY_REQUESTS,
+                        logger
+                );
+            }
+
+            // Content moderation — run Vision SafeSearch on the uploaded media before
+            // anything is persisted. VERY_LIKELY on adult/racy/violence bans the user
+            // immediately (no submission row). LIKELY saves the submission hidden
+            // (active=false) and queues a flag for human review.
+            ContentModerationService.Result moderation = contentModerationService.scan(request.getMediaUrls());
+            if (moderation.verdict() == ContentModerationService.Verdict.BLOCK_AND_BAN) {
+                String summary = summarizeFindings(moderation);
+                logger.warn("Banning user {} for disallowed content: {}", userId, summary);
+                user.setActive(false);
+                user.setBannedAt(new Timestamp(System.currentTimeMillis()));
+                user.setBanReason("Content policy violation: " + summary);
+                userRepository.save(user);
+                throw new ChallengeSphereException(
+                        "Submission rejected for content policy violation. Your account has been suspended.",
+                        HttpStatus.FORBIDDEN,
                         logger
                 );
             }
@@ -179,39 +206,43 @@ public class SubmissionServiceImpl implements SubmissionService {
             Timestamp submissionTime = request.getSubmissionDate() != null ? request.getSubmissionDate() : Timestamp.from(Instant.now());
             submission.setSubmissionTime(submissionTime);
             submission.setCreatedAt(new Timestamp(System.currentTimeMillis()));
-            submission.setActive(true);
+            // FLAG_FOR_REVIEW → hidden until a moderator resolves the flag.
+            boolean flagged = moderation.verdict() == ContentModerationService.Verdict.FLAG_FOR_REVIEW;
+            submission.setActive(!flagged);
             submission.setGloriesCount(0L);
             submission.setCommentsCount(0L);
             submission.setVersion(0);
 
             Submission savedSubmission = submissionRepository.save(submission);
+
+            if (flagged) {
+                for (ContentModerationService.Finding f : moderation.findings()) {
+                    ModerationFlag flag = new ModerationFlag();
+                    flag.setSubmissionId(savedSubmission.getId());
+                    flag.setUserId(userId);
+                    flag.setCategory(f.category());
+                    flag.setSeverity(f.severity());
+                    flag.setMediaUrl(f.mediaUrl());
+                    flag.setCreatedAt(new Timestamp(System.currentTimeMillis()));
+                    moderationFlagRepository.save(flag);
+                }
+                logger.warn("Submission {} flagged for review ({} findings) — user {}",
+                        savedSubmission.getId(), moderation.findings().size(), userId);
+            }
             logger.info("Successfully created submission with id: {} for user: {}, challenge: {}, day: {}",
                     savedSubmission.getId(), userId, challengeId, dayNumber);
 
-            // Cache the new submission
-            cacheSubmission(savedSubmission);
-            
-            // Invalidate list caches (new submission affects these lists)
-            invalidateSubmissionListCaches(userId, challengeId);
-
-            // Push new submission into followers' cached timelines (fan-out on write)
-            // fanOutNewSubmission(userId, savedSubmission.getId(),
-            //         (double) savedSubmission.getCreatedAt().getTime());
-
-            // Invalidate global/non-timeline feeds that this submission affects
-            // cacheService.invalidateFeed("TRENDING");
-            // cacheService.invalidateFeed("EXPLORE");
-            // cacheService.invalidateFeed("CHALLENGE:" + challengeId);
-            // cacheService.invalidateFeed("USER:" + userId);
-
-            // Update leaderboard score for this user (async-safe)
-            try {
-                leaderboardService.incrementScore(challengeId, userId, 10, "New submission for day " + dayNumber);
-                logger.debug("Updated leaderboard score for user: {} in challenge: {}", userId, challengeId);
-            } catch (Exception e) {
-                // Don't fail the submission if leaderboard update fails
-                logger.warn("Failed to update leaderboard score for user: {} in challenge: {}: {}", 
-                    userId, challengeId, e.getMessage());
+            // Don't credit points for flagged submissions — if the admin later
+            // approves it, the approval flow can award the score at that point.
+            if (!flagged) {
+                try {
+                    leaderboardService.incrementScore(challengeId, userId, 10, "New submission for day " + dayNumber);
+                    logger.debug("Updated leaderboard score for user: {} in challenge: {}", userId, challengeId);
+                } catch (Exception e) {
+                    // Don't fail the submission if leaderboard update fails
+                    logger.warn("Failed to update leaderboard score for user: {} in challenge: {}: {}",
+                            userId, challengeId, e.getMessage());
+                }
             }
 
             return SubmissionResponse.success(savedSubmission, request.getMediaUrls());
@@ -244,20 +275,14 @@ public class SubmissionServiceImpl implements SubmissionService {
             //     }
             // }
 
-            List<Submission> allSubmissions = submissionRepository.findByUserIdAndChallengeId(userId, challengeId);
-
-            // Apply pagination
-            int totalCount = allSubmissions.size();
-            int offset = (page - 1) * pageSize;
-            List<Submission> paginatedSubmissions = allSubmissions.stream()
-                    .skip(offset)
-                    .limit(pageSize)
-                    .toList();
+            Pageable pageable = PageRequest.of(Math.max(0, page - 1), pageSize, Sort.by(Sort.Direction.ASC, "day_number"));
+            Page<Submission> submissionPage = submissionRepository.findByUserIdAndChallengeId(userId, challengeId, pageable);
+            int totalCount = (int) submissionPage.getTotalElements();
 
             logger.info("Found {} submissions for user: {}, challenge: {} (showing page {}/{})",
-                    totalCount, userId, challengeId, page, (int) Math.ceil((double) totalCount / pageSize));
+                    totalCount, userId, challengeId, page, submissionPage.getTotalPages());
 
-            SubmissionsResponse response = SubmissionsResponse.create(paginatedSubmissions, page, pageSize, totalCount);
+            SubmissionsResponse response = SubmissionsResponse.create(submissionPage.getContent(), page, pageSize, totalCount);
 
             // Cache first page results
             // if (page == 1) {
@@ -292,20 +317,14 @@ public class SubmissionServiceImpl implements SubmissionService {
             //     }
             // }
 
-            List<Submission> allSubmissions = submissionRepository.findActiveByChallengeId(challengeId);
-
-            // Apply pagination
-            int totalCount = allSubmissions.size();
-            int offset = (page - 1) * pageSize;
-            List<Submission> paginatedSubmissions = allSubmissions.stream()
-                    .skip(offset)
-                    .limit(pageSize)
-                    .toList();
+            Pageable pageable = PageRequest.of(Math.max(0, page - 1), pageSize, Sort.by(Sort.Direction.DESC, "submission_time"));
+            Page<Submission> submissionPage = submissionRepository.findActiveByChallengeId(challengeId, pageable);
+            int totalCount = (int) submissionPage.getTotalElements();
 
             logger.info("Found {} active submissions for challenge: {} (showing page {}/{})",
-                    totalCount, challengeId, page, (int) Math.ceil((double) totalCount / pageSize));
+                    totalCount, challengeId, page, submissionPage.getTotalPages());
 
-            SubmissionsResponse response = SubmissionsResponse.create(paginatedSubmissions, page, pageSize, totalCount);
+            SubmissionsResponse response = SubmissionsResponse.create(submissionPage.getContent(), page, pageSize, totalCount);
 
             // Cache first page results
             // if (page == 1) {
@@ -340,20 +359,14 @@ public class SubmissionServiceImpl implements SubmissionService {
             //     }
             // }
 
-            List<Submission> allSubmissions = submissionRepository.findActiveByUserId(userId);
-
-            // Apply pagination
-            int totalCount = allSubmissions.size();
-            int offset = (page - 1) * pageSize;
-            List<Submission> paginatedSubmissions = allSubmissions.stream()
-                    .skip(offset)
-                    .limit(pageSize)
-                    .toList();
+            Pageable pageable = PageRequest.of(Math.max(0, page - 1), pageSize, Sort.by(Sort.Direction.DESC, "submission_time"));
+            Page<Submission> submissionPage = submissionRepository.findActiveByUserId(userId, pageable);
+            int totalCount = (int) submissionPage.getTotalElements();
 
             logger.info("Found {} active submissions for user: {} (showing page {}/{})",
-                    totalCount, userId, page, (int) Math.ceil((double) totalCount / pageSize));
+                    totalCount, userId, page, submissionPage.getTotalPages());
 
-            SubmissionsResponse response = SubmissionsResponse.create(paginatedSubmissions, page, pageSize, totalCount);
+            SubmissionsResponse response = SubmissionsResponse.create(submissionPage.getContent(), page, pageSize, totalCount);
 
             // Cache first page results
             // if (page == 1) {
@@ -462,119 +475,55 @@ public class SubmissionServiceImpl implements SubmissionService {
         return fileName.substring(fileName.lastIndexOf("."));
     }
 
-    // ==================== CACHE HELPER METHODS ====================
-
-    /**
-     * Cache a single submission
-     */
-    private void cacheSubmission(Submission submission) {
-        if (submission == null || submission.getId() == null) {
-            return;
-        }
-        // try {
-        //     String cacheKey = SUBMISSION_PREFIX + submission.getId();
-        //     cacheService.save(cacheKey, submission, SUBMISSION_TTL);
-        //     logger.debug("Cached submission: id={}", submission.getId());
-        // } catch (Exception e) {
-        //     logger.warn("Failed to cache submission: id={}, error={}", submission.getId(), e.getMessage());
-        // }
-    }
-
-    /**
-     * Get a submission from cache by ID
-     * @return cached submission or null if not found
-     */
-    private Submission getCachedSubmission(Long submissionId) {
-        // if (submissionId == null) {
-        //     return null;
-        // }
-        // try {
-        //     String cacheKey = SUBMISSION_PREFIX + submissionId;
-        //     return cacheService.get(cacheKey, Submission.class);
-        // } catch (Exception e) {
-        //     logger.warn("Failed to get cached submission: id={}, error={}", submissionId, e.getMessage());
-        //     return null;
-        // }
-        return null;
-    }
-
-    /**
-     * Get submission by ID with cache-first strategy
-     * @return submission from cache or database
-     */
     @Override
-    public Submission getSubmissionById(Long submissionId) {
+    public Submission getSubmissionById(Long submissionId, Long callerId) throws ChallengeSphereException {
         if (submissionId == null) {
             return null;
         }
-
-        // Try cache first
-        // Submission cached = getCachedSubmission(submissionId);
-        // if (cached != null) {
-        //     logger.debug("Cache hit for submission: id={}", submissionId);
-        //     return cached;
-        // }
-
-        // Fetch from database
         logger.debug("Fetching submission from DB: id={}", submissionId);
-        return submissionRepository.findById(submissionId)
-                .orElse(null);
+        Submission submission = submissionRepository.findById(submissionId).orElse(null);
+        if (submission == null) {
+            return null;
+        }
+        if (Boolean.TRUE.equals(submission.getIsPrivate()) && !callerCanViewPrivate(submission, callerId)) {
+            throw new ChallengeSphereException(
+                    "Not authorized to view this submission",
+                    HttpStatus.FORBIDDEN,
+                    logger
+            );
+        }
+        return submission;
     }
 
-    /**
-     * Invalidate submission list caches when a new submission is created/updated/deleted
-     * This ensures fresh data is fetched on next request
-     */
-    private void invalidateSubmissionListCaches(Long userId, Long challengeId) {
-        // try {
-        //     String userChallengeCachePattern = USER_CHALLENGE_SUBMISSIONS_PREFIX + userId + ":" + challengeId + "*";
-        //     cacheService.deleteByPattern(userChallengeCachePattern);
-        //     String challengeCachePattern = CHALLENGE_SUBMISSIONS_PREFIX + challengeId + "*";
-        //     cacheService.deleteByPattern(challengeCachePattern);
-        //     String userCachePattern = USER_SUBMISSIONS_PREFIX + userId + "*";
-        //     cacheService.deleteByPattern(userCachePattern);
-        //     String trendingCachePattern = TRENDING_SUBMISSIONS_PREFIX + "*";
-        //     cacheService.deleteByPattern(trendingCachePattern);
-        //     logger.debug("Invalidated submission list caches for userId={}, challengeId={}", userId, challengeId);
-        // } catch (Exception e) {
-        //     logger.warn("Failed to invalidate submission list caches: userId={}, challengeId={}, error={}",
-        //         userId, challengeId, e.getMessage());
-        // }
+    private boolean callerCanViewPrivate(Submission submission, Long callerId) {
+        if (callerId == null) return false;
+        if (callerId.equals(submission.getUserId())) return true;
+        return followRepository.existsByFollowerIdAndFollowingIdAndActive(callerId, submission.getUserId());
     }
 
-    /**
-     * Invalidate a single submission cache
-     */
-    private void invalidateSubmissionCache(Long submissionId) {
-        // if (submissionId == null) {
-        //     return;
-        // }
-        // try {
-        //     String cacheKey = SUBMISSION_PREFIX + submissionId;
-        //     cacheService.delete(cacheKey);
-        //     logger.debug("Invalidated submission cache: id={}", submissionId);
-        // } catch (Exception e) {
-        //     logger.warn("Failed to invalidate submission cache: id={}, error={}", submissionId, e.getMessage());
-        // }
+    private static String summarizeFindings(ContentModerationService.Result result) {
+        if (result.findings().isEmpty()) return "unspecified";
+        StringBuilder sb = new StringBuilder();
+        int n = Math.min(3, result.findings().size());
+        for (int i = 0; i < n; i++) {
+            ContentModerationService.Finding f = result.findings().get(i);
+            if (i > 0) sb.append(", ");
+            sb.append(f.category()).append('=').append(f.severity());
+        }
+        if (result.findings().size() > n) sb.append(", +").append(result.findings().size() - n).append(" more");
+        return sb.toString();
     }
 
-    /**
-     * Fan out a new submission to all followers' cached timelines.
-     * Uses cached follower IDs from Redis; falls back to DB if not available.
-     */
-    private void fanOutNewSubmission(Long authorId, Long submissionId, double score) {
-        // try {
-        //     Set<Long> followerIds = cacheService.getCachedFollowerIds(authorId);
-        //     if (followerIds.isEmpty()) {
-        //         followerIds = followRepository.findActiveFollowsByFollowingId(authorId)
-        //                 .stream()
-        //                 .map(Follow::getFollowerId)
-        //                 .collect(Collectors.toSet());
-        //     }
-        //     followerIds.add(authorId);
-        //     cacheService.fanOutToFollowerTimelines(followerIds, submissionId, score);
-        // } catch (Exception e) {
-        //     logger.warn("Failed to fan out submission {}: {}", submissionId, e.getMessage());
-        // }
+    // Derive a stable 64-bit key from (userId, challengeId, dayNumber) for the advisory lock.
+    // Mixing is just to spread the keyspace — collisions only cost us a brief serialization,
+    // never correctness.
+    private static long submissionDayLockKey(Long userId, Long challengeId, Integer dayNumber) {
+        long u = userId == null ? 0L : userId;
+        long c = challengeId == null ? 0L : challengeId;
+        long d = dayNumber == null ? 0L : dayNumber.longValue();
+        long key = u * 0x9E3779B97F4A7C15L;
+        key ^= Long.rotateLeft(c, 21);
+        key ^= Long.rotateLeft(d, 42);
+        return key;
     }
 }

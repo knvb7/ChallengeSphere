@@ -8,6 +8,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 import org.springframework.data.domain.PageRequest;
@@ -16,6 +17,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -59,9 +61,6 @@ public class LeaderboardServiceImpl implements LeaderboardService {
     private static final double STREAK_BONUS_POINTS = 5.0;
     
     @Autowired
-    private RedisCacheServiceImpl cacheService;
-    
-    @Autowired
     private ChallengeRepository challengeRepository;
     
     @Autowired
@@ -75,7 +74,13 @@ public class LeaderboardServiceImpl implements LeaderboardService {
     
     @Autowired
     private LeaderboardEntryRepository leaderboardEntryRepository;
-    
+
+    // challengeIds whose ranks are stale — flushed by flushDirtyRanks below.
+    // Used as a set; the boolean value is ignored. ConcurrentHashMap.newKeySet gives us
+    // the same API and avoids allocating Boolean.TRUE on every dirty-mark.
+    private final Set<Long> dirtyChallengeIds = ConcurrentHashMap.newKeySet();
+
+
     @Override
     @Transactional(readOnly = true)
     public LeaderboardResponse getLeaderboard(GetLeaderboardRequest request) throws ChallengeSphereException {
@@ -95,14 +100,7 @@ public class LeaderboardServiceImpl implements LeaderboardService {
                             logger
                     ));
             
-            // ── Read directly from DB (Redis caching temporarily disabled) ──────
-            // TODO: re-enable Redis reads once cache population is confirmed working
-            // List<RedisCacheServiceImpl.LeaderboardEntry> redisEntries =
-            //         cacheService.getTopScoresWithRank(challengeId, limit);
-            // if (redisEntries.isEmpty()) {
-            //     rebuildLeaderboard(challengeId);
-            //     redisEntries = cacheService.getTopScoresWithRank(challengeId, limit);
-            // }
+            // ── Read directly from DB ──────
 
             List<LeaderboardEntry> dbEntries =
                     leaderboardEntryRepository.findTopWithUserByChallengeId(
@@ -241,21 +239,16 @@ public class LeaderboardServiceImpl implements LeaderboardService {
                 // Set absolute score
                 entry.setScore(score);
                 leaderboardEntryRepository.save(entry);
-                
-                // Sync to Redis
-                cacheService.addToLeaderboard(challengeId, userId, score);
-                logger.info("Set absolute score {} for user {} in challenge {} (DB + Redis)", score, userId, challengeId);
+                logger.info("Set absolute score {} for user {} in challenge {}", score, userId, challengeId);
             } else {
                 // Increment score
                 double newScore = entry.getScore() + score;
                 entry.setScore(newScore);
                 leaderboardEntryRepository.save(entry);
-                
-                // Sync to Redis
-                cacheService.addToLeaderboard(challengeId, userId, newScore);
-                logger.info("Incremented score by {} for user {} in challenge {}, new score: {} (DB + Redis)", 
+                logger.info("Incremented score by {} for user {} in challenge {}, new score: {}",
                     score, userId, challengeId, newScore);
             }
+            dirtyChallengeIds.add(challengeId);
         } catch (Exception e) {
             logger.error("Error updating score for challenge {}, user {}: {}", 
                 challengeId, userId, e.getMessage(), e);
@@ -281,15 +274,40 @@ public class LeaderboardServiceImpl implements LeaderboardService {
             entry.incrementSubmissionCount();
             leaderboardEntryRepository.save(entry);
             
-            // Step 2: Sync to Redis cache
-            cacheService.addToLeaderboard(challengeId, userId, newScore);
-            
-            logger.info("Score updated: challenge={}, user={}, points={}, newScore={}, reason={} (DB + Redis)", 
+            logger.info("Score updated: challenge={}, user={}, points={}, newScore={}, reason={}",
                 challengeId, userId, points, newScore, reason);
+            dirtyChallengeIds.add(challengeId);
         } catch (Exception e) {
-            logger.error("Error incrementing score: challenge={}, user={}, points={}", 
+            logger.error("Error incrementing score: challenge={}, user={}, points={}",
                 challengeId, userId, points, e);
             // Don't throw - leaderboard updates should be best effort
+        }
+    }
+
+    /**
+     * Drain the dirty-set every 30s and recompute ranks for each affected challenge.
+     * Score writes (updateScore / incrementScore) only touch `score` — `current_rank`
+     * and `previous_rank` would otherwise drift until the next full rebuild.
+     * Each challenge's rank refresh runs in its own transaction so one failure
+     * doesn't block the rest.
+     */
+    @Scheduled(fixedDelay = 30_000, initialDelay = 30_000)
+    public void flushDirtyRanks() {
+        if (dirtyChallengeIds.isEmpty()) return;
+
+        // Snapshot + clear before running — new dirty marks arriving during refresh
+        // land back in the set and get picked up on the next tick.
+        List<Long> snapshot = new ArrayList<>(dirtyChallengeIds);
+        dirtyChallengeIds.clear();
+
+        for (Long challengeId : snapshot) {
+            try {
+                updateRanks(challengeId);
+            } catch (Exception e) {
+                logger.error("Rank refresh failed for challenge {}: {}", challengeId, e.getMessage(), e);
+                // Re-mark so the next tick retries
+                dirtyChallengeIds.add(challengeId);
+            }
         }
     }
     
@@ -303,12 +321,8 @@ public class LeaderboardServiceImpl implements LeaderboardService {
             List<LeaderboardEntry> dbEntries = leaderboardEntryRepository.findActiveByChallengeId(challengeId);
             
             if (!dbEntries.isEmpty()) {
-                // Rebuild Redis from database
-                for (LeaderboardEntry entry : dbEntries) {
-                    cacheService.addToLeaderboard(challengeId, entry.getUser().getId(), entry.getScore());
-                }
-                logger.info("Rebuilt Redis leaderboard from database for challenge {} with {} entries", 
-                    challengeId, dbEntries.size());
+                logger.info("Found {} leaderboard entries in database for challenge {}", 
+                    dbEntries.size(), challengeId);
                 return;
             }
             
@@ -362,16 +376,13 @@ public class LeaderboardServiceImpl implements LeaderboardService {
                     entry.setGloryPoints((int) glories);
                     entry.setStreakDays(streak);
                     leaderboardEntryRepository.save(entry);
-                    
-                    // Sync to Redis
-                    cacheService.addToLeaderboard(challengeId, userId, score);
                 }
             }
             
             // Update ranks in DB
             leaderboardEntryRepository.updateRanksForChallenge(challengeId);
             
-            logger.info("Rebuilt leaderboard for challenge {} with {} participants (DB + Redis)", 
+            logger.info("Rebuilt leaderboard for challenge {} with {} participants", 
                 challengeId, userIds.size());
                 
         } catch (ChallengeSphereException e) {
@@ -395,9 +406,7 @@ public class LeaderboardServiceImpl implements LeaderboardService {
             // Step 1: Mark as disqualified in DB (don't delete - keep history)
             leaderboardEntryRepository.disqualifyUser(challengeId, userId);
             
-            // Step 2: Remove from Redis (async, fire-and-forget)
-            cacheService.removeFromLeaderboard(challengeId, userId);
-            logger.info("Successfully removed user {} from leaderboard for challenge {} (DB + Redis)", userId, challengeId);
+            logger.info("Successfully removed user {} from leaderboard for challenge {}", userId, challengeId);
         } catch (Exception e) {
             logger.error("Error removing user from leaderboard: challenge={}, user={}", challengeId, userId, e);
         }
@@ -413,9 +422,7 @@ public class LeaderboardServiceImpl implements LeaderboardService {
             LeaderboardEntry entry = getOrCreateLeaderboardEntry(challengeId, userId);
             leaderboardEntryRepository.save(entry);
             
-            // Add to Redis
-            cacheService.addToLeaderboard(challengeId, userId, 0.0);
-            logger.info("Initialized leaderboard score for user {} in challenge {} (DB + Redis)", userId, challengeId);
+            logger.info("Initialized leaderboard score for user {} in challenge {}", userId, challengeId);
         } catch (Exception e) {
             logger.error("Error initializing user score: challenge={}, user={}", challengeId, userId, e);
         }
@@ -533,18 +540,14 @@ public class LeaderboardServiceImpl implements LeaderboardService {
      */
     @Transactional(readOnly = true)
     public void syncLeaderboardToRedis(Long challengeId) {
-        logger.info("Syncing leaderboard from DB to Redis for challenge: {}", challengeId);
+        logger.info("Syncing leaderboard from DB for challenge: {}", challengeId);
         
         try {
             List<LeaderboardEntry> entries = leaderboardEntryRepository.findActiveByChallengeId(challengeId);
             
-            for (LeaderboardEntry entry : entries) {
-                cacheService.addToLeaderboard(challengeId, entry.getUser().getId(), entry.getScore());
-            }
-            
-            logger.info("Synced {} leaderboard entries to Redis for challenge {}", entries.size(), challengeId);
+            logger.info("Found {} leaderboard entries for challenge {}", entries.size(), challengeId);
         } catch (Exception e) {
-            logger.error("Error syncing leaderboard to Redis for challenge {}: {}", challengeId, e.getMessage(), e);
+            logger.error("Error syncing leaderboard for challenge {}: {}", challengeId, e.getMessage(), e);
         }
     }
     

@@ -8,14 +8,18 @@ import com.ironside.challengesphere.api.response.SubmissionsResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.service.SubmissionService;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
 @RestController
+@Validated
 @RequestMapping("/api/v1/submissions")
 public class SubmissionController {
     private static final Logger logger = LogManager.getLogger(SubmissionController.class);
@@ -58,8 +62,8 @@ public class SubmissionController {
     public ResponseEntity<SubmissionsResponse> getSubmissionsByUserAndChallenge(
             @PathVariable Long userId,
             @PathVariable Long challengeId,
-            @RequestParam(defaultValue = "1") int page,
-            @RequestParam(defaultValue = "10") int pageSize) throws ChallengeSphereException {
+            @RequestParam(defaultValue = "1") @Min(1) int page,
+            @RequestParam(defaultValue = "10") @Min(1) @Max(100) int pageSize) throws ChallengeSphereException {
 
         logger.info("Getting submissions for user: {}, challenge: {}, page: {}, pageSize: {}", userId, challengeId, page, pageSize);
         SubmissionsResponse response = submissionService.getSubmissionsByUserAndChallenge(userId, challengeId, page, pageSize);
@@ -73,8 +77,8 @@ public class SubmissionController {
     @GetMapping("/challenge/{challengeId}")
     public ResponseEntity<SubmissionsResponse> getSubmissionsByChallenge(
             @PathVariable Long challengeId,
-            @RequestParam(defaultValue = "1") int page,
-            @RequestParam(defaultValue = "10") int pageSize) throws ChallengeSphereException {
+            @RequestParam(defaultValue = "1") @Min(1) int page,
+            @RequestParam(defaultValue = "10") @Min(1) @Max(100) int pageSize) throws ChallengeSphereException {
 
         logger.info("Getting submissions for challenge: {}, page: {}, pageSize: {}", challengeId, page, pageSize);
         SubmissionsResponse response = submissionService.getSubmissionsByChallenge(challengeId, page, pageSize);
@@ -88,8 +92,8 @@ public class SubmissionController {
     @GetMapping("/user/{userId}")
     public ResponseEntity<SubmissionsResponse> getSubmissionsByUser(
             @PathVariable Long userId,
-            @RequestParam(defaultValue = "1") int page,
-            @RequestParam(defaultValue = "10") int pageSize) throws ChallengeSphereException {
+            @RequestParam(defaultValue = "1") @Min(1) int page,
+            @RequestParam(defaultValue = "10") @Min(1) @Max(100) int pageSize) throws ChallengeSphereException {
 
         logger.info("Getting submissions for user: {}, page: {}, pageSize: {}", userId, page, pageSize);
         SubmissionsResponse response = submissionService.getSubmissionsByUser(userId, page, pageSize);
@@ -97,14 +101,17 @@ public class SubmissionController {
     }
 
     /**
-     * Get a single submission by ID
-     * GET /api/v1/submissions/{submissionId}
+     * Get a single submission by ID.
+     * GET /api/v1/submissions/{submissionId}?callerId={userId}
+     * callerId is the requesting user — used to gate access to private submissions.
+     * TODO: replace with @AuthenticationPrincipal once SecurityConfig is re-enabled.
      */
     @GetMapping("/{submissionId}")
     public ResponseEntity<com.ironside.challengesphere.model.Submission> getSubmissionById(
-            @PathVariable Long submissionId) {
-        logger.info("Getting submission by id: {}", submissionId);
-        com.ironside.challengesphere.model.Submission submission = submissionService.getSubmissionById(submissionId);
+            @PathVariable Long submissionId,
+            @RequestParam(required = false) Long callerId) throws ChallengeSphereException {
+        logger.info("Getting submission by id: {}, callerId: {}", submissionId, callerId);
+        com.ironside.challengesphere.model.Submission submission = submissionService.getSubmissionById(submissionId, callerId);
         if (submission == null) {
             return ResponseEntity.notFound().build();
         }

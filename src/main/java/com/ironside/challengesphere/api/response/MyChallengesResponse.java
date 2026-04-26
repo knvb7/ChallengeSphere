@@ -10,8 +10,10 @@ import java.util.List;
 @Data
 public class MyChallengesResponse {
     private List<ChallengeSummary> challenges;
-    private int totalActive;
-    private int totalCompleted;
+    private int totalChallenges;
+    private int page;
+    private int pageSize;
+    private int totalPages;
 
     @Data
     public static class ChallengeSummary {
@@ -55,11 +57,13 @@ public class MyChallengesResponse {
         }
     }
 
-    public static MyChallengesResponse create(List<ChallengeSummary> challenges) {
+    public static MyChallengesResponse create(List<ChallengeSummary> challenges, int page, int pageSize, int totalCount) {
         MyChallengesResponse r = new MyChallengesResponse();
         r.challenges = challenges;
-        r.totalActive = (int) challenges.stream().filter(c -> !c.isCompleted()).count();
-        r.totalCompleted = (int) challenges.stream().filter(ChallengeSummary::isCompleted).count();
+        r.page = page;
+        r.pageSize = pageSize;
+        r.totalChallenges = totalCount;
+        r.totalPages = pageSize > 0 ? (int) Math.ceil((double) totalCount / pageSize) : 0;
         return r;
     }
 }

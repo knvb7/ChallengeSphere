@@ -68,9 +68,21 @@ public interface SubmissionRepository extends JpaRepository<Submission, Long> {
     @Query(value = "SELECT * FROM challengesphere.submissions WHERE user_id = :userId AND challenge_id = :challengeId ORDER BY day_number ASC", nativeQuery = true)
     List<Submission> findByUserIdAndChallengeId(@Param("userId") Long userId, @Param("challengeId") Long challengeId);
 
+    // Paginated: all submissions by user and challenge
+    @Query(value = "SELECT * FROM challengesphere.submissions WHERE user_id = :userId AND challenge_id = :challengeId",
+            countQuery = "SELECT COUNT(*) FROM challengesphere.submissions WHERE user_id = :userId AND challenge_id = :challengeId",
+            nativeQuery = true)
+    Page<Submission> findByUserIdAndChallengeId(@Param("userId") Long userId, @Param("challengeId") Long challengeId, Pageable pageable);
+
     // Find all active submissions by challenge
     @Query(value = "SELECT * FROM challengesphere.submissions WHERE challenge_id = :challengeId AND active = true ORDER BY submission_time DESC", nativeQuery = true)
     List<Submission> findActiveByChallengeId(@Param("challengeId") Long challengeId);
+
+    // Paginated: active submissions by challenge
+    @Query(value = "SELECT * FROM challengesphere.submissions WHERE challenge_id = :challengeId AND active = true",
+            countQuery = "SELECT COUNT(*) FROM challengesphere.submissions WHERE challenge_id = :challengeId AND active = true",
+            nativeQuery = true)
+    Page<Submission> findActiveByChallengeId(@Param("challengeId") Long challengeId, Pageable pageable);
 
     // Find all public active submissions by challenge
     @Query(value = "SELECT * FROM challengesphere.submissions WHERE challenge_id = :challengeId AND active = true AND is_private = false ORDER BY created_at DESC", nativeQuery = true)
@@ -79,6 +91,18 @@ public interface SubmissionRepository extends JpaRepository<Submission, Long> {
     // Find all active submissions by user
     @Query(value = "SELECT * FROM challengesphere.submissions WHERE user_id = :userId AND active = true ORDER BY submission_time DESC", nativeQuery = true)
     List<Submission> findActiveByUserId(@Param("userId") Long userId);
+
+    // Paginated: active submissions by user
+    @Query(value = "SELECT * FROM challengesphere.submissions WHERE user_id = :userId AND active = true",
+            countQuery = "SELECT COUNT(*) FROM challengesphere.submissions WHERE user_id = :userId AND active = true",
+            nativeQuery = true)
+    Page<Submission> findActiveByUserId(@Param("userId") Long userId, Pageable pageable);
+
+    // Transaction-scoped advisory lock — used to serialize concurrent writers
+    // for the same (user, challenge, day) tuple so the 5-per-day cap is atomic.
+    // Lock is released automatically when the surrounding transaction commits or rolls back.
+    @Query(value = "SELECT pg_advisory_xact_lock(:key)", nativeQuery = true)
+    void acquireSubmissionDayLock(@Param("key") long key);
 
     // Find all submissions by user (including inactive)
     @Query(value = "SELECT * FROM challengesphere.submissions WHERE user_id = :userId ORDER BY created_at DESC", nativeQuery = true)

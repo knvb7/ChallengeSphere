@@ -4,15 +4,20 @@ import com.ironside.challengesphere.api.response.GloryCheckResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.model.Glory;
 import com.ironside.challengesphere.service.GloryService;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.http.ResponseEntity;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.List;
-
 @RestController
+@Validated
 @RequestMapping("/api/v1/glories")
 public class GloryController {
     private static final Logger logger = LogManager.getLogger(GloryController.class);
@@ -34,14 +39,19 @@ public class GloryController {
     }
 
     /**
-     * Get all glories for a submission
-     * GET /api/v1/glories/submission/{submissionId}
+     * Get a paginated list of glories for a submission.
+     * GET /api/v1/glories/submission/{submissionId}?page=0&size=50
+     * A viral submission can accumulate hundreds of thousands of glories — returning
+     * the full list in one response would blow up both the server and the client.
      */
     @GetMapping("/submission/{submissionId}")
-    public ResponseEntity<List<Glory>> getGloriesForSubmission(@PathVariable Long submissionId) throws ChallengeSphereException {
-        logger.info("Get glories for submission: {}", submissionId);
-        List<Glory> glories = gloryService.getGloriesForSubmission(submissionId);
-        return ResponseEntity.ok(glories);
+    public ResponseEntity<Page<Glory>> getGloriesForSubmission(
+            @PathVariable Long submissionId,
+            @RequestParam(defaultValue = "0") @Min(0) int page,
+            @RequestParam(defaultValue = "50") @Min(1) @Max(100) int size) throws ChallengeSphereException {
+        logger.info("Get glories for submission: {}, page: {}, size: {}", submissionId, page, size);
+        Pageable pageable = PageRequest.of(page, size);
+        return ResponseEntity.ok(gloryService.getGloriesForSubmission(submissionId, pageable));
     }
 
     /**

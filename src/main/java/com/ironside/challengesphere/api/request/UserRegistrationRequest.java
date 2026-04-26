@@ -26,5 +26,7 @@ public class UserRegistrationRequest {
     private String password;
 
     private String bio;
+
+    private String otpCode;
 }
 

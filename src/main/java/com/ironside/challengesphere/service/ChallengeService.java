@@ -63,7 +63,7 @@ public interface ChallengeService {
 
     ChallengeProgressResponse getChallengeProgress(Long challengeId, Long userId) throws ChallengeSphereException;
 
-    MyChallengesResponse getMyChallenges(Long userId, String status) throws ChallengeSphereException;
+    MyChallengesResponse getMyChallenges(Long userId, String status, int page, int pageSize) throws ChallengeSphereException;
 
     PresignedUrlsResponse generateChallengePresignedUrls(GeneratePresignedUrlsRequest request) throws ChallengeSphereException;
 }

@@ -202,9 +202,11 @@ public class ChallengeController {
     @GetMapping("/my")
     public ResponseEntity<MyChallengesResponse> getMyChallenges(
             @RequestParam Long userId,
-            @RequestParam(defaultValue = "active") String status) throws ChallengeSphereException {
-        logger.info("GET /api/v1/challenges/my?userId={}&status={}", userId, status);
-        return ResponseEntity.ok(challengeService.getMyChallenges(userId, status));
+            @RequestParam(required = false) String status,
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "10") int pageSize) throws ChallengeSphereException {
+        logger.info("GET /api/v1/challenges/my?userId={}&status={}&page={}&pageSize={}", userId, status, page, pageSize);
+        return ResponseEntity.ok(challengeService.getMyChallenges(userId, status, page, pageSize));
     }
 
     @PostMapping("/presigned-urls")

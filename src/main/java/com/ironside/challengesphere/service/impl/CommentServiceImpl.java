@@ -3,8 +3,10 @@ package com.ironside.challengesphere.service.impl;
 import com.ironside.challengesphere.api.response.CommentResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.model.Comment;
+import com.ironside.challengesphere.model.Submission;
 import com.ironside.challengesphere.model.User;
 import com.ironside.challengesphere.repository.CommentRepository;
+import com.ironside.challengesphere.repository.FollowRepository;
 import com.ironside.challengesphere.repository.SubmissionRepository;
 import com.ironside.challengesphere.repository.UserRepository;
 import com.ironside.challengesphere.service.CommentService;
@@ -39,7 +41,7 @@ public class CommentServiceImpl implements CommentService {
     private UserRepository userRepository;
 
     @Autowired
-    private RedisCacheServiceImpl cacheService;
+    private FollowRepository followRepository;
 
     @Override
     public Page<CommentResponse> getCommentsForSubmission(Long submissionId, Pageable pageable) throws ChallengeSphereException {
@@ -67,10 +69,21 @@ public class CommentServiceImpl implements CommentService {
     public Comment createComment(Long submissionId, Long userId, String content) throws ChallengeSphereException {
         logger.info("Creating comment for submission: {} by user: {}", submissionId, userId);
 
-        if (!submissionRepository.existsById(submissionId)) {
+        Submission submission = submissionRepository.findById(submissionId)
+                .orElseThrow(() -> new ChallengeSphereException(
+                        "Submission not found with id: " + submissionId,
+                        HttpStatus.NOT_FOUND,
+                        logger
+                ));
+
+        // Private submissions are visible only to the owner and active followers of the owner.
+        // Blocking here prevents strangers from leaking the submission's existence via a comment.
+        if (Boolean.TRUE.equals(submission.getIsPrivate())
+                && !submission.getUserId().equals(userId)
+                && !followRepository.existsByFollowerIdAndFollowingIdAndActive(userId, submission.getUserId())) {
             throw new ChallengeSphereException(
-                    "Submission not found with id: " + submissionId,
-                    HttpStatus.NOT_FOUND,
+                    "Not authorized to comment on this submission",
+                    HttpStatus.FORBIDDEN,
                     logger
             );
         }
@@ -127,7 +140,6 @@ public class CommentServiceImpl implements CommentService {
         Comment updatedComment = commentRepository.save(comment);
         logger.info("Updated comment with id: {}", commentId);
 
-        // cacheService.invalidateCommentsForSubmission(comment.getSubmissionId());
         return updatedComment;
     }
 
@@ -156,7 +168,6 @@ public class CommentServiceImpl implements CommentService {
 
         logger.info("Soft deleted comment with id: {}", commentId);
 
-        // cacheService.invalidateCommentsForSubmission(comment.getSubmissionId());
         submissionRepository.decrementCommentCount(comment.getSubmissionId());
     }
 }

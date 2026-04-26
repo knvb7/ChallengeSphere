@@ -65,4 +65,10 @@ public class User {
     private String bio;
     @Column(name = "last_login_at")
     private Timestamp lastLoginAt;
+
+    @Column(name = "banned_at")
+    private Timestamp bannedAt;
+
+    @Column(name = "ban_reason", length = 512)
+    private String banReason;
 }

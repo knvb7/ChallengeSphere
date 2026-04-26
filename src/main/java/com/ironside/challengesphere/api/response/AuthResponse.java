@@ -6,6 +6,7 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 import com.ironside.challengesphere.model.User;
 import lombok.Builder;
 import lombok.NoArgsConstructor;
+import lombok.Builder.Default;
 
 import java.time.Instant;
 
@@ -17,6 +18,7 @@ import java.time.Instant;
 public class AuthResponse {
     private String accessToken;
     private String refreshToken;
+    @Default
     private String tokenType = "Bearer";
     private Long expiresIn;
     private Instant issuedAt;
