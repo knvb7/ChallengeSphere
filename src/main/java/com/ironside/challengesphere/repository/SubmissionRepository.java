@@ -24,6 +24,9 @@ public interface SubmissionRepository extends JpaRepository<Submission, Long> {
             "AND (s.user_id = :userId OR EXISTS (" +
             "  SELECT 1 FROM challengesphere.follows f " +
             "  WHERE f.follower_id = :userId AND f.following_id = s.user_id AND f.active = true" +
+            ") AND EXISTS (" +
+            "  SELECT 1 FROM challengesphere.follows f " +
+            "  WHERE f.follower_id = s.user_id AND f.following_id = :userId AND f.active = true" +
             ")) " +
             "ORDER BY s.created_at DESC",
             countQuery = "SELECT COUNT(*) FROM challengesphere.submissions s " +
@@ -32,6 +35,9 @@ public interface SubmissionRepository extends JpaRepository<Submission, Long> {
                     "AND (s.user_id = :userId OR EXISTS (" +
                     "  SELECT 1 FROM challengesphere.follows f " +
                     "  WHERE f.follower_id = :userId AND f.following_id = s.user_id AND f.active = true" +
+                    ") AND EXISTS (" +
+                    "  SELECT 1 FROM challengesphere.follows f " +
+                    "  WHERE f.follower_id = s.user_id AND f.following_id = :userId AND f.active = true" +
                     "))",
             nativeQuery = true)
     Page<Submission> findFeedForUser(@Param("userId") Long userId, Pageable pageable);
@@ -41,24 +47,40 @@ public interface SubmissionRepository extends JpaRepository<Submission, Long> {
             "WHERE s.active = true " +
             "AND s.is_private = false " +
             "AND s.created_at > NOW() - INTERVAL '7 days' " +
+            "AND (s.user_id = :viewerId OR (" +
+            "  EXISTS (SELECT 1 FROM challengesphere.follows f WHERE f.follower_id = :viewerId AND f.following_id = s.user_id AND f.active = true) " +
+            "  AND EXISTS (SELECT 1 FROM challengesphere.follows f WHERE f.follower_id = s.user_id AND f.following_id = :viewerId AND f.active = true)" +
+            ")) " +
             "ORDER BY (s.glories_count * 2 + s.comments_count) DESC, s.created_at DESC",
             countQuery = "SELECT COUNT(*) FROM challengesphere.submissions s " +
                     "WHERE s.active = true " +
                     "AND s.is_private = false " +
-                    "AND s.created_at > NOW() - INTERVAL '7 days'",
+                    "AND s.created_at > NOW() - INTERVAL '7 days' " +
+                    "AND (s.user_id = :viewerId OR (" +
+                    "  EXISTS (SELECT 1 FROM challengesphere.follows f WHERE f.follower_id = :viewerId AND f.following_id = s.user_id AND f.active = true) " +
+                    "  AND EXISTS (SELECT 1 FROM challengesphere.follows f WHERE f.follower_id = s.user_id AND f.following_id = :viewerId AND f.active = true)" +
+                    "))",
             nativeQuery = true)
-    Page<Submission> findTrendingSubmissions(Pageable pageable);
+    Page<Submission> findTrendingSubmissions(@Param("viewerId") Long viewerId, Pageable pageable);
 
     // Explore feed - all public submissions sorted by recency
     @Query(value = "SELECT s.* FROM challengesphere.submissions s " +
             "WHERE s.active = true " +
             "AND s.is_private = false " +
+            "AND (s.user_id = :viewerId OR (" +
+            "  EXISTS (SELECT 1 FROM challengesphere.follows f WHERE f.follower_id = :viewerId AND f.following_id = s.user_id AND f.active = true) " +
+            "  AND EXISTS (SELECT 1 FROM challengesphere.follows f WHERE f.follower_id = s.user_id AND f.following_id = :viewerId AND f.active = true)" +
+            ")) " +
             "ORDER BY s.created_at DESC",
             countQuery = "SELECT COUNT(*) FROM challengesphere.submissions s " +
                     "WHERE s.active = true " +
-                    "AND s.is_private = false",
+                    "AND s.is_private = false " +
+                    "AND (s.user_id = :viewerId OR (" +
+                    "  EXISTS (SELECT 1 FROM challengesphere.follows f WHERE f.follower_id = :viewerId AND f.following_id = s.user_id AND f.active = true) " +
+                    "  AND EXISTS (SELECT 1 FROM challengesphere.follows f WHERE f.follower_id = s.user_id AND f.following_id = :viewerId AND f.active = true)" +
+                    "))",
             nativeQuery = true)
-    Page<Submission> findPublicSubmissions(Pageable pageable);
+    Page<Submission> findPublicSubmissions(@Param("viewerId") Long viewerId, Pageable pageable);
 
     // Find submission by user, challenge, and day
     @Query(value = "SELECT * FROM challengesphere.submissions WHERE user_id = :userId AND challenge_id = :challengeId AND day_number = :dayNumber", nativeQuery = true)
@@ -85,8 +107,13 @@ public interface SubmissionRepository extends JpaRepository<Submission, Long> {
     Page<Submission> findActiveByChallengeId(@Param("challengeId") Long challengeId, Pageable pageable);
 
     // Find all public active submissions by challenge
-    @Query(value = "SELECT * FROM challengesphere.submissions WHERE challenge_id = :challengeId AND active = true AND is_private = false ORDER BY created_at DESC", nativeQuery = true)
-    List<Submission> findPublicActiveByChallengeId(@Param("challengeId") Long challengeId);
+    @Query(value = "SELECT * FROM challengesphere.submissions s WHERE s.challenge_id = :challengeId " +
+            "AND s.active = true AND s.is_private = false " +
+            "AND (s.user_id = :viewerId OR (" +
+            "  EXISTS (SELECT 1 FROM challengesphere.follows f WHERE f.follower_id = :viewerId AND f.following_id = s.user_id AND f.active = true) " +
+            "  AND EXISTS (SELECT 1 FROM challengesphere.follows f WHERE f.follower_id = s.user_id AND f.following_id = :viewerId AND f.active = true)" +
+            ")) ORDER BY s.created_at DESC", nativeQuery = true)
+    List<Submission> findPublicActiveByChallengeId(@Param("challengeId") Long challengeId, @Param("viewerId") Long viewerId);
 
     // Find all active submissions by user
     @Query(value = "SELECT * FROM challengesphere.submissions WHERE user_id = :userId AND active = true ORDER BY submission_time DESC", nativeQuery = true)

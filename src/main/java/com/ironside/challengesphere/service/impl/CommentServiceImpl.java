@@ -44,9 +44,25 @@ public class CommentServiceImpl implements CommentService {
     private FollowRepository followRepository;
 
     @Override
-    public Page<CommentResponse> getCommentsForSubmission(Long submissionId, Pageable pageable) throws ChallengeSphereException {
+    public Page<CommentResponse> getCommentsForSubmission(Long submissionId, Long callerId, Pageable pageable) throws ChallengeSphereException {
         logger.info("Getting comments for submission: {}, page: {}, size: {}",
                 submissionId, pageable.getPageNumber(), pageable.getPageSize());
+
+        Submission submission = submissionRepository.findById(submissionId)
+                .orElseThrow(() -> new ChallengeSphereException(
+                        "Submission not found with id: " + submissionId,
+                        HttpStatus.NOT_FOUND,
+                        logger
+                ));
+
+        if (!submission.getUserId().equals(callerId)
+                && !followRepository.existsActiveMutualFollow(callerId, submission.getUserId())) {
+            throw new ChallengeSphereException(
+                    "Not authorized to view comments on this submission",
+                    HttpStatus.FORBIDDEN,
+                    logger
+            );
+        }
 
         Page<Comment> comments = commentRepository.findActiveCommentsBySubmissionId(submissionId, pageable);
 
@@ -76,11 +92,9 @@ public class CommentServiceImpl implements CommentService {
                         logger
                 ));
 
-        // Private submissions are visible only to the owner and active followers of the owner.
-        // Blocking here prevents strangers from leaking the submission's existence via a comment.
-        if (Boolean.TRUE.equals(submission.getIsPrivate())
-                && !submission.getUserId().equals(userId)
-                && !followRepository.existsByFollowerIdAndFollowingIdAndActive(userId, submission.getUserId())) {
+        // Submission interactions are limited to the owner or users with a mutual follow.
+        if (!submission.getUserId().equals(userId)
+                && !followRepository.existsActiveMutualFollow(userId, submission.getUserId())) {
             throw new ChallengeSphereException(
                     "Not authorized to comment on this submission",
                     HttpStatus.FORBIDDEN,

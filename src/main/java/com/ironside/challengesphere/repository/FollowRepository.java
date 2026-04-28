@@ -13,6 +13,17 @@ import java.util.Optional;
 @Repository
 public interface FollowRepository extends JpaRepository<Follow, Long> {
 
+    default boolean existsActiveMutualFollow(Long firstUserId, Long secondUserId) {
+        if (firstUserId == null || secondUserId == null) {
+            return false;
+        }
+        if (firstUserId.equals(secondUserId)) {
+            return true;
+        }
+        return existsByFollowerIdAndFollowingIdAndActive(firstUserId, secondUserId)
+                && existsByFollowerIdAndFollowingIdAndActive(secondUserId, firstUserId);
+    }
+
     @Query(value = "SELECT * FROM challengesphere.follows WHERE follower_id = :followerId", nativeQuery = true)
     List<Follow> findByFollowerId(@Param("followerId") Long followerId);
 

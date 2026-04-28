@@ -63,10 +63,11 @@ public class SubmissionController {
             @PathVariable Long userId,
             @PathVariable Long challengeId,
             @RequestParam(defaultValue = "1") @Min(1) int page,
-            @RequestParam(defaultValue = "10") @Min(1) @Max(100) int pageSize) throws ChallengeSphereException {
+            @RequestParam(defaultValue = "10") @Min(1) @Max(100) int pageSize,
+            @RequestParam Long callerId) throws ChallengeSphereException {
 
         logger.info("Getting submissions for user: {}, challenge: {}, page: {}, pageSize: {}", userId, challengeId, page, pageSize);
-        SubmissionsResponse response = submissionService.getSubmissionsByUserAndChallenge(userId, challengeId, page, pageSize);
+        SubmissionsResponse response = submissionService.getSubmissionsByUserAndChallenge(userId, challengeId, page, pageSize, callerId);
         return ResponseEntity.ok(response);
     }
 
@@ -78,10 +79,11 @@ public class SubmissionController {
     public ResponseEntity<SubmissionsResponse> getSubmissionsByChallenge(
             @PathVariable Long challengeId,
             @RequestParam(defaultValue = "1") @Min(1) int page,
-            @RequestParam(defaultValue = "10") @Min(1) @Max(100) int pageSize) throws ChallengeSphereException {
+            @RequestParam(defaultValue = "10") @Min(1) @Max(100) int pageSize,
+            @RequestParam Long callerId) throws ChallengeSphereException {
 
         logger.info("Getting submissions for challenge: {}, page: {}, pageSize: {}", challengeId, page, pageSize);
-        SubmissionsResponse response = submissionService.getSubmissionsByChallenge(challengeId, page, pageSize);
+        SubmissionsResponse response = submissionService.getSubmissionsByChallenge(challengeId, page, pageSize, callerId);
         return ResponseEntity.ok(response);
     }
 
@@ -93,10 +95,11 @@ public class SubmissionController {
     public ResponseEntity<SubmissionsResponse> getSubmissionsByUser(
             @PathVariable Long userId,
             @RequestParam(defaultValue = "1") @Min(1) int page,
-            @RequestParam(defaultValue = "10") @Min(1) @Max(100) int pageSize) throws ChallengeSphereException {
+            @RequestParam(defaultValue = "10") @Min(1) @Max(100) int pageSize,
+            @RequestParam Long callerId) throws ChallengeSphereException {
 
         logger.info("Getting submissions for user: {}, page: {}, pageSize: {}", userId, page, pageSize);
-        SubmissionsResponse response = submissionService.getSubmissionsByUser(userId, page, pageSize);
+        SubmissionsResponse response = submissionService.getSubmissionsByUser(userId, page, pageSize, callerId);
         return ResponseEntity.ok(response);
     }
 

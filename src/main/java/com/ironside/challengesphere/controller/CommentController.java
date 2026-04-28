@@ -35,11 +35,12 @@ public class CommentController {
     @GetMapping("/submission/{submissionId}")
     public ResponseEntity<Page<CommentResponse>> getCommentsForSubmission(
             @PathVariable Long submissionId,
+            @RequestParam Long callerId,
             @RequestParam(defaultValue = "0") @Min(0) int page,
             @RequestParam(defaultValue = "20") @Min(1) @Max(100) int size) throws ChallengeSphereException {
         logger.info("Get comments for submission: {}, page: {}, size: {}", submissionId, page, size);
         Pageable pageable = PageRequest.of(page, size);
-        return ResponseEntity.ok(commentService.getCommentsForSubmission(submissionId, pageable));
+        return ResponseEntity.ok(commentService.getCommentsForSubmission(submissionId, callerId, pageable));
     }
 
     /**

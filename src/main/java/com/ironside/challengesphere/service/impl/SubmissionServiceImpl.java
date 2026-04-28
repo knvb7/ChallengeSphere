@@ -261,35 +261,36 @@ public class SubmissionServiceImpl implements SubmissionService {
 
     @Override
     @Transactional(readOnly = true)
-    public SubmissionsResponse getSubmissionsByUserAndChallenge(Long userId, Long challengeId, int page, int pageSize) throws ChallengeSphereException {
+    public SubmissionsResponse getSubmissionsByUserAndChallenge(Long userId, Long challengeId, int page, int pageSize, Long callerId) throws ChallengeSphereException {
         logger.info("Getting submissions for user: {}, challenge: {}, page: {}, pageSize: {}", userId, challengeId, page, pageSize);
 
         try {
-            // Try cache first for first page (most common request)
-            // String cacheKey = USER_CHALLENGE_SUBMISSIONS_PREFIX + userId + ":" + challengeId;
-            // if (page == 1) {
-            //     SubmissionsResponse cachedResponse = cacheService.get(cacheKey + ":page1:" + pageSize, SubmissionsResponse.class);
-            //     if (cachedResponse != null) {
-            //         logger.debug("Cache hit for user-challenge submissions: userId={}, challengeId={}", userId, challengeId);
-            //         return cachedResponse;
-            //     }
-            // }
+            ensureMutualFollowAccess(userId, callerId, "posts");
 
-            Pageable pageable = PageRequest.of(Math.max(0, page - 1), pageSize, Sort.by(Sort.Direction.ASC, "day_number"));
-            Page<Submission> submissionPage = submissionRepository.findByUserIdAndChallengeId(userId, challengeId, pageable);
-            int totalCount = (int) submissionPage.getTotalElements();
+            if (userId.equals(callerId)) {
+                Pageable pageable = PageRequest.of(Math.max(0, page - 1), pageSize, Sort.by(Sort.Direction.ASC, "day_number"));
+                Page<Submission> submissionPage = submissionRepository.findByUserIdAndChallengeId(userId, challengeId, pageable);
+                int totalCount = (int) submissionPage.getTotalElements();
 
-            logger.info("Found {} submissions for user: {}, challenge: {} (showing page {}/{})",
-                    totalCount, userId, challengeId, page, submissionPage.getTotalPages());
+                logger.info("Found {} submissions for user: {}, challenge: {} (showing page {}/{})",
+                        totalCount, userId, challengeId, page, submissionPage.getTotalPages());
 
-            SubmissionsResponse response = SubmissionsResponse.create(submissionPage.getContent(), page, pageSize, totalCount);
+                return SubmissionsResponse.create(submissionPage.getContent(), page, pageSize, totalCount);
+            }
 
-            // Cache first page results
-            // if (page == 1) {
-            //     cacheService.save(cacheKey + ":page1:" + pageSize, response, SUBMISSIONS_LIST_TTL);
-            // }
+            List<Submission> visibleSubmissions = submissionRepository.findActiveByUserIdAndChallengeId(userId, challengeId).stream()
+                    .filter(submission -> !Boolean.TRUE.equals(submission.getIsPrivate()))
+                    .toList();
+            int totalCount = visibleSubmissions.size();
+            int offset = Math.max(0, page - 1) * pageSize;
+            List<Submission> paginatedSubmissions = visibleSubmissions.stream()
+                    .skip(offset)
+                    .limit(pageSize)
+                    .toList();
 
-            return response;
+            logger.info("Found {} visible submissions for user: {}, challenge: {}",
+                    totalCount, userId, challengeId);
+            return SubmissionsResponse.create(paginatedSubmissions, page, pageSize, totalCount);
 
         } catch (Exception e) {
             logger.error("Error getting submissions for user: {}, challenge: {}: {}", userId, challengeId, e.getMessage(), e);
@@ -303,35 +304,23 @@ public class SubmissionServiceImpl implements SubmissionService {
 
     @Override
     @Transactional(readOnly = true)
-    public SubmissionsResponse getSubmissionsByChallenge(Long challengeId, int page, int pageSize) throws ChallengeSphereException {
+    public SubmissionsResponse getSubmissionsByChallenge(Long challengeId, int page, int pageSize, Long callerId) throws ChallengeSphereException {
         logger.info("Getting submissions for challenge: {}, page: {}, pageSize: {}", challengeId, page, pageSize);
 
         try {
-            // Try cache first for first page
-            // String cacheKey = CHALLENGE_SUBMISSIONS_PREFIX + challengeId;
-            // if (page == 1) {
-            //     SubmissionsResponse cachedResponse = cacheService.get(cacheKey + ":page1:" + pageSize, SubmissionsResponse.class);
-            //     if (cachedResponse != null) {
-            //         logger.debug("Cache hit for challenge submissions: challengeId={}", challengeId);
-            //         return cachedResponse;
-            //     }
-            // }
-
-            Pageable pageable = PageRequest.of(Math.max(0, page - 1), pageSize, Sort.by(Sort.Direction.DESC, "submission_time"));
-            Page<Submission> submissionPage = submissionRepository.findActiveByChallengeId(challengeId, pageable);
-            int totalCount = (int) submissionPage.getTotalElements();
+            List<Submission> visibleSubmissions = submissionRepository.findActiveByChallengeId(challengeId).stream()
+                    .filter(submission -> canViewSubmission(submission, callerId))
+                    .toList();
+            int totalCount = visibleSubmissions.size();
+            int offset = Math.max(0, page - 1) * pageSize;
+            List<Submission> paginatedSubmissions = visibleSubmissions.stream()
+                    .skip(offset)
+                    .limit(pageSize)
+                    .toList();
 
             logger.info("Found {} active submissions for challenge: {} (showing page {}/{})",
-                    totalCount, challengeId, page, submissionPage.getTotalPages());
-
-            SubmissionsResponse response = SubmissionsResponse.create(submissionPage.getContent(), page, pageSize, totalCount);
-
-            // Cache first page results
-            // if (page == 1) {
-            //     cacheService.save(cacheKey + ":page1:" + pageSize, response, SUBMISSIONS_LIST_TTL);
-            // }
-
-            return response;
+                    totalCount, challengeId, page, totalCount == 0 ? 0 : (int) Math.ceil((double) totalCount / pageSize));
+            return SubmissionsResponse.create(paginatedSubmissions, page, pageSize, totalCount);
 
         } catch (Exception e) {
             logger.error("Error getting submissions for challenge {}: {}", challengeId, e.getMessage(), e);
@@ -345,35 +334,33 @@ public class SubmissionServiceImpl implements SubmissionService {
 
     @Override
     @Transactional(readOnly = true)
-    public SubmissionsResponse getSubmissionsByUser(Long userId, int page, int pageSize) throws ChallengeSphereException {
+    public SubmissionsResponse getSubmissionsByUser(Long userId, int page, int pageSize, Long callerId) throws ChallengeSphereException {
         logger.info("Getting submissions for user: {}, page: {}, pageSize: {}", userId, page, pageSize);
 
         try {
-            // Try cache first for first page
-            // String cacheKey = USER_SUBMISSIONS_PREFIX + userId;
-            // if (page == 1) {
-            //     SubmissionsResponse cachedResponse = cacheService.get(cacheKey + ":page1:" + pageSize, SubmissionsResponse.class);
-            //     if (cachedResponse != null) {
-            //         logger.debug("Cache hit for user submissions: userId={}", userId);
-            //         return cachedResponse;
-            //     }
-            // }
+            ensureMutualFollowAccess(userId, callerId, "posts");
 
-            Pageable pageable = PageRequest.of(Math.max(0, page - 1), pageSize, Sort.by(Sort.Direction.DESC, "submission_time"));
-            Page<Submission> submissionPage = submissionRepository.findActiveByUserId(userId, pageable);
-            int totalCount = (int) submissionPage.getTotalElements();
+            if (userId.equals(callerId)) {
+                Pageable pageable = PageRequest.of(Math.max(0, page - 1), pageSize, Sort.by(Sort.Direction.DESC, "submission_time"));
+                Page<Submission> submissionPage = submissionRepository.findActiveByUserId(userId, pageable);
+                int totalCount = (int) submissionPage.getTotalElements();
 
-            logger.info("Found {} active submissions for user: {} (showing page {}/{})",
-                    totalCount, userId, page, submissionPage.getTotalPages());
+                logger.info("Found {} active submissions for user: {} (showing page {}/{})",
+                        totalCount, userId, page, submissionPage.getTotalPages());
 
-            SubmissionsResponse response = SubmissionsResponse.create(submissionPage.getContent(), page, pageSize, totalCount);
+                return SubmissionsResponse.create(submissionPage.getContent(), page, pageSize, totalCount);
+            }
 
-            // Cache first page results
-            // if (page == 1) {
-            //     cacheService.save(cacheKey + ":page1:" + pageSize, response, SUBMISSIONS_LIST_TTL);
-            // }
+            List<Submission> visibleSubmissions = submissionRepository.findPublicByUserId(userId);
+            int totalCount = visibleSubmissions.size();
+            int offset = Math.max(0, page - 1) * pageSize;
+            List<Submission> paginatedSubmissions = visibleSubmissions.stream()
+                    .skip(offset)
+                    .limit(pageSize)
+                    .toList();
 
-            return response;
+            logger.info("Found {} visible submissions for user: {}", totalCount, userId);
+            return SubmissionsResponse.create(paginatedSubmissions, page, pageSize, totalCount);
 
         } catch (Exception e) {
             logger.error("Error getting submissions for user {}: {}", userId, e.getMessage(), e);
@@ -485,7 +472,7 @@ public class SubmissionServiceImpl implements SubmissionService {
         if (submission == null) {
             return null;
         }
-        if (Boolean.TRUE.equals(submission.getIsPrivate()) && !callerCanViewPrivate(submission, callerId)) {
+        if (!canViewSubmission(submission, callerId)) {
             throw new ChallengeSphereException(
                     "Not authorized to view this submission",
                     HttpStatus.FORBIDDEN,
@@ -495,10 +482,38 @@ public class SubmissionServiceImpl implements SubmissionService {
         return submission;
     }
 
-    private boolean callerCanViewPrivate(Submission submission, Long callerId) {
-        if (callerId == null) return false;
-        if (callerId.equals(submission.getUserId())) return true;
-        return followRepository.existsByFollowerIdAndFollowingIdAndActive(callerId, submission.getUserId());
+    private boolean canViewSubmission(Submission submission, Long callerId) {
+        if (callerId == null) {
+            return false;
+        }
+        if (callerId.equals(submission.getUserId())) {
+            return true;
+        }
+        if (!Boolean.TRUE.equals(submission.getActive()) || Boolean.TRUE.equals(submission.getIsPrivate())) {
+            return false;
+        }
+        return followRepository.existsActiveMutualFollow(callerId, submission.getUserId());
+    }
+
+    private void ensureMutualFollowAccess(Long ownerUserId, Long viewerUserId, String contentType)
+            throws ChallengeSphereException {
+        if (viewerUserId == null) {
+            throw new ChallengeSphereException(
+                    "callerId is required to view this " + contentType,
+                    HttpStatus.FORBIDDEN,
+                    logger
+            );
+        }
+        if (ownerUserId.equals(viewerUserId)) {
+            return;
+        }
+        if (!followRepository.existsActiveMutualFollow(viewerUserId, ownerUserId)) {
+            throw new ChallengeSphereException(
+                    "You can only view this user's " + contentType + " after you both follow each other",
+                    HttpStatus.FORBIDDEN,
+                    logger
+            );
+        }
     }
 
     private static String summarizeFindings(ContentModerationService.Result result) {

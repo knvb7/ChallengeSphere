@@ -9,7 +9,7 @@ import org.springframework.data.domain.Pageable;
 public interface CommentService {
 
     /** Get paginated comments for a submission, enriched with author details */
-    Page<CommentResponse> getCommentsForSubmission(Long submissionId, Pageable pageable) throws ChallengeSphereException;
+    Page<CommentResponse> getCommentsForSubmission(Long submissionId, Long callerId, Pageable pageable) throws ChallengeSphereException;
 
     /** Create a new comment on a submission */
     Comment createComment(Long submissionId, Long userId, String content) throws ChallengeSphereException;

@@ -44,6 +44,7 @@ import com.ironside.challengesphere.model.Challenge;
 import com.ironside.challengesphere.model.User;
 import com.ironside.challengesphere.model.UserChallenge;
 import com.ironside.challengesphere.repository.ChallengeRepository;
+import com.ironside.challengesphere.repository.FollowRepository;
 import com.ironside.challengesphere.repository.SubmissionRepository;
 import com.ironside.challengesphere.repository.UserChallengeRepository;
 import com.ironside.challengesphere.repository.UserRepository;
@@ -64,6 +65,9 @@ public class ChallengeServiceImpl implements ChallengeService {
 
     @Autowired
     private SubmissionRepository submissionRepository;
+
+    @Autowired
+    private FollowRepository followRepository;
 
     @Override
     public Optional<Challenge> getChallengeById(Long challengeId) throws ChallengeSphereException {
@@ -102,6 +106,7 @@ public class ChallengeServiceImpl implements ChallengeService {
     @Override
     public UserChallengesResponse getUserChallenges(GetUserChallengesRequest request) throws ChallengeSphereException {
         Long userId = request.getUserId();
+        Long currentUserId = request.getCurrentUserId();
         int page = request.getPage();
         int pageSize = request.getPageSize();
         Boolean activeFilter = request.getActive();
@@ -110,6 +115,8 @@ public class ChallengeServiceImpl implements ChallengeService {
                 userId, page, pageSize, activeFilter);
 
         try {
+            ensureMutualFollowAccess(userId, currentUserId, "challenges");
+
             // Try cache first
 //            Optional<UserChallengesResponse> cached = cacheService.getCachedUserChallenges(userId, page, pageSize, activeFilter, UserChallengesResponse.class);
 //            if (cached.isPresent()) {
@@ -910,6 +917,9 @@ public class ChallengeServiceImpl implements ChallengeService {
                             "Challenge not found with id: " + challengeId,
                             HttpStatus.NOT_FOUND, logger));
 
+            Long ownerUserId = challenge.getCurrentOwnerId() != null ? challenge.getCurrentOwnerId() : challenge.getCreatorId();
+            ensureMutualFollowAccess(ownerUserId, currentUserId, "challenge");
+
             int participantCount = userChallengeRepository.countActiveByChallengeId(challengeId);
 
             boolean isJoined = false;
@@ -1115,5 +1125,29 @@ public class ChallengeServiceImpl implements ChallengeService {
     private String getFileExtension(String fileName) {
         if (fileName == null || !fileName.contains(".")) return "";
         return fileName.substring(fileName.lastIndexOf("."));
+    }
+
+    private void ensureMutualFollowAccess(Long ownerUserId, Long viewerUserId, String contentType)
+            throws ChallengeSphereException {
+        if (ownerUserId == null) {
+            return;
+        }
+        if (viewerUserId == null) {
+            throw new ChallengeSphereException(
+                    "currentUserId is required to view this " + contentType,
+                    HttpStatus.FORBIDDEN,
+                    logger
+            );
+        }
+        if (ownerUserId.equals(viewerUserId)) {
+            return;
+        }
+        if (!followRepository.existsActiveMutualFollow(viewerUserId, ownerUserId)) {
+            throw new ChallengeSphereException(
+                    "You can only view this user's " + contentType + " after you both follow each other",
+                    HttpStatus.FORBIDDEN,
+                    logger
+            );
+        }
     }
 }

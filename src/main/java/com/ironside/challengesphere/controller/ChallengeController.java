@@ -65,11 +65,13 @@ public class ChallengeController {
     @GetMapping("/user/{userId}")
     public ResponseEntity<UserChallengesResponse> getUserChallenges(
             @PathVariable Long userId,
+            @RequestParam Long currentUserId,
             @RequestParam(defaultValue = "1") Integer page,
             @RequestParam(defaultValue = "10") Integer pageSize,
             @RequestParam(required = false) Boolean active) throws ChallengeSphereException {
         GetUserChallengesRequest request = new GetUserChallengesRequest();
         request.setUserId(userId);
+        request.setCurrentUserId(currentUserId);
         request.setPage(page);
         request.setPageSize(pageSize);
         request.setActive(active);

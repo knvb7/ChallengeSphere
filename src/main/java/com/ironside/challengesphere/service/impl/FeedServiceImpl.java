@@ -22,6 +22,7 @@ import com.ironside.challengesphere.model.Challenge;
 import com.ironside.challengesphere.model.Submission;
 import com.ironside.challengesphere.model.User;
 import com.ironside.challengesphere.repository.ChallengeRepository;
+import com.ironside.challengesphere.repository.FollowRepository;
 import com.ironside.challengesphere.repository.GloryRepository;
 import com.ironside.challengesphere.repository.SubmissionRepository;
 import com.ironside.challengesphere.repository.UserRepository;
@@ -48,6 +49,9 @@ public class FeedServiceImpl implements FeedService {
 
     @Autowired
     private GloryRepository gloryRepository;
+
+    @Autowired
+    private FollowRepository followRepository;
 
     @Override
     @Transactional(readOnly = true)
@@ -104,8 +108,12 @@ public class FeedServiceImpl implements FeedService {
         logger.info("Getting trending feed, page: {}, pageSize: {}", page, pageSize);
 
         try {
+            if (currentUserId == null) {
+                return FeedResponse.empty(page, pageSize, "TRENDING");
+            }
+
             Pageable pageable = PageRequest.of(page - 1, pageSize);
-            Page<Submission> submissionsPage = submissionRepository.findTrendingSubmissions(pageable);
+            Page<Submission> submissionsPage = submissionRepository.findTrendingSubmissions(currentUserId, pageable);
 
             if (submissionsPage.isEmpty()) {
                 logger.debug("No trending submissions found");
@@ -134,8 +142,12 @@ public class FeedServiceImpl implements FeedService {
         logger.info("Getting explore feed, page: {}, pageSize: {}", page, pageSize);
 
         try {
+            if (currentUserId == null) {
+                return FeedResponse.empty(page, pageSize, "EXPLORE");
+            }
+
             Pageable pageable = PageRequest.of(page - 1, pageSize);
-            Page<Submission> submissionsPage = submissionRepository.findPublicSubmissions(pageable);
+            Page<Submission> submissionsPage = submissionRepository.findPublicSubmissions(currentUserId, pageable);
 
             if (submissionsPage.isEmpty()) {
                 logger.debug("No public submissions found");
@@ -174,7 +186,11 @@ public class FeedServiceImpl implements FeedService {
                 throw new ChallengeSphereException("Challenge not found: " + challengeId, HttpStatus.NOT_FOUND, logger);
             }
 
-            List<Submission> submissions = submissionRepository.findPublicActiveByChallengeId(challengeId);
+            if (currentUserId == null) {
+                return FeedResponse.empty(page, pageSize, "CHALLENGE");
+            }
+
+            List<Submission> submissions = submissionRepository.findPublicActiveByChallengeId(challengeId, currentUserId);
 
             if (submissions.isEmpty()) {
                 logger.debug("No submissions found for challengeId: {}", challengeId);
@@ -221,16 +237,21 @@ public class FeedServiceImpl implements FeedService {
                 throw new ChallengeSphereException("User not found: " + targetUserId, HttpStatus.NOT_FOUND, logger);
             }
 
+            if (!isOwnProfile && !followRepository.existsActiveMutualFollow(currentUserId, targetUserId)) {
+                throw new ChallengeSphereException(
+                        "You can only view this user's posts after you both follow each other",
+                        HttpStatus.FORBIDDEN,
+                        logger
+                );
+            }
+
             // Get submissions - if viewing own profile, show all; otherwise only public
             List<Submission> submissions;
 
             if (isOwnProfile) {
                 submissions = submissionRepository.findActiveByUserId(targetUserId);
             } else {
-                // Only public submissions for other users
-                submissions = submissionRepository.findActiveByUserId(targetUserId).stream()
-                        .filter(s -> !s.getIsPrivate())
-                        .collect(Collectors.toList());
+                submissions = submissionRepository.findPublicByUserId(targetUserId);
             }
 
             if (submissions.isEmpty()) {
@@ -322,4 +343,3 @@ public class FeedServiceImpl implements FeedService {
         return feedItems;
     }
 }
-
