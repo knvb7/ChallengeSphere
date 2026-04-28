@@ -28,8 +28,11 @@ public class User {
     private String username;
 
     @JsonIgnore
-    @Column(name = "hashed_password", nullable = false, length = 255)
+    @Column(name = "hashed_password", length = 255)
     private String hashedPassword;
+
+    @Column(name = "google_id", unique = true, length = 255)
+    private String googleId;
 
     @Column(name = "created_at", columnDefinition = "TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP")
     private Timestamp createdAt;

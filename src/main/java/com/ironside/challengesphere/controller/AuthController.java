@@ -1,12 +1,15 @@
 package com.ironside.challengesphere.controller;
 
+import com.ironside.challengesphere.api.request.GoogleAuthRequest;
 import com.ironside.challengesphere.api.request.SendOtpRequest;
 import com.ironside.challengesphere.api.request.UserRegistrationRequest;
 import com.ironside.challengesphere.api.request.VerifyOtpRequest;
+import com.ironside.challengesphere.api.response.AuthResponse;
 import com.ironside.challengesphere.api.response.UserRegistrationResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.model.User;
 import com.ironside.challengesphere.repository.UserRepository;
+import com.ironside.challengesphere.service.AuthService;
 import com.ironside.challengesphere.service.EmailService;
 import com.ironside.challengesphere.service.SmsService;
 import com.ironside.challengesphere.service.UserService;
@@ -32,15 +35,18 @@ public class AuthController {
     private final EmailService emailService;
     private final UserService userService;
     private final UserRepository userRepository;
+    private final AuthService authService;
 
     public AuthController(SmsService smsService,
                           EmailService emailService,
                           UserService userService,
-                          UserRepository userRepository) {
+                          UserRepository userRepository,
+                          AuthService authService) {
         this.smsService = smsService;
         this.emailService = emailService;
         this.userService = userService;
         this.userRepository = userRepository;
+        this.authService = authService;
     }
 
     @PostMapping("/otp/send")
@@ -90,6 +96,13 @@ public class AuthController {
         userRepository.findByEmailId(request.getEmailId()).ifPresent(this::safelySendWelcome);
 
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
+    }
+
+    @PostMapping("/google")
+    public ResponseEntity<AuthResponse> googleSignIn(@Valid @RequestBody GoogleAuthRequest request)
+            throws ChallengeSphereException {
+        AuthResponse response = authService.loginWithGoogle(request);
+        return ResponseEntity.ok(response);
     }
 
     private void safelySendWelcome(User user) {

@@ -59,6 +59,9 @@ public interface UserRepository extends JpaRepository<User, Long> {
     @Query(value = "UPDATE challengesphere.users SET last_login_at = NOW() WHERE id IN :ids", nativeQuery = true)
     int batchUpdateLastLoginAt(@Param("ids") List<Long> ids);
 
+    @Query(value = "SELECT * FROM challengesphere.users WHERE google_id = :googleId", nativeQuery = true)
+    Optional<User> findByGoogleId(@Param("googleId") String googleId);
+
     @Query(value = "SELECT * FROM challengesphere.users WHERE last_login_at >= NOW() - CAST(:days || ' days' AS INTERVAL) AND active = true", nativeQuery = true)
     List<User> findRecentlyActiveUsers(@Param("days") int days);
 }
