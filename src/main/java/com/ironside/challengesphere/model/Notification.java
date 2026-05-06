@@ -29,4 +29,12 @@ public class Notification {
 
     @Column(name = "sent_at", nullable = false, columnDefinition = "TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
     private Timestamp sentAt;
+
+    @Column(name = "read_at")
+    private Timestamp readAt;
+
+    @Transient
+    public boolean isRead() {
+        return readAt != null;
+    }
 }

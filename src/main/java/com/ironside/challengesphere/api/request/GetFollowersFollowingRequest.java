@@ -12,6 +12,8 @@ public class GetFollowersFollowingRequest {
     @NotNull(message = "User ID is required")
     private Long userId;
 
+    private Long currentUserId;
+
     @Min(value = 1, message = "Page must be greater than 0")
     private Integer page = 1;
 

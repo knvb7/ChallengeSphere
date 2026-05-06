@@ -9,6 +9,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -24,8 +25,14 @@ import com.ironside.challengesphere.api.response.UserRegistrationResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.model.Follow;
 import com.ironside.challengesphere.model.User;
+import com.ironside.challengesphere.model.UserBlock;
+import com.ironside.challengesphere.model.UserReport;
 import com.ironside.challengesphere.repository.FollowRepository;
+import com.ironside.challengesphere.repository.SubmissionRepository;
+import com.ironside.challengesphere.repository.UserBlockRepository;
+import com.ironside.challengesphere.repository.UserReportRepository;
 import com.ironside.challengesphere.repository.UserRepository;
+import com.ironside.challengesphere.service.NotificationService;
 import com.ironside.challengesphere.service.UserService;
 
 @Service
@@ -41,9 +48,25 @@ public class UserServiceImpl implements UserService {
     @Autowired
     private RedisCacheServiceImpl cacheService;
 
+    @Autowired
+    private SubmissionRepository submissionRepository;
+
+    @Autowired
+    private PasswordEncoder passwordEncoder;
+
+    @Autowired
+    private NotificationService notificationService;
+
+    @Autowired
+    private UserBlockRepository userBlockRepository;
+
+    @Autowired
+    private UserReportRepository userReportRepository;
+
     @Override
     public User getUser(GetUserPayload getUserPayload) throws ChallengeSphereException {
         Long userId = getUserPayload.getUserId();
+        Long currentUserId = getUserPayload.getCurrentUserId();
         String emailId = getUserPayload.getEmailId();
         String phone = getUserPayload.getPhone();
         String username = getUserPayload.getUsername();
@@ -58,7 +81,7 @@ public class UserServiceImpl implements UserService {
                     if (cached.isPresent()) {
                         logger.info("Cache hit for userId: {}", userId);
                         stampLastLogin(cached.get());
-                        return cached.get();
+                    return restrictProfileForViewer(cached.get(), currentUserId);
                     }
                 } catch (Exception cacheEx) {
                     logger.warn("Cache lookup failed for userId={}, falling back to DB: {}", userId, cacheEx.getMessage());
@@ -70,7 +93,7 @@ public class UserServiceImpl implements UserService {
                     final User found = user.get();
                     stampLastLogin(found);
                     safeCacheUser(found);
-                    return found;
+                    return restrictProfileForViewer(found, currentUserId);
                 }
             }
 
@@ -83,7 +106,7 @@ public class UserServiceImpl implements UserService {
                     final User found = user.get();
                     stampLastLogin(found);
                     safeCacheUser(found);
-                    return found;
+                    return restrictProfileForViewer(found, currentUserId);
                 }
             }
 
@@ -96,7 +119,7 @@ public class UserServiceImpl implements UserService {
                     final User found = user.get();
                     stampLastLogin(found);
                     safeCacheUser(found);
-                    return found;
+                    return restrictProfileForViewer(found, currentUserId);
                 }
             }
 
@@ -110,12 +133,14 @@ public class UserServiceImpl implements UserService {
                     final User found = user.get();
                     stampLastLogin(found);
                     safeCacheUser(found);
-                    return found;
+                    return restrictProfileForViewer(found, currentUserId);
                 }
             }
 
             logger.warn("User not found with any of the provided parameters - userId: {}, emailId: {}, phone: {}, username: {}",
                     userId, emailId, phone, username);
+        } catch (ChallengeSphereException e) {
+            throw e;
         } catch (Exception e) {
             logger.error("Error retrieving user with parameters - userId: {}, emailId: {}, phone: {}, username: {}. Error: {}",
                     userId, emailId, phone, username, e.getMessage(), e);
@@ -188,11 +213,14 @@ public class UserServiceImpl implements UserService {
                 logger.debug("Updated username for user {}", userId);
             }
             if (updateUserRequest.getHashedPassword() != null && !updateUserRequest.getHashedPassword().trim().isEmpty()) {
-                user.setHashedPassword(updateUserRequest.getHashedPassword());
+                user.setHashedPassword(encodePassword(updateUserRequest.getHashedPassword()));
                 logger.debug("Updated hashedPassword for user {}", userId);
             }
-            if (updateUserRequest.getGenuinenessScore() != null) {
-                user.setGenuinenessScore(updateUserRequest.getGenuinenessScore());
+            Integer incomingGenuinityScore = updateUserRequest.getGenuinityScore() != null
+                    ? updateUserRequest.getGenuinityScore()
+                    : updateUserRequest.getGenuinenessScore();
+            if (incomingGenuinityScore != null) {
+                user.setGenuinenessScore(incomingGenuinityScore);
                 logger.debug("Updated genuinenessScore for user {}", userId);
             }
             if (updateUserRequest.getActive() != null) {
@@ -256,6 +284,27 @@ public class UserServiceImpl implements UserService {
                 );
             }
 
+            User follower = userRepository.findById(followerId)
+                    .orElseThrow(() -> new ChallengeSphereException(
+                            "Follower not found with id: " + followerId,
+                            HttpStatus.NOT_FOUND,
+                            logger
+                    ));
+            User following = userRepository.findById(followingId)
+                    .orElseThrow(() -> new ChallengeSphereException(
+                            "User to follow not found with id: " + followingId,
+                            HttpStatus.NOT_FOUND,
+                            logger
+                    ));
+
+            if (userBlockRepository.existsActiveBlockBetween(followerId, followingId)) {
+                throw new ChallengeSphereException(
+                        "Cannot follow this user because a block is active",
+                        HttpStatus.FORBIDDEN,
+                        logger
+                );
+            }
+
             // Check if already following
             Optional<Follow> existingFollow = followRepository.findByFollowerIdAndFollowingId(followerId, followingId);
             if (existingFollow.isPresent() && existingFollow.get().getActive()) {
@@ -285,6 +334,14 @@ public class UserServiceImpl implements UserService {
 
             // Following set changed — rebuild timeline on next read
             // cacheService.invalidateTimeline(followerId);
+            cacheService.invalidateAllFeeds();
+
+            try {
+                notificationService.notifyFollow(following.getId(), follower.getId());
+            } catch (Exception e) {
+                logger.warn("Failed to create follow notification for followerId={}, followingId={}: {}",
+                        followerId, followingId, e.getMessage());
+            }
 
             logger.info("User {} successfully followed user {}", followerId, followingId);
             return FollowActionResponse.success(followerId, followingId, true);
@@ -327,6 +384,7 @@ public class UserServiceImpl implements UserService {
 
             // Following set changed — rebuild timeline on next read
             // cacheService.invalidateTimeline(followerId);
+            cacheService.invalidateAllFeeds();
 
             logger.info("User {} successfully unfollowed user {}", followerId, followingId);
             return FollowActionResponse.success(followerId, followingId, false);
@@ -345,12 +403,15 @@ public class UserServiceImpl implements UserService {
     @Override
     public FollowersFollowingResponse getFollowers(GetFollowersFollowingRequest request) throws ChallengeSphereException {
         Long userId = request.getUserId();
+        Long currentUserId = request.getCurrentUserId();
         int page = request.getPage();
         int pageSize = request.getPageSize();
 
         logger.info("Getting followers for userId: {}, page: {}, pageSize: {}", userId, page, pageSize);
 
         try {
+            ensureMutualProfileAccess(userId, currentUserId, "followers");
+
             long offset = (long) (page - 1) * pageSize;
 
             // DB-only path
@@ -365,6 +426,8 @@ public class UserServiceImpl implements UserService {
 
             return FollowersFollowingResponse.followers(userId, followers, page, pageSize, totalCount);
 
+        } catch (ChallengeSphereException e) {
+            throw e;
         } catch (Exception e) {
             logger.error("Error getting followers for userId: {}: {}", userId, e.getMessage(), e);
             throw new ChallengeSphereException(
@@ -378,12 +441,15 @@ public class UserServiceImpl implements UserService {
     @Override
     public FollowersFollowingResponse getFollowing(GetFollowersFollowingRequest request) throws ChallengeSphereException {
         Long userId = request.getUserId();
+        Long currentUserId = request.getCurrentUserId();
         int page = request.getPage();
         int pageSize = request.getPageSize();
 
         logger.info("Getting following for userId: {}, page: {}, pageSize: {}", userId, page, pageSize);
 
         try {
+            ensureMutualProfileAccess(userId, currentUserId, "following");
+
             long offset = (long) (page - 1) * pageSize;
 
             // DB-only path
@@ -398,6 +464,8 @@ public class UserServiceImpl implements UserService {
 
             return FollowersFollowingResponse.following(userId, following, page, pageSize, totalCount);
 
+        } catch (ChallengeSphereException e) {
+            throw e;
         } catch (Exception e) {
             logger.error("Error getting following for userId: {}: {}", userId, e.getMessage(), e);
             throw new ChallengeSphereException(
@@ -444,6 +512,95 @@ public class UserServiceImpl implements UserService {
                     logger
             );
         }
+    }
+
+    @Override
+    @Transactional
+    public void blockUser(Long blockerUserId, Long blockedUserId) throws ChallengeSphereException {
+        if (blockerUserId == null || blockedUserId == null) {
+            throw new ChallengeSphereException("blockerUserId and blockedUserId are required", HttpStatus.BAD_REQUEST, logger);
+        }
+        if (blockerUserId.equals(blockedUserId)) {
+            throw new ChallengeSphereException("Users cannot block themselves", HttpStatus.BAD_REQUEST, logger);
+        }
+        ensureUserExists(blockerUserId, "Blocker");
+        ensureUserExists(blockedUserId, "Blocked user");
+
+        UserBlock block = userBlockRepository.findByBlockerUserIdAndBlockedUserId(blockerUserId, blockedUserId)
+                .orElseGet(UserBlock::new);
+        block.setBlockerUserId(blockerUserId);
+        block.setBlockedUserId(blockedUserId);
+        block.setActive(true);
+        block.setUpdatedAt(new Timestamp(System.currentTimeMillis()));
+        userBlockRepository.save(block);
+
+        followRepository.findByFollowerIdAndFollowingId(blockerUserId, blockedUserId).ifPresent(existing -> {
+            if (Boolean.TRUE.equals(existing.getActive())) {
+                existing.setActive(false);
+                followRepository.save(existing);
+                updateFollowCounts(blockerUserId, blockedUserId, false);
+            }
+        });
+        followRepository.findByFollowerIdAndFollowingId(blockedUserId, blockerUserId).ifPresent(existing -> {
+            if (Boolean.TRUE.equals(existing.getActive())) {
+                existing.setActive(false);
+                followRepository.save(existing);
+                updateFollowCounts(blockedUserId, blockerUserId, false);
+            }
+        });
+        cacheService.invalidateAllFeeds();
+    }
+
+    @Override
+    @Transactional
+    public void unblockUser(Long blockerUserId, Long blockedUserId) throws ChallengeSphereException {
+        if (blockerUserId == null || blockedUserId == null) {
+            throw new ChallengeSphereException("blockerUserId and blockedUserId are required", HttpStatus.BAD_REQUEST, logger);
+        }
+        UserBlock block = userBlockRepository.findByBlockerUserIdAndBlockedUserId(blockerUserId, blockedUserId)
+                .orElseThrow(() -> new ChallengeSphereException("Block relationship not found", HttpStatus.NOT_FOUND, logger));
+        block.setActive(false);
+        block.setUpdatedAt(new Timestamp(System.currentTimeMillis()));
+        userBlockRepository.save(block);
+        cacheService.invalidateAllFeeds();
+    }
+
+    @Override
+    public List<User> getBlockedUsers(Long blockerUserId) throws ChallengeSphereException {
+        ensureUserExists(blockerUserId, "User");
+        List<Long> blockedIds = userBlockRepository.findActiveByBlockerUserId(blockerUserId).stream()
+                .map(UserBlock::getBlockedUserId)
+                .toList();
+        return blockedIds.isEmpty() ? List.of() : userRepository.findAllById(blockedIds);
+    }
+
+    @Override
+    @Transactional
+    public void reportUser(Long reporterUserId, Long reportedUserId, String reason, String details) throws ChallengeSphereException {
+        if (reporterUserId == null || reportedUserId == null) {
+            throw new ChallengeSphereException("reporterUserId and reportedUserId are required", HttpStatus.BAD_REQUEST, logger);
+        }
+        if (reporterUserId.equals(reportedUserId)) {
+            throw new ChallengeSphereException("Users cannot report themselves", HttpStatus.BAD_REQUEST, logger);
+        }
+        ensureUserExists(reporterUserId, "Reporter");
+        ensureUserExists(reportedUserId, "Reported user");
+
+        String normalizedReason = reason == null || reason.isBlank() ? "OTHER" : reason.trim();
+        UserReport report = new UserReport();
+        report.setReporterUserId(reporterUserId);
+        report.setReportedUserId(reportedUserId);
+        report.setReason(normalizedReason.length() > 128 ? normalizedReason.substring(0, 128) : normalizedReason);
+        report.setDetails(details == null || details.isBlank() ? null : details.trim());
+        userReportRepository.save(report);
+    }
+
+    @Override
+    public boolean isBlockedEitherDirection(Long firstUserId, Long secondUserId) {
+        if (firstUserId == null || secondUserId == null || firstUserId.equals(secondUserId)) {
+            return false;
+        }
+        return userBlockRepository.existsActiveBlockBetween(firstUserId, secondUserId);
     }
 
     @Override
@@ -496,8 +653,8 @@ public class UserServiceImpl implements UserService {
             newUser.setPhone(request.getPhone());
             newUser.setBio(request.getBio());
 
-            // Hash password with BCrypt
-            newUser.setHashedPassword(request.getPassword());
+            validatePasswordPolicy(request.getPassword());
+            newUser.setHashedPassword(encodePassword(request.getPassword()));
 
             // Set defaults
             newUser.setCreatedAt(new Timestamp(System.currentTimeMillis()));
@@ -548,6 +705,101 @@ public class UserServiceImpl implements UserService {
             cacheService.invalidateUserProfile(userId);
         } catch (Exception e) {
             logger.warn("Failed to invalidate cached user profile for userId={}: {}", userId, e.getMessage());
+        }
+    }
+
+    private User restrictProfileForViewer(User user, Long currentUserId) throws ChallengeSphereException {
+        if (user == null || user.getId() == null) {
+            return attachSummaryCounts(user);
+        }
+        if (currentUserId != null && !currentUserId.equals(user.getId())
+                && userBlockRepository.existsActiveBlockBetween(currentUserId, user.getId())) {
+            throw new ChallengeSphereException("Not authorized to view this user", HttpStatus.FORBIDDEN, logger);
+        }
+        if (currentUserId == null) {
+            return restrictedProfile(user);
+        }
+        if (followRepository.existsActiveMutualFollow(currentUserId, user.getId())) {
+            return attachSummaryCounts(user);
+        }
+
+        return restrictedProfile(user);
+    }
+
+    private User restrictedProfile(User user) {
+        attachSummaryCounts(user);
+        User restricted = new User();
+        restricted.setId(user.getId());
+        restricted.setUsername(user.getUsername());
+        restricted.setProfilePicUrl(user.getProfilePicUrl());
+        restricted.setActive(user.getActive());
+        restricted.setCreatedAt(user.getCreatedAt());
+        restricted.setFollowers(user.getFollowers());
+        restricted.setFollowing(user.getFollowing());
+        restricted.setChallengesCreated(user.getChallengesCreated());
+        restricted.setChallengesAccepted(user.getChallengesAccepted());
+        restricted.setGenuinenessScore(user.getGenuinenessScore());
+        restricted.setPremiumUser(0);
+        restricted.setNotifications(0);
+        restricted.setSubmissionsCount(user.getSubmissionsCount());
+        return restricted;
+    }
+
+    private User attachSummaryCounts(User user) {
+        if (user == null || user.getId() == null) {
+            return user;
+        }
+        try {
+            user.setSubmissionsCount(submissionRepository.countActiveByUserId(user.getId()));
+        } catch (Exception e) {
+            logger.warn("Failed to attach submissions count for userId={}: {}", user.getId(), e.getMessage());
+            user.setSubmissionsCount(0);
+        }
+        return user;
+    }
+
+    private void ensureMutualProfileAccess(Long ownerUserId, Long viewerUserId, String contentType)
+            throws ChallengeSphereException {
+        if (ownerUserId != null && viewerUserId != null && userBlockRepository.existsActiveBlockBetween(ownerUserId, viewerUserId)) {
+            throw new ChallengeSphereException(
+                    "Not authorized to view this user's " + contentType,
+                    HttpStatus.FORBIDDEN,
+                    logger
+            );
+        }
+        if (ownerUserId == null || viewerUserId == null || followRepository.existsActiveMutualFollow(viewerUserId, ownerUserId)) {
+            return;
+        }
+        throw new ChallengeSphereException(
+                "You can only view this user's " + contentType + " if you follow each other",
+                HttpStatus.FORBIDDEN,
+                logger
+        );
+    }
+
+    private String encodePassword(String password) {
+        if (password.startsWith("$2a$") || password.startsWith("$2b$") || password.startsWith("$2y$")) {
+            return password;
+        }
+        return passwordEncoder.encode(password);
+    }
+
+    private void validatePasswordPolicy(String password) throws ChallengeSphereException {
+        if (password == null || password.length() < 8 || password.length() > 128) {
+            throw new ChallengeSphereException("Password must be between 8 and 128 characters",
+                    HttpStatus.BAD_REQUEST, logger);
+        }
+        boolean hasLetter = password.chars().anyMatch(Character::isLetter);
+        boolean hasDigit = password.chars().anyMatch(Character::isDigit);
+        if (!hasLetter || !hasDigit) {
+            throw new ChallengeSphereException("Password must contain at least one letter and one number",
+                    HttpStatus.BAD_REQUEST, logger);
+        }
+    }
+
+    private void ensureUserExists(Long userId, String label) throws ChallengeSphereException {
+        if (userId == null || !userRepository.existsById(userId)) {
+            throw new ChallengeSphereException(label + " not found with id: " + userId, HttpStatus.NOT_FOUND, logger);
         }
     }
 }

@@ -4,6 +4,7 @@ import java.sql.Timestamp;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -13,6 +14,7 @@ import java.util.stream.Collectors;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
@@ -49,6 +51,7 @@ import com.ironside.challengesphere.repository.SubmissionRepository;
 import com.ironside.challengesphere.repository.UserChallengeRepository;
 import com.ironside.challengesphere.repository.UserRepository;
 import com.ironside.challengesphere.service.ChallengeService;
+import com.ironside.challengesphere.service.NotificationService;
 
 @Service
 public class ChallengeServiceImpl implements ChallengeService {
@@ -69,28 +72,30 @@ public class ChallengeServiceImpl implements ChallengeService {
     @Autowired
     private FollowRepository followRepository;
 
+    @Autowired
+    private NotificationService notificationService;
+
+    @Autowired
+    private RedisCacheServiceImpl cacheService;
+
+    @Value("${gcs.bucket.name}")
+    private String bucketName;
+
     @Override
     public Optional<Challenge> getChallengeById(Long challengeId) throws ChallengeSphereException {
         logger.info("Fetching challenge by id: {}", challengeId);
         
         try {
-            // Try cache first
-            // Optional<Challenge> cached = cacheService.getCachedChallenge(challengeId, Challenge.class);
-            // if (cached.isPresent()) {
-            //     logger.debug("Cache hit for challenge id: {}", challengeId);
-            //     return cached;
-            // }
+            Optional<Challenge> cached = cacheService.getCachedChallenge(challengeId, Challenge.class);
+            if (cached.isPresent()) {
+                logger.debug("Cache hit for challenge id: {}", challengeId);
+                return cached;
+            }
 
-            // Fetch from database
-            // logger.debug("Cache miss for challenge id: {}, fetching from DB", challengeId);
+            logger.debug("Cache miss for challenge id: {}, fetching from DB", challengeId);
             Optional<Challenge> challenge = challengeRepository.findById(challengeId);
 
-            // Cache if found
-            // challenge.ifPresent(c -> {
-            //     cacheService.cacheChallenge(c.getId(), c);
-            //     // Increment view count
-            //     cacheService.incrementChallengeViews(c.getId());
-            // });
+            challenge.ifPresent(c -> cacheService.cacheChallenge(c.getId(), c));
 
             return challenge;
         } catch (Exception e) {
@@ -115,7 +120,7 @@ public class ChallengeServiceImpl implements ChallengeService {
                 userId, page, pageSize, activeFilter);
 
         try {
-            ensureMutualFollowAccess(userId, currentUserId, "challenges");
+            ensureFollowAccess(userId, currentUserId, "challenges");
 
             // Try cache first
 //            Optional<UserChallengesResponse> cached = cacheService.getCachedUserChallenges(userId, page, pageSize, activeFilter, UserChallengesResponse.class);
@@ -127,10 +132,19 @@ public class ChallengeServiceImpl implements ChallengeService {
 
             List<Challenge> createdChallenges = challengeRepository.findByCreatorId(userId);
             List<Challenge> ownedChallenges = challengeRepository.findByCurrentOwnerId(userId);
+            List<Long> joinedChallengeIds = userChallengeRepository.findActiveByUserId(userId).stream()
+                    .map(UserChallenge::getChallengeId)
+                    .distinct()
+                    .toList();
+            List<Challenge> joinedChallenges = joinedChallengeIds.isEmpty()
+                    ? List.of()
+                    : challengeRepository.findAllById(joinedChallengeIds);
 
-            Set<Challenge> allUserChallengesSet = new HashSet<>(createdChallenges);
-            allUserChallengesSet.addAll(ownedChallenges);
-            List<Challenge> allUserChallenges = new ArrayList<>(allUserChallengesSet);
+            Map<Long, Challenge> allUserChallengesById = new LinkedHashMap<>();
+            createdChallenges.forEach(challenge -> allUserChallengesById.put(challenge.getId(), challenge));
+            ownedChallenges.forEach(challenge -> allUserChallengesById.putIfAbsent(challenge.getId(), challenge));
+            joinedChallenges.forEach(challenge -> allUserChallengesById.putIfAbsent(challenge.getId(), challenge));
+            List<Challenge> allUserChallenges = new ArrayList<>(allUserChallengesById.values());
 
             if (activeFilter != null) {
                 allUserChallenges = allUserChallenges.stream()
@@ -155,6 +169,8 @@ public class ChallengeServiceImpl implements ChallengeService {
 
             return response;
 
+        } catch (ChallengeSphereException e) {
+            throw e;
         } catch (Exception e) {
             logger.error("Error getting challenges for userId: {}: {}", userId, e.getMessage(), e);
             throw new ChallengeSphereException(
@@ -198,6 +214,8 @@ public class ChallengeServiceImpl implements ChallengeService {
 
             Challenge savedChallenge = challengeRepository.save(challenge);
             logger.info("Successfully created challenge with id: {} for user: {}", savedChallenge.getId(), request.getCreatorUserId());
+            cacheService.cacheChallenge(savedChallenge.getId(), savedChallenge);
+            cacheService.invalidateAllFeeds();
 
             // Cache the newly created challenge
             // cacheService.cacheChallenge(savedChallenge.getId(), savedChallenge);
@@ -214,6 +232,11 @@ public class ChallengeServiceImpl implements ChallengeService {
 
             // Update user's challengesCreated count asynchronously
             updateChallengesCreatedCountAsync(request.getCreatorUserId());
+            notificationService.notifyChallengeInvitesAsync(
+                    savedChallenge,
+                    request.getCreatorUserId(),
+                    request.getInvitedUserIds()
+            );
 
             // Return success response
             return ChallengeCreateResponse.success(
@@ -284,7 +307,7 @@ public class ChallengeServiceImpl implements ChallengeService {
     }
 
     @Override
-    public List<Challenge> getChallengeByIds(List<Long> challengeIds) throws ChallengeSphereException {
+    public List<Challenge> getChallengeByIds(List<Long> challengeIds, Long currentUserId) throws ChallengeSphereException {
         try {
             logger.info("Fetching challenges by ids: {}", challengeIds);
             
@@ -313,7 +336,9 @@ public class ChallengeServiceImpl implements ChallengeService {
             // }
             cacheMisses.addAll(challengeIds);
             List<Challenge> dbChallenges = challengeRepository.findAllById(cacheMisses);
-            result.addAll(dbChallenges);
+            result.addAll(dbChallenges.stream()
+                    .filter(challenge -> canViewChallenge(challenge, currentUserId))
+                    .toList());
 
             logger.info("Retrieved {} challenges from DB",
                 result.size());
@@ -337,8 +362,7 @@ public class ChallengeServiceImpl implements ChallengeService {
             List<Challenge> challenges = challengeRepository.findAllById(challengeIds).stream().toList();
             for (Challenge challenge : challenges) {
                 challenge.setActive(false);
-                // Invalidate individual challenge cache
-                // cacheService.invalidateChallenge(challenge.getId());
+                cacheService.invalidateChallenge(challenge.getId());
             }
             challengeRepository.saveAll(challenges);
 
@@ -356,8 +380,7 @@ public class ChallengeServiceImpl implements ChallengeService {
             // Invalidate participants cache for affected challenges
             // challengeIds.forEach(cacheService::invalidateChallengeParticipants);
 
-            // Invalidate feed caches since challenge content changed
-            // cacheService.invalidateAllFeeds();
+            cacheService.invalidateAllFeeds();
 
             logger.info("Deleted {} challenges and invalidated caches", challenges.size());
         } catch (Exception e) {
@@ -381,8 +404,7 @@ public class ChallengeServiceImpl implements ChallengeService {
 
             for (Challenge challenge : challenges) {
                 challenge.setActive(false);
-                // Invalidate individual challenge cache
-                // cacheService.invalidateChallenge(challenge.getId());
+                cacheService.invalidateChallenge(challenge.getId());
             }
 
             challengeRepository.saveAll(challenges);
@@ -400,8 +422,7 @@ public class ChallengeServiceImpl implements ChallengeService {
             //         .map(Challenge::getId)
             //         .forEach(cacheService::invalidateChallengeParticipants);
 
-            // Invalidate feed caches
-            // cacheService.invalidateAllFeeds();
+            cacheService.invalidateAllFeeds();
 
             logger.info("Disabled {} challenges for {} users and invalidated caches", challenges.size(), userIds.size());
 
@@ -430,7 +451,26 @@ public class ChallengeServiceImpl implements ChallengeService {
                             "Challenge not found with id: " + challengeId,
                             HttpStatus.NOT_FOUND,
                             logger
-                    ));
+            ));
+
+            if (!Boolean.TRUE.equals(challenge.getActive())) {
+                throw new ChallengeSphereException(
+                        "Cannot join an inactive challenge",
+                        HttpStatus.BAD_REQUEST,
+                        logger
+                );
+            }
+
+            Long ownerUserId = challenge.getCurrentOwnerId() != null ? challenge.getCurrentOwnerId() : challenge.getCreatorId();
+            for (Long userId : userIds) {
+                if (!canJoinChallenge(challenge, ownerUserId, userId)) {
+                    throw new ChallengeSphereException(
+                            "Not authorized to join this challenge",
+                            HttpStatus.FORBIDDEN,
+                            logger
+                    );
+                }
+            }
 
             // Batch validation: Check which users exist (single query)
             List<Long> existingUserIds = userRepository.findAllById(userIds).stream()
@@ -600,6 +640,7 @@ public class ChallengeServiceImpl implements ChallengeService {
     @Transactional
     public ChallengeParticipantsResponse getChallengeParticipants(GetChallengeParticipantsRequest request) throws ChallengeSphereException {
         Long challengeId = request.getChallengeId();
+        Long currentUserId = request.getCurrentUserId();
 
         logger.info("Getting active participants for challenge {}", challengeId);
 
@@ -610,6 +651,14 @@ public class ChallengeServiceImpl implements ChallengeService {
                             HttpStatus.NOT_FOUND,
                             logger
                     ));
+
+            if (!canViewChallenge(challenge, currentUserId)) {
+                throw new ChallengeSphereException(
+                        "Not authorized to view participants for this challenge",
+                        HttpStatus.FORBIDDEN,
+                        logger
+                );
+            }
 
             List<UserChallenge> activeUserChallenges = userChallengeRepository.findActiveByChallengeId(challengeId);
 
@@ -646,16 +695,26 @@ public class ChallengeServiceImpl implements ChallengeService {
     @Transactional(readOnly = true)
     public ChallengesByHashtagResponse getChallengesByHashtag(GetChallengesByHashtagRequest request) throws ChallengeSphereException {
         List<String> hashtags = request.getHashtags();
+        Long currentUserId = request.getCurrentUserId();
         int page = request.getPage();
         int pageSize = request.getPageSize();
 
-        logger.info("Getting challenges by hashtags: {}, page: {}, pageSize: {}", hashtags, page, pageSize);
+        logger.info("Getting challenges by hashtags: {}, currentUserId: {}, page: {}, pageSize: {}",
+                hashtags, currentUserId, page, pageSize);
 
         try {
-            // Batch query: Get all active challenges matching any of the hashtags (single query per hashtag)
+            if (currentUserId == null || !userRepository.existsById(currentUserId)) {
+                return ChallengesByHashtagResponse.create(hashtags, new ArrayList<>(), page, pageSize, 0);
+            }
+
+            // Category chips are backed by this endpoint in the app, so match both hashtags and categories.
             List<Challenge> matchingChallenges = hashtags.stream()
-                    .flatMap(hashtag -> challengeRepository.findByHashtagsContaining(hashtag).stream())
+                    .flatMap(hashtag -> java.util.stream.Stream.concat(
+                            challengeRepository.findByHashtagsContaining(hashtag).stream(),
+                            challengeRepository.findByCategoriesContaining(hashtag).stream()
+                    ))
                     .filter(Challenge::getActive)
+                    .filter(challenge -> canViewChallengeDiscovery(challenge, currentUserId))
                     .distinct()
                     .toList();
 
@@ -713,19 +772,25 @@ public class ChallengeServiceImpl implements ChallengeService {
     @Override
     @Transactional(readOnly = true)
     public PopularChallengesResponse getPopularChallenges(GetPopularChallengesRequest request) throws ChallengeSphereException {
+        Long currentUserId = request.getCurrentUserId();
         Boolean activeFilter = request.getActive();
         LocalDate startDate = request.getStartDate();
         LocalDate endDate = request.getEndDate();
         int page = request.getPage();
         int pageSize = request.getPageSize();
 
-        logger.info("Getting popular challenges - active: {}, startDate: {}, endDate: {}, page: {}, pageSize: {}",
-                activeFilter, startDate, endDate, page, pageSize);
+        logger.info("Getting popular challenges - currentUserId: {}, active: {}, startDate: {}, endDate: {}, page: {}, pageSize: {}",
+                currentUserId, activeFilter, startDate, endDate, page, pageSize);
 
         try {
+            if (currentUserId == null || !userRepository.existsById(currentUserId)) {
+                return PopularChallengesResponse.create(new ArrayList<>(), page, pageSize, 0);
+            }
+
             // Get all public challenges
             List<Challenge> publicChallenges = challengeRepository.findAll().stream()
                     .filter(challenge -> !challenge.getIsPrivate())
+                    .filter(challenge -> canViewChallengeDiscovery(challenge, currentUserId))
                     .collect(Collectors.toList());
 
             // Apply active filter if specified
@@ -805,25 +870,40 @@ public class ChallengeServiceImpl implements ChallengeService {
 
     @Override
     @Transactional(readOnly = true)
-    public RecentChallengesResponse getRecentChallenges(int page, int pageSize) throws ChallengeSphereException {
-        logger.info("Getting recent challenges - page: {}, pageSize: {}", page, pageSize);
+    public RecentChallengesResponse getRecentChallenges(int page, int pageSize, Long currentUserId) throws ChallengeSphereException {
+        logger.info("Getting recent challenges - currentUserId: {}, page: {}, pageSize: {}",
+                currentUserId, page, pageSize);
 
         try {
+            if (currentUserId == null || !userRepository.existsById(currentUserId)) {
+                return RecentChallengesResponse.empty(page, pageSize);
+            }
+
             // Validate pagination parameters
             if (page < 1) page = 1;
             if (pageSize < 1) pageSize = 10;
             if (pageSize > 100) pageSize = 100; // Cap at 100
 
-            // Get total count for pagination
-            long totalCount = challengeRepository.countPublicActiveChallenges();
-            
-            if (totalCount == 0) {
+            List<Challenge> visibleChallenges = challengeRepository.findAllPublicChallenges().stream()
+                    .sorted((left, right) -> {
+                        if (left.getCreatedAt() == null && right.getCreatedAt() == null) return 0;
+                        if (left.getCreatedAt() == null) return 1;
+                        if (right.getCreatedAt() == null) return -1;
+                        return right.getCreatedAt().compareTo(left.getCreatedAt());
+                    })
+                    .filter(challenge -> canViewChallengeDiscovery(challenge, currentUserId))
+                    .toList();
+
+            if (visibleChallenges.isEmpty()) {
                 return RecentChallengesResponse.empty(page, pageSize);
             }
 
-            // Fetch paginated challenges from DB
+            int totalCount = visibleChallenges.size();
             int offset = (page - 1) * pageSize;
-            List<Challenge> challenges = challengeRepository.findRecentPublicChallengesPaginated(pageSize, offset);
+            List<Challenge> challenges = visibleChallenges.stream()
+                    .skip(offset)
+                    .limit(pageSize)
+                    .toList();
 
             // Get participant counts for these challenges
             List<Long> challengeIds = challenges.stream()
@@ -874,7 +954,7 @@ public class ChallengeServiceImpl implements ChallengeService {
 
     @Override
     @Transactional
-    public Challenge updateChallenge(Long id, ChallengeUpdateRequest request) throws ChallengeSphereException {
+    public Challenge updateChallenge(Long id, ChallengeUpdateRequest request, Long actorUserId, boolean admin) throws ChallengeSphereException {
         logger.info("Updating challenge id: {}", id);
 
         Challenge challenge = challengeRepository.findById(id)
@@ -884,11 +964,28 @@ public class ChallengeServiceImpl implements ChallengeService {
                         logger
                 ));
 
+        boolean owner = actorUserId != null && (actorUserId.equals(challenge.getCreatorId()) || actorUserId.equals(challenge.getCurrentOwnerId()));
+        if (!admin && !owner) {
+            throw new ChallengeSphereException("Not authorized to update this challenge", HttpStatus.FORBIDDEN, logger);
+        }
+
         if (request.getTitle() != null && !request.getTitle().isBlank()) {
             challenge.setTitle(request.getTitle());
         }
         if (request.getDescription() != null && !request.getDescription().isBlank()) {
             challenge.setDescription(request.getDescription());
+        }
+        if (request.getHashtags() != null) {
+            challenge.setHashtags(request.getHashtags());
+        }
+        if (request.getCategories() != null) {
+            challenge.setCategories(request.getCategories());
+        }
+        if (request.getBenefits() != null) {
+            challenge.setBenefits(request.getBenefits());
+        }
+        if (request.getIsPrivate() != null) {
+            challenge.setIsPrivate(request.getIsPrivate());
         }
         if (request.getNumberOfDays() != null) {
             challenge.setNumberOfDays(request.getNumberOfDays());
@@ -903,6 +1000,8 @@ public class ChallengeServiceImpl implements ChallengeService {
         }
 
         Challenge updated = challengeRepository.save(challenge);
+        cacheService.invalidateChallenge(id);
+        cacheService.invalidateAllFeeds();
         logger.info("Challenge {} updated successfully", id);
         return updated;
     }
@@ -917,8 +1016,13 @@ public class ChallengeServiceImpl implements ChallengeService {
                             "Challenge not found with id: " + challengeId,
                             HttpStatus.NOT_FOUND, logger));
 
-            Long ownerUserId = challenge.getCurrentOwnerId() != null ? challenge.getCurrentOwnerId() : challenge.getCreatorId();
-            ensureMutualFollowAccess(ownerUserId, currentUserId, "challenge");
+            if (!canViewChallenge(challenge, currentUserId)) {
+                throw new ChallengeSphereException(
+                        "Not authorized to view this challenge",
+                        HttpStatus.FORBIDDEN,
+                        logger
+                );
+            }
 
             int participantCount = userChallengeRepository.countActiveByChallengeId(challengeId);
 
@@ -997,9 +1101,12 @@ public class ChallengeServiceImpl implements ChallengeService {
 
     @Override
     @Transactional(readOnly = true)
-    public MyChallengesResponse getMyChallenges(Long userId, String status, int page, int pageSize) throws ChallengeSphereException {
-        logger.info("Fetching my challenges: userId={}, status={}, page={}, pageSize={}", userId, status, page, pageSize);
+    public MyChallengesResponse getMyChallenges(Long userId, Long currentUserId, String status, int page, int pageSize) throws ChallengeSphereException {
+        logger.info("Fetching my challenges: userId={}, viewerId={}, status={}, page={}, pageSize={}",
+                userId, currentUserId, status, page, pageSize);
         try {
+            ensureFollowAccess(userId, currentUserId, "challenges");
+
             if (page < 1) page = 1;
             if (pageSize < 1) pageSize = 10;
             if (pageSize > 100) pageSize = 100;
@@ -1050,6 +1157,8 @@ public class ChallengeServiceImpl implements ChallengeService {
             }
 
             return MyChallengesResponse.create(summaries, page, pageSize, totalCount);
+        } catch (ChallengeSphereException e) {
+            throw e;
         } catch (Exception e) {
             logger.error("Error fetching my challenges for userId={}: {}", userId, e.getMessage(), e);
             throw new ChallengeSphereException("Failed to fetch my challenges", HttpStatus.INTERNAL_SERVER_ERROR, logger);
@@ -1078,7 +1187,7 @@ public class ChallengeServiceImpl implements ChallengeService {
                         file.getMediaType().name(),
                         file.getContentType().getMimeType(),
                         com.ironside.challengesphere.util.GetSignedUrlForGcs.generateV4PutObjectSignedUrl(
-                                com.ironside.challengesphere.util.Constants.GCSBUCKETFORSUBMISSIONS,
+                                bucketName,
                                 key, expiry, file.getContentType()),
                         key, expiry));
             }
@@ -1127,7 +1236,7 @@ public class ChallengeServiceImpl implements ChallengeService {
         return fileName.substring(fileName.lastIndexOf("."));
     }
 
-    private void ensureMutualFollowAccess(Long ownerUserId, Long viewerUserId, String contentType)
+    private void ensureFollowAccess(Long ownerUserId, Long viewerUserId, String contentType)
             throws ChallengeSphereException {
         if (ownerUserId == null) {
             return;
@@ -1144,10 +1253,44 @@ public class ChallengeServiceImpl implements ChallengeService {
         }
         if (!followRepository.existsActiveMutualFollow(viewerUserId, ownerUserId)) {
             throw new ChallengeSphereException(
-                    "You can only view this user's " + contentType + " after you both follow each other",
+                    "You can only view this user's " + contentType + " if you follow each other",
                     HttpStatus.FORBIDDEN,
                     logger
             );
         }
+    }
+
+    private boolean canViewChallengeDiscovery(Challenge challenge, Long currentUserId) {
+        return canViewChallenge(challenge, currentUserId);
+    }
+
+    private boolean canViewChallenge(Challenge challenge, Long currentUserId) {
+        if (challenge == null || currentUserId == null || !Boolean.TRUE.equals(challenge.getActive())) {
+            return false;
+        }
+        if (!Boolean.TRUE.equals(challenge.getIsPrivate())) {
+            return true;
+        }
+        Long ownerUserId = challenge.getCurrentOwnerId() != null ? challenge.getCurrentOwnerId() : challenge.getCreatorId();
+        if (currentUserId.equals(ownerUserId) || currentUserId.equals(challenge.getCreatorId())) {
+            return true;
+        }
+        return userChallengeRepository.findByUserIdAndChallengeId(currentUserId, challenge.getId())
+                .map(UserChallenge::getActive)
+                .orElse(false);
+    }
+
+    private boolean canJoinChallenge(Challenge challenge, Long ownerUserId, Long userId) {
+        if (challenge == null || userId == null) {
+            return false;
+        }
+        if (!Boolean.TRUE.equals(challenge.getIsPrivate())) {
+            return true;
+        }
+        if (userId.equals(ownerUserId) || userId.equals(challenge.getCreatorId())) {
+            return true;
+        }
+        return followRepository.existsByFollowerIdAndFollowingIdAndActive(ownerUserId, userId)
+                || followRepository.existsByFollowerIdAndFollowingIdAndActive(userId, ownerUserId);
     }
 }

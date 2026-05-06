@@ -51,12 +51,23 @@ public class JwtService {
     }
 
     public boolean isRefreshToken(String token) {
-        String tokenType = extractClaims(token).get("typ", String.class);
-        return "refresh".equals(tokenType);
+        return isTokenType(token, "refresh");
+    }
+
+    public boolean isAccessToken(String token) {
+        return isTokenType(token, "access");
+    }
+
+    public boolean isValidAccessToken(String token) {
+        return isValidToken(token) && isAccessToken(token);
     }
 
     public long getAccessTokenExpiryMs() {
         return accessTokenExpiryMs;
+    }
+
+    public long getRefreshTokenExpiryMs() {
+        return refreshTokenExpiryMs;
     }
 
     private String generateToken(Long userId, String username, String type, long ttlMs) {
@@ -78,6 +89,15 @@ public class JwtService {
                 .build()
                 .parseClaimsJws(token)
                 .getBody();
+    }
+
+    private boolean isTokenType(String token, String expectedType) {
+        try {
+            String tokenType = extractClaims(token).get("typ", String.class);
+            return expectedType.equals(tokenType);
+        } catch (Exception ignored) {
+            return false;
+        }
     }
 
     private Key getSigningKey() {

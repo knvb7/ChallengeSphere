@@ -10,6 +10,7 @@ import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Transactional;
 
 import com.ironside.challengesphere.model.LeaderboardEntry;
 import com.ironside.challengesphere.model.LeaderboardEntry.LeaderboardStatus;
@@ -167,7 +168,8 @@ public interface LeaderboardEntryRepository extends JpaRepository<LeaderboardEnt
      * Update ranks for all entries in a challenge
      * Call this after scores change to recalculate ranks
      */
-    @Modifying
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Transactional
     @Query(value = "UPDATE challengesphere.leaderboard_entries le " +
            "SET previous_rank = current_rank, " +
            "    current_rank = ranked.rn, " +
@@ -182,14 +184,16 @@ public interface LeaderboardEntryRepository extends JpaRepository<LeaderboardEnt
     /**
      * Delete all entries for a challenge (when challenge is deleted)
      */
-    @Modifying
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Transactional
     @Query("DELETE FROM LeaderboardEntry le WHERE le.challenge.id = :challengeId")
     void deleteByChallengeId(@Param("challengeId") Long challengeId);
 
     /**
      * Disqualify a user from a challenge
      */
-    @Modifying
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Transactional
     @Query("UPDATE LeaderboardEntry le SET le.status = 'DISQUALIFIED', le.updatedAt = CURRENT_TIMESTAMP " +
            "WHERE le.challenge.id = :challengeId AND le.user.id = :userId")
     void disqualifyUser(@Param("challengeId") Long challengeId, @Param("userId") Long userId);
@@ -199,7 +203,8 @@ public interface LeaderboardEntryRepository extends JpaRepository<LeaderboardEnt
     /**
      * Mark all active entries as completed when challenge ends
      */
-    @Modifying
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Transactional
     @Query("UPDATE LeaderboardEntry le SET le.status = 'COMPLETED', le.updatedAt = CURRENT_TIMESTAMP " +
            "WHERE le.challenge.id = :challengeId AND le.status = 'ACTIVE'")
     void markChallengeCompleted(@Param("challengeId") Long challengeId);

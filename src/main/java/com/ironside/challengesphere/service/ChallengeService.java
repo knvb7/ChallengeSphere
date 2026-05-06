@@ -33,9 +33,9 @@ import com.ironside.challengesphere.model.Challenge;
 public interface ChallengeService {
     UserChallengesResponse getUserChallenges(GetUserChallengesRequest request) throws ChallengeSphereException;
     ChallengeCreateResponse createChallenge(ChallengeCreateRequest request) throws ChallengeSphereException;
-    Challenge updateChallenge(Long id, ChallengeUpdateRequest request) throws ChallengeSphereException;
+    Challenge updateChallenge(Long id, ChallengeUpdateRequest request, Long actorUserId, boolean admin) throws ChallengeSphereException;
     Optional<Challenge> getChallengeById(Long challengeId) throws ChallengeSphereException;
-    List<Challenge> getChallengeByIds(List<Long> challengeId) throws ChallengeSphereException;
+    List<Challenge> getChallengeByIds(List<Long> challengeId, Long currentUserId) throws ChallengeSphereException;
     void deleteChallenges(List<Long> challengeIds);
     void disableChallengesForUsers(List<Long> userIds) throws ChallengeSphereException;
     JoinChallengeResponse joinChallenge(JoinChallengeRequest request) throws ChallengeSphereException;
@@ -50,7 +50,7 @@ public interface ChallengeService {
      * @param pageSize Number of items per page
      * @return Recent challenges response
      */
-    RecentChallengesResponse getRecentChallenges(int page, int pageSize) throws ChallengeSphereException;
+    RecentChallengesResponse getRecentChallenges(int page, int pageSize, Long currentUserId) throws ChallengeSphereException;
     
     /**
      * Get trending challenges based on engagement
@@ -63,7 +63,7 @@ public interface ChallengeService {
 
     ChallengeProgressResponse getChallengeProgress(Long challengeId, Long userId) throws ChallengeSphereException;
 
-    MyChallengesResponse getMyChallenges(Long userId, String status, int page, int pageSize) throws ChallengeSphereException;
+    MyChallengesResponse getMyChallenges(Long userId, Long currentUserId, String status, int page, int pageSize) throws ChallengeSphereException;
 
     PresignedUrlsResponse generateChallengePresignedUrls(GeneratePresignedUrlsRequest request) throws ChallengeSphereException;
 }

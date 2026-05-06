@@ -10,6 +10,10 @@ import java.util.List;
 public class ChallengeUpdateRequest {
     private String title;
     private String description;
+    private String hashtags;
+    private String categories;
+    private String benefits;
+    private Boolean isPrivate;
     private Timestamp endDate;
     private Integer numberOfDays;
     private String reminderTime;
@@ -18,4 +22,3 @@ public class ChallengeUpdateRequest {
     @Size(max = 5, message = "A challenge can have at most 5 cover photos")
     private List<String> coverPhotoUrls; // replaces all existing cover photos when provided
 }
-

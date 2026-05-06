@@ -11,18 +11,21 @@ import com.ironside.challengesphere.api.response.AuthResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.model.User;
 import com.ironside.challengesphere.repository.UserRepository;
+import com.ironside.challengesphere.security.AuthTokenStore;
 import com.ironside.challengesphere.security.JwtService;
 import com.ironside.challengesphere.service.AuthService;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.io.IOException;
 import java.security.GeneralSecurityException;
 import java.sql.Timestamp;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Collections;
 import java.util.UUID;
@@ -34,6 +37,8 @@ public class AuthServiceImpl implements AuthService {
 
     private final UserRepository userRepository;
     private final JwtService jwtService;
+    private final AuthTokenStore authTokenStore;
+    private final PasswordEncoder passwordEncoder;
 
     @Value("${google.client.id:}")
     private String googleClientId;
@@ -44,9 +49,14 @@ public class AuthServiceImpl implements AuthService {
     @Value("${jwt.access-token.expiration:3600000}")
     private long accessTokenExpiryMs;
 
-    public AuthServiceImpl(UserRepository userRepository, JwtService jwtService) {
+    public AuthServiceImpl(UserRepository userRepository,
+                           JwtService jwtService,
+                           AuthTokenStore authTokenStore,
+                           PasswordEncoder passwordEncoder) {
         this.userRepository = userRepository;
         this.jwtService = jwtService;
+        this.authTokenStore = authTokenStore;
+        this.passwordEncoder = passwordEncoder;
     }
 
     @Override
@@ -79,14 +89,29 @@ public class AuthServiceImpl implements AuthService {
 
     @Override
     public AuthResponse register(UserRegistrationRequest request) throws ChallengeSphereException {
-        throw new ChallengeSphereException("Use POST /api/v1/auth/register",
+        throw new ChallengeSphereException("Use UserService.registerUser for registration",
                 HttpStatus.NOT_IMPLEMENTED, logger);
     }
 
     @Override
     public AuthResponse login(LoginRequest request) throws ChallengeSphereException {
-        throw new ChallengeSphereException("Login via email/password is not yet implemented",
-                HttpStatus.NOT_IMPLEMENTED, logger);
+        User user = userRepository.findByUsername(request.getUsername())
+                .or(() -> userRepository.findByEmailId(request.getUsername()))
+                .orElseThrow(() -> new ChallengeSphereException("Invalid username or password",
+                        HttpStatus.UNAUTHORIZED, logger));
+
+        if (!Boolean.TRUE.equals(user.getActive())) {
+            throw new ChallengeSphereException("User account is disabled",
+                    HttpStatus.FORBIDDEN, logger);
+        }
+        if (!passwordMatches(request.getPassword(), user.getHashedPassword())) {
+            throw new ChallengeSphereException("Invalid username or password",
+                    HttpStatus.UNAUTHORIZED, logger);
+        }
+
+        user.setLastLoginAt(new Timestamp(System.currentTimeMillis()));
+        userRepository.updateLastLoginAt(user.getId());
+        return buildAuthResponse(user);
     }
 
     @Override
@@ -96,15 +121,74 @@ public class AuthServiceImpl implements AuthService {
                     HttpStatus.UNAUTHORIZED, logger);
         }
         Long userId = jwtService.extractUserId(refreshToken);
+        if (!authTokenStore.exists(refreshToken, "refresh", userId)) {
+            throw new ChallengeSphereException("Invalid or expired refresh token",
+                    HttpStatus.UNAUTHORIZED, logger);
+        }
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new ChallengeSphereException("User not found",
                         HttpStatus.UNAUTHORIZED, logger));
+        authTokenStore.revoke(refreshToken, "refresh");
         return buildAuthResponse(user);
+    }
+
+    @Override
+    public void logout(String accessToken, String refreshToken) {
+        authTokenStore.revoke(accessToken, "access");
+        authTokenStore.revoke(refreshToken, "refresh");
+    }
+
+    @Override
+    public User getCurrentUser(String accessToken) throws ChallengeSphereException {
+        if (!jwtService.isValidAccessToken(accessToken)) {
+            throw new ChallengeSphereException("Invalid or expired access token",
+                    HttpStatus.UNAUTHORIZED, logger);
+        }
+        Long userId = jwtService.extractUserId(accessToken);
+        if (!authTokenStore.exists(accessToken, "access", userId)) {
+            throw new ChallengeSphereException("Invalid or expired access token",
+                    HttpStatus.UNAUTHORIZED, logger);
+        }
+        return userRepository.findById(userId)
+                .orElseThrow(() -> new ChallengeSphereException("User not found",
+                        HttpStatus.UNAUTHORIZED, logger));
     }
 
     @Override
     public User getCurrentUser() throws ChallengeSphereException {
         throw new ChallengeSphereException("Not implemented", HttpStatus.NOT_IMPLEMENTED, logger);
+    }
+
+    @Override
+    @Transactional
+    public void changePassword(Long userId, String currentPassword, String newPassword, String confirmPassword)
+            throws ChallengeSphereException {
+        if (userId == null) {
+            throw new ChallengeSphereException("Authentication required", HttpStatus.UNAUTHORIZED, logger);
+        }
+        if (newPassword == null || !newPassword.equals(confirmPassword)) {
+            throw new ChallengeSphereException("New passwords do not match", HttpStatus.BAD_REQUEST, logger);
+        }
+        validatePasswordPolicy(newPassword);
+
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new ChallengeSphereException("User not found", HttpStatus.NOT_FOUND, logger));
+        if (user.getHashedPassword() == null || user.getHashedPassword().isBlank()) {
+            throw new ChallengeSphereException("Password login is not configured for this account",
+                    HttpStatus.BAD_REQUEST, logger);
+        }
+        if (!passwordEncoder.matches(currentPassword, user.getHashedPassword())) {
+            throw new ChallengeSphereException("Current password is incorrect", HttpStatus.UNAUTHORIZED, logger);
+        }
+        if (passwordEncoder.matches(newPassword, user.getHashedPassword())) {
+            throw new ChallengeSphereException("New password must be different from the current password",
+                    HttpStatus.BAD_REQUEST, logger);
+        }
+
+        user.setHashedPassword(passwordEncoder.encode(newPassword));
+        userRepository.save(user);
+        authTokenStore.revokeAllForUser(userId);
+        logger.info("Password changed and sessions revoked for userId={}", userId);
     }
 
     // --- helpers ---
@@ -176,6 +260,8 @@ public class AuthServiceImpl implements AuthService {
         Instant issuedAt = Instant.now();
         String accessToken = jwtService.generateAccessToken(user.getId(), user.getUsername());
         String refreshToken = jwtService.generateRefreshToken(user.getId(), user.getUsername());
+        authTokenStore.store(accessToken, "access", user.getId(), Duration.ofMillis(jwtService.getAccessTokenExpiryMs()));
+        authTokenStore.store(refreshToken, "refresh", user.getId(), Duration.ofMillis(jwtService.getRefreshTokenExpiryMs()));
         return AuthResponse.builder()
                 .accessToken(accessToken)
                 .refreshToken(refreshToken)
@@ -185,6 +271,35 @@ public class AuthServiceImpl implements AuthService {
                 .expiresIn(accessTokenExpiryMs)
                 .issuedAt(issuedAt)
                 .expiresAt(issuedAt.plusMillis(accessTokenExpiryMs))
+                .user(user)
                 .build();
+    }
+
+    private boolean passwordMatches(String rawPassword, String storedPassword) {
+        if (storedPassword == null || storedPassword.isBlank()) {
+            return false;
+        }
+        if (!isBcryptHash(storedPassword)) {
+            logger.warn("Rejecting login for account with non-bcrypt password hash");
+            return false;
+        }
+        return passwordEncoder.matches(rawPassword, storedPassword);
+    }
+
+    private boolean isBcryptHash(String storedPassword) {
+        return storedPassword.startsWith("$2a$") || storedPassword.startsWith("$2b$") || storedPassword.startsWith("$2y$");
+    }
+
+    private void validatePasswordPolicy(String password) throws ChallengeSphereException {
+        if (password == null || password.length() < 8 || password.length() > 128) {
+            throw new ChallengeSphereException("Password must be between 8 and 128 characters",
+                    HttpStatus.BAD_REQUEST, logger);
+        }
+        boolean hasLetter = password.chars().anyMatch(Character::isLetter);
+        boolean hasDigit = password.chars().anyMatch(Character::isDigit);
+        if (!hasLetter || !hasDigit) {
+            throw new ChallengeSphereException("Password must contain at least one letter and one number",
+                    HttpStatus.BAD_REQUEST, logger);
+        }
     }
 }

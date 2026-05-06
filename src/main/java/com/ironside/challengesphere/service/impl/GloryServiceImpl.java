@@ -1,10 +1,18 @@
 package com.ironside.challengesphere.service.impl;
 
+import com.ironside.challengesphere.api.response.GloryUserResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
+import com.ironside.challengesphere.model.Challenge;
 import com.ironside.challengesphere.model.Glory;
 import com.ironside.challengesphere.model.Submission;
+import com.ironside.challengesphere.model.User;
+import com.ironside.challengesphere.model.UserChallenge;
+import com.ironside.challengesphere.repository.ChallengeRepository;
 import com.ironside.challengesphere.repository.GloryRepository;
 import com.ironside.challengesphere.repository.SubmissionRepository;
+import com.ironside.challengesphere.repository.UserBlockRepository;
+import com.ironside.challengesphere.repository.UserChallengeRepository;
+import com.ironside.challengesphere.repository.UserRepository;
 import com.ironside.challengesphere.service.GloryService;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -17,7 +25,9 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.sql.Timestamp;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.stream.Collectors;
 
 @Service
 public class GloryServiceImpl implements GloryService {
@@ -30,16 +40,34 @@ public class GloryServiceImpl implements GloryService {
     @Autowired
     private SubmissionRepository submissionRepository;
 
+    @Autowired
+    private ChallengeRepository challengeRepository;
+
+    @Autowired
+    private UserChallengeRepository userChallengeRepository;
+
+    @Autowired
+    private UserBlockRepository userBlockRepository;
+
+    @Autowired
+    private UserRepository userRepository;
+
     @Override
     @Transactional
     public boolean toggleGlory(Long submissionId, Long userId) throws ChallengeSphereException {
         logger.info("Toggle glory for submission: {} by user: {}", submissionId, userId);
 
-        // Validate submission exists without loading the full entity into persistence context
-        if (!submissionRepository.existsById(submissionId)) {
+        Submission submission = submissionRepository.findById(submissionId)
+                .orElseThrow(() -> new ChallengeSphereException(
+                        "Submission not found with id: " + submissionId,
+                        HttpStatus.NOT_FOUND,
+                        logger
+                ));
+
+        if (canInteractWithSubmission(submission, userId)) {
             throw new ChallengeSphereException(
-                    "Submission not found with id: " + submissionId,
-                    HttpStatus.NOT_FOUND,
+                    "Not authorized to glory this submission",
+                    HttpStatus.FORBIDDEN,
                     logger
             );
         }
@@ -86,10 +114,30 @@ public class GloryServiceImpl implements GloryService {
     }
 
     @Override
-    public Page<Glory> getGloriesForSubmission(Long submissionId, Pageable pageable) {
+    public Page<GloryUserResponse> getGloriesForSubmission(Long submissionId, Pageable pageable, Long callerId) throws ChallengeSphereException {
         logger.info("Getting glories page for submission: {}, page: {}, size: {}",
                 submissionId, pageable.getPageNumber(), pageable.getPageSize());
-        return gloryRepository.findActiveBySubmissionId(submissionId, pageable);
+        Submission submission = submissionRepository.findById(submissionId)
+                .orElseThrow(() -> new ChallengeSphereException(
+                        "Submission not found with id: " + submissionId,
+                        HttpStatus.NOT_FOUND,
+                        logger
+                ));
+        if (canInteractWithSubmission(submission, callerId)) {
+            throw new ChallengeSphereException("Not authorized to view glories for this submission",
+                    HttpStatus.FORBIDDEN, logger);
+        }
+        Page<Glory> glories = gloryRepository.findActiveBySubmissionId(submissionId, pageable);
+        List<Long> userIds = glories.getContent().stream()
+                .map(Glory::getUserId)
+                .distinct()
+                .toList();
+        Map<Long, User> usersById = userIds.isEmpty()
+                ? Map.of()
+                : userRepository.findAllById(userIds).stream()
+                .collect(Collectors.toMap(User::getId, user -> user));
+
+        return glories.map(glory -> GloryUserResponse.from(glory, usersById.get(glory.getUserId())));
     }
 
     @Override
@@ -112,6 +160,13 @@ public class GloryServiceImpl implements GloryService {
         if (submission.getUserId() != null && submission.getUserId().equals(userId)) {
             throw new ChallengeSphereException(
                     "Cannot unglory your own submission",
+                    HttpStatus.FORBIDDEN,
+                    logger
+            );
+        }
+        if (canInteractWithSubmission(submission, userId)) {
+            throw new ChallengeSphereException(
+                    "Not authorized to unglory this submission",
                     HttpStatus.FORBIDDEN,
                     logger
             );
@@ -161,5 +216,33 @@ public class GloryServiceImpl implements GloryService {
         Long count = gloryRepository.countActiveBySubmissionId(submissionId);
 
         return count;
+    }
+
+    private boolean canInteractWithSubmission(Submission submission, Long viewerId) {
+        if (submission == null || viewerId == null) {
+            return true;
+        }
+        if (viewerId.equals(submission.getUserId())) {
+            return false;
+        }
+        if (userBlockRepository.existsActiveBlockBetween(viewerId, submission.getUserId())) {
+            return true;
+        }
+        if (!Boolean.TRUE.equals(submission.getActive())) {
+            return true;
+        }
+
+        Challenge challenge = challengeRepository.findById(submission.getChallengeId()).orElse(null);
+        if (challenge == null || !Boolean.TRUE.equals(challenge.getActive())) {
+            return true;
+        }
+
+        if (!Boolean.TRUE.equals(challenge.getIsPrivate()) && !Boolean.TRUE.equals(submission.getIsPrivate())) {
+            return false;
+        }
+
+        return userChallengeRepository.findByUserIdAndChallengeId(viewerId, submission.getChallengeId())
+                .map(userChallenge -> !Boolean.TRUE.equals(userChallenge.getActive()))
+                .orElse(true);
     }
 }

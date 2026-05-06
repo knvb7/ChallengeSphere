@@ -75,6 +75,9 @@ public class LeaderboardServiceImpl implements LeaderboardService {
     @Autowired
     private LeaderboardEntryRepository leaderboardEntryRepository;
 
+    @Autowired
+    private RedisCacheServiceImpl cacheService;
+
     // challengeIds whose ranks are stale — flushed by flushDirtyRanks below.
     // Used as a set; the boolean value is ignored. ConcurrentHashMap.newKeySet gives us
     // the same API and avoids allocating Boolean.TRUE on every dirty-mark.
@@ -100,44 +103,47 @@ public class LeaderboardServiceImpl implements LeaderboardService {
                             logger
                     ));
             
-            // ── Read directly from DB ──────
+            List<LeaderboardEntryDTO> entries = getLeaderboardEntriesFromCache(challengeId, limit);
 
-            List<LeaderboardEntry> dbEntries =
-                    leaderboardEntryRepository.findTopWithUserByChallengeId(
-                            challengeId, PageRequest.of(0, limit));
+            int totalParticipants;
+            if (!entries.isEmpty()) {
+                totalParticipants = (int) cacheService.getLeaderboardSize(challengeId);
+            } else {
+                List<LeaderboardEntry> dbEntries =
+                        leaderboardEntryRepository.findTopWithUserByChallengeId(
+                                challengeId, PageRequest.of(0, limit));
 
-            if (dbEntries.isEmpty()) {
-                logger.info("No leaderboard entries found in DB for challenge {}", challengeId);
-                return LeaderboardResponse.success(
-                        challengeId,
-                        challenge.getTitle(),
-                        request.getType().name(),
-                        new ArrayList<>(),
-                        0
-                );
+                if (dbEntries.isEmpty()) {
+                    logger.info("No leaderboard entries found in DB for challenge {}", challengeId);
+                    return LeaderboardResponse.success(
+                            challengeId,
+                            challenge.getTitle(),
+                            request.getType().name(),
+                            new ArrayList<>(),
+                            0
+                    );
+                }
+
+                entries = new ArrayList<>();
+                for (int i = 0; i < dbEntries.size(); i++) {
+                    LeaderboardEntry le = dbEntries.get(i);
+                    User user = le.getUser();
+                    entries.add(LeaderboardEntryDTO.builder()
+                            .userId(user.getId())
+                            .username(user.getUsername())
+                            .displayName(user.getUsername())
+                            .profilePictureUrl(user.getProfilePicUrl())
+                            .rank(i + 1L)
+                            .score(le.getScore())
+                            .submissionCount(le.getSubmissionCount())
+                            .gloriesCount((long) le.getGloryPoints())
+                            .currentStreak(le.getStreakDays())
+                            .build());
+                    cacheService.addToLeaderboard(challengeId, user.getId(), le.getScore());
+                }
+
+                totalParticipants = leaderboardEntryRepository.countParticipants(challengeId).intValue();
             }
-
-            // Build response entries from DB rows (user already joined via JOIN FETCH)
-            List<LeaderboardEntryDTO> entries = new ArrayList<>();
-            for (int i = 0; i < dbEntries.size(); i++) {
-                LeaderboardEntry le = dbEntries.get(i);
-                User user = le.getUser();
-                entries.add(LeaderboardEntryDTO.builder()
-                        .userId(user.getId())
-                        .username(user.getUsername())
-                        .displayName(user.getUsername())
-                        .profilePictureUrl(user.getProfilePicUrl())
-                        .rank(i + 1L)
-                        .score(le.getScore())
-                        .submissionCount(le.getSubmissionCount())
-                        .gloriesCount((long) le.getGloryPoints())
-                        .currentStreak(le.getStreakDays())
-                        .build());
-            }
-
-            // Get total participants from DB
-            // int totalParticipants = (int) cacheService.getLeaderboardSize(challengeId);
-            int totalParticipants = leaderboardEntryRepository.countParticipants(challengeId).intValue();
             
             // Build response
             LeaderboardResponse response;
@@ -183,11 +189,24 @@ public class LeaderboardServiceImpl implements LeaderboardService {
         logger.debug("Getting user rank for challenge: {}, user: {}", challengeId, userId);
 
         try {
-            // ── Read directly from DB (Redis caching temporarily disabled) ──────
-            // TODO: re-enable Redis reads once cache population is confirmed working
-            // Optional<Long> rankOpt = cacheService.getUserRank(challengeId, userId);
-            // Optional<Double> scoreOpt = cacheService.getUserScore(challengeId, userId);
-            // long totalParticipants = cacheService.getLeaderboardSize(challengeId);
+            Optional<Long> rankOpt = cacheService.getUserRank(challengeId, userId);
+            Optional<Double> scoreOpt = cacheService.getUserScore(challengeId, userId);
+            long cachedTotalParticipants = cacheService.getLeaderboardSize(challengeId);
+
+            if (rankOpt.isPresent() && scoreOpt.isPresent() && cachedTotalParticipants > 0) {
+                long rank = rankOpt.get();
+                double score = scoreOpt.get();
+                double percentile = cachedTotalParticipants > 1
+                        ? ((double) (cachedTotalParticipants - rank) / (cachedTotalParticipants - 1)) * 100
+                        : 100.0;
+                return UserRankDTO.builder()
+                        .userId(userId)
+                        .rank(rank)
+                        .score(score)
+                        .totalParticipants(cachedTotalParticipants)
+                        .percentile(Math.round(percentile * 100.0) / 100.0)
+                        .build();
+            }
 
             Optional<LeaderboardEntry> entryOpt =
                     leaderboardEntryRepository.findByChallengeIdAndUserId(challengeId, userId);
@@ -200,6 +219,7 @@ public class LeaderboardServiceImpl implements LeaderboardService {
             LeaderboardEntry entry = entryOpt.get();
             Integer rank = leaderboardEntryRepository.getUserRank(challengeId, userId);
             long totalParticipants = leaderboardEntryRepository.countParticipants(challengeId);
+            cacheService.addToLeaderboard(challengeId, userId, entry.getScore());
 
             long resolvedRank = rank != null ? rank.longValue() : totalParticipants;
             double percentile = totalParticipants > 1
@@ -219,6 +239,39 @@ public class LeaderboardServiceImpl implements LeaderboardService {
                 challengeId, userId, e.getMessage(), e);
             return null;
         }
+    }
+
+    private List<LeaderboardEntryDTO> getLeaderboardEntriesFromCache(Long challengeId, int limit) {
+        List<RedisCacheServiceImpl.LeaderboardEntry> cachedEntries =
+                cacheService.getTopScoresWithRank(challengeId, limit);
+        if (cachedEntries.isEmpty()) {
+            return List.of();
+        }
+
+        List<Long> userIds = cachedEntries.stream()
+                .map(RedisCacheServiceImpl.LeaderboardEntry::userId)
+                .map(Long::valueOf)
+                .toList();
+        Map<Long, User> userMap = userRepository.findAllById(userIds).stream()
+                .collect(Collectors.toMap(User::getId, u -> u));
+
+        List<LeaderboardEntryDTO> entries = new ArrayList<>();
+        for (RedisCacheServiceImpl.LeaderboardEntry cached : cachedEntries) {
+            Long cachedUserId = Long.valueOf(cached.userId());
+            User user = userMap.get(cachedUserId);
+            if (user == null) {
+                continue;
+            }
+            entries.add(LeaderboardEntryDTO.builder()
+                    .userId(user.getId())
+                    .username(user.getUsername())
+                    .displayName(user.getUsername())
+                    .profilePictureUrl(user.getProfilePicUrl())
+                    .rank(cached.rank())
+                    .score(cached.score())
+                    .build());
+        }
+        return entries;
     }
     
     @Override

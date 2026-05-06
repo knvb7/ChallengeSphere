@@ -6,6 +6,7 @@ import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 import java.util.Optional;
@@ -52,10 +53,12 @@ public interface UserRepository extends JpaRepository<User, Long> {
     void updateFollowingCount(@Param("id") Long id, @Param("increment") Integer increment);
 
     @Modifying
+    @Transactional
     @Query(value = "UPDATE challengesphere.users SET last_login_at = NOW() WHERE id = :id", nativeQuery = true)
     void updateLastLoginAt(@Param("id") Long id);
 
     @Modifying
+    @Transactional
     @Query(value = "UPDATE challengesphere.users SET last_login_at = NOW() WHERE id IN :ids", nativeQuery = true)
     int batchUpdateLastLoginAt(@Param("ids") List<Long> ids);
 

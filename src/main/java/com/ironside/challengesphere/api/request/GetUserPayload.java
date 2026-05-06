@@ -9,6 +9,7 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class GetUserPayload {
     private Long userId;
+    private Long currentUserId;
     private String emailId;
     private String phone;
     private String username;

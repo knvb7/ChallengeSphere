@@ -8,6 +8,8 @@ import java.util.List;
 
 @Data
 public class GetChallengesByHashtagRequest {
+    private Long currentUserId;
+
     @NotEmpty(message = "At least one hashtag is required")
     private List<String> hashtags;
 

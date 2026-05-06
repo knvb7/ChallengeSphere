@@ -27,7 +27,7 @@ public class UserPreferences {
     private Boolean emailNotificationsEnabled = true;
 
     @Column(name = "notify_on_glory", nullable = false)
-    private Boolean notifyOnGlory = true;
+    private Boolean notifyOnGlory = false;
 
     @Column(name = "notify_on_comment", nullable = false)
     private Boolean notifyOnComment = true;
@@ -78,4 +78,3 @@ public class UserPreferences {
         updatedAt = new Timestamp(System.currentTimeMillis());
     }
 }
-

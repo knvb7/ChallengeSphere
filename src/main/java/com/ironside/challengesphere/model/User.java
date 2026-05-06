@@ -1,6 +1,7 @@
 package com.ironside.challengesphere.model;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.persistence.*;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -40,6 +41,11 @@ public class User {
     @Column(name = "genuineness_score", columnDefinition = "INT DEFAULT 100")
     private Integer genuinenessScore = 100;
 
+    @JsonProperty("genuinityScore")
+    public Integer getGenuinityScore() {
+        return genuinenessScore;
+    }
+
     @Column(name = "active", columnDefinition = "BOOLEAN DEFAULT TRUE")
     private Boolean active = true;
 
@@ -74,4 +80,7 @@ public class User {
 
     @Column(name = "ban_reason", length = 512)
     private String banReason;
+
+    @Transient
+    private Integer submissionsCount;
 }

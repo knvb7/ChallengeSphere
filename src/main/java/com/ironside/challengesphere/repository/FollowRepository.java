@@ -13,6 +13,16 @@ import java.util.Optional;
 @Repository
 public interface FollowRepository extends JpaRepository<Follow, Long> {
 
+    default boolean existsActiveFollow(Long viewerId, Long targetUserId) {
+        if (viewerId == null || targetUserId == null) {
+            return false;
+        }
+        if (viewerId.equals(targetUserId)) {
+            return true;
+        }
+        return existsByFollowerIdAndFollowingIdAndActive(viewerId, targetUserId);
+    }
+
     default boolean existsActiveMutualFollow(Long firstUserId, Long secondUserId) {
         if (firstUserId == null || secondUserId == null) {
             return false;

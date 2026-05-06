@@ -25,6 +25,7 @@ import com.ironside.challengesphere.repository.ChallengeRepository;
 import com.ironside.challengesphere.repository.FollowRepository;
 import com.ironside.challengesphere.repository.GloryRepository;
 import com.ironside.challengesphere.repository.SubmissionRepository;
+import com.ironside.challengesphere.repository.UserBlockRepository;
 import com.ironside.challengesphere.repository.UserRepository;
 import com.ironside.challengesphere.service.FeedService;
 
@@ -53,6 +54,15 @@ public class FeedServiceImpl implements FeedService {
     @Autowired
     private FollowRepository followRepository;
 
+    @Autowired
+    private RedisCacheServiceImpl cacheService;
+
+    @Autowired
+    private UserBlockRepository userBlockRepository;
+
+    @Autowired
+    private MediaUrlService mediaUrlService;
+
     @Override
     @Transactional(readOnly = true)
     public FeedResponse getFeed(GetFeedRequest request) throws ChallengeSphereException {
@@ -80,7 +90,7 @@ public class FeedServiceImpl implements FeedService {
                 throw new ChallengeSphereException("User not found: " + userId, HttpStatus.NOT_FOUND, logger);
             }
 
-            Pageable pageable = PageRequest.of(page - 1, pageSize);
+            Pageable pageable = PageRequest.of(Math.max(0, page - 1), pageSize);
             Page<Submission> submissionsPage = submissionRepository.findFeedForUser(userId, pageable);
 
             if (submissionsPage.isEmpty()) {
@@ -89,10 +99,10 @@ public class FeedServiceImpl implements FeedService {
             }
 
             List<FeedItemResponse> feedItems = enrichSubmissions(submissionsPage.getContent(), userId);
-            logger.info("Returning {} following feed items for userId={}, page={}/{}",
-                    feedItems.size(), userId, page, submissionsPage.getTotalPages());
-            return FeedResponse.create(feedItems, page, pageSize,
-                    submissionsPage.getTotalElements(), "FOLLOWING");
+            logger.info("Returning {} following feed items for userId={}, page={}",
+                    feedItems.size(), userId, page);
+            FeedResponse response = FeedResponse.create(feedItems, page, pageSize, submissionsPage.getTotalElements(), "FOLLOWING");
+            return response;
 
         } catch (ChallengeSphereException e) {
             throw e;
@@ -112,6 +122,11 @@ public class FeedServiceImpl implements FeedService {
                 return FeedResponse.empty(page, pageSize, "TRENDING");
             }
 
+            Optional<FeedResponse> cached = cacheService.getCachedFeed("TRENDING", currentUserId, page, pageSize, FeedResponse.class);
+            if (cached.isPresent()) {
+                return cached.get();
+            }
+
             Pageable pageable = PageRequest.of(page - 1, pageSize);
             Page<Submission> submissionsPage = submissionRepository.findTrendingSubmissions(currentUserId, pageable);
 
@@ -127,6 +142,7 @@ public class FeedServiceImpl implements FeedService {
 
             FeedResponse response = FeedResponse.create(feedItems, page, pageSize,
                     submissionsPage.getTotalElements(), "TRENDING");
+            cacheService.cacheFeed("TRENDING", currentUserId, page, pageSize, response);
 
             return response;
 
@@ -146,6 +162,11 @@ public class FeedServiceImpl implements FeedService {
                 return FeedResponse.empty(page, pageSize, "EXPLORE");
             }
 
+            Optional<FeedResponse> cached = cacheService.getCachedFeed("EXPLORE_MIXED_V2", currentUserId, page, pageSize, FeedResponse.class);
+            if (cached.isPresent()) {
+                return cached.get();
+            }
+
             Pageable pageable = PageRequest.of(page - 1, pageSize);
             Page<Submission> submissionsPage = submissionRepository.findPublicSubmissions(currentUserId, pageable);
 
@@ -161,6 +182,7 @@ public class FeedServiceImpl implements FeedService {
 
             FeedResponse response = FeedResponse.create(feedItems, page, pageSize,
                     submissionsPage.getTotalElements(), "EXPLORE");
+            cacheService.cacheFeed("EXPLORE_MIXED_V2", currentUserId, page, pageSize, response);
 
             return response;
 
@@ -181,6 +203,11 @@ public class FeedServiceImpl implements FeedService {
         }
 
         try {
+            Optional<FeedResponse> cached = cacheService.getCachedFeed("CHALLENGE:" + challengeId, currentUserId, page, pageSize, FeedResponse.class);
+            if (cached.isPresent()) {
+                return cached.get();
+            }
+
             // Validate challenge exists
             if (!challengeRepository.existsById(challengeId)) {
                 throw new ChallengeSphereException("Challenge not found: " + challengeId, HttpStatus.NOT_FOUND, logger);
@@ -208,6 +235,7 @@ public class FeedServiceImpl implements FeedService {
             List<FeedItemResponse> feedItems = enrichSubmissions(paginatedSubmissions, currentUserId);
 
             FeedResponse response = FeedResponse.create(feedItems, page, pageSize, totalItems, "CHALLENGE");
+            cacheService.cacheFeed("CHALLENGE:" + challengeId, currentUserId, page, pageSize, response);
 
             return response;
 
@@ -230,6 +258,11 @@ public class FeedServiceImpl implements FeedService {
         }
 
         try {
+            Optional<FeedResponse> cached = cacheService.getCachedFeed("USER:" + targetUserId, currentUserId, page, pageSize, FeedResponse.class);
+            if (cached.isPresent()) {
+                return cached.get();
+            }
+
             boolean isOwnProfile = targetUserId.equals(currentUserId);
 
             // Validate user exists
@@ -237,9 +270,17 @@ public class FeedServiceImpl implements FeedService {
                 throw new ChallengeSphereException("User not found: " + targetUserId, HttpStatus.NOT_FOUND, logger);
             }
 
+            if (!isOwnProfile && userBlockRepository.existsActiveBlockBetween(currentUserId, targetUserId)) {
+                throw new ChallengeSphereException(
+                        "Not authorized to view this user's posts",
+                        HttpStatus.FORBIDDEN,
+                        logger
+                );
+            }
+
             if (!isOwnProfile && !followRepository.existsActiveMutualFollow(currentUserId, targetUserId)) {
                 throw new ChallengeSphereException(
-                        "You can only view this user's posts after you both follow each other",
+                        "You can only view this user's posts if you follow each other",
                         HttpStatus.FORBIDDEN,
                         logger
                 );
@@ -270,6 +311,7 @@ public class FeedServiceImpl implements FeedService {
             List<FeedItemResponse> feedItems = enrichSubmissions(paginatedSubmissions, currentUserId);
 
             FeedResponse response = FeedResponse.create(feedItems, page, pageSize, totalItems, "USER");
+            cacheService.cacheFeed("USER:" + targetUserId, currentUserId, page, pageSize, response);
 
             return response;
 
@@ -327,6 +369,10 @@ public class FeedServiceImpl implements FeedService {
                 logger.warn("Missing user or challenge data for submission {}", submission.getId());
                 continue;
             }
+            if (currentUserId != null && !currentUserId.equals(user.getId())
+                    && userBlockRepository.existsActiveBlockBetween(currentUserId, user.getId())) {
+                continue;
+            }
 
             Boolean isGloried = currentUserId != null ? gloryMap.getOrDefault(submission.getId(), false) : null;
 
@@ -337,6 +383,7 @@ public class FeedServiceImpl implements FeedService {
                     challenge.getTitle(),
                     isGloried
             );
+            item.setMediaUrls(mediaUrlService.toReadableMediaUrlList(submission.getMediaUrls()));
             feedItems.add(item);
         }
 

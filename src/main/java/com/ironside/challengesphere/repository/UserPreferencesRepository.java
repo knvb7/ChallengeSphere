@@ -7,6 +7,8 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import java.util.Collection;
+import java.util.List;
 import java.util.Optional;
 
 @Repository
@@ -14,6 +16,9 @@ public interface UserPreferencesRepository extends JpaRepository<UserPreferences
 
     @Query(value = "SELECT * FROM challengesphere.user_preferences WHERE user_id = :userId", nativeQuery = true)
     Optional<UserPreferences> findByUserId(@Param("userId") Long userId);
+
+    @Query(value = "SELECT * FROM challengesphere.user_preferences WHERE user_id IN :userIds", nativeQuery = true)
+    List<UserPreferences> findByUserIdIn(@Param("userIds") Collection<Long> userIds);
 
     @Query(value = "SELECT EXISTS(SELECT 1 FROM challengesphere.user_preferences WHERE user_id = :userId)", nativeQuery = true)
     boolean existsByUserId(@Param("userId") Long userId);
@@ -71,4 +76,3 @@ public interface UserPreferencesRepository extends JpaRepository<UserPreferences
     @Query(value = "UPDATE challengesphere.user_preferences SET language = :val, updated_at = NOW() WHERE user_id = :userId", nativeQuery = true)
     void updateLanguage(@Param("userId") Long userId, @Param("val") String val);
 }
-

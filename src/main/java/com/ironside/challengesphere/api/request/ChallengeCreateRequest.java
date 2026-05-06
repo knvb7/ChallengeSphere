@@ -17,7 +17,6 @@ public class ChallengeCreateRequest {
     @NotBlank(message = "Description is required")
     private String description;
 
-    @NotNull(message = "Creator user ID is required")
     private Long creatorUserId;
 
     private String hashtags;
@@ -34,4 +33,6 @@ public class ChallengeCreateRequest {
 
     @Size(max = 5, message = "A challenge can have at most 5 cover photos")
     private List<String> coverPhotoUrls; // GCS URLs after upload via presigned URL flow
+
+    private List<Long> invitedUserIds;
 }

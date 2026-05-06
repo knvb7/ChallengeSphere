@@ -1,5 +1,6 @@
 package com.ironside.challengesphere.api.response;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.ironside.challengesphere.model.User;
 import lombok.Data;
 
@@ -15,6 +16,8 @@ public class UserRegistrationResponse {
     private String phone;
     private Timestamp createdAt;
     private Integer genuinenessScore;
+    @JsonProperty("genuinityScore")
+    private Integer genuinityScore;
 
     public static UserRegistrationResponse success(User user) {
         UserRegistrationResponse response = new UserRegistrationResponse();
@@ -26,6 +29,7 @@ public class UserRegistrationResponse {
         response.setPhone(user.getPhone());
         response.setCreatedAt(user.getCreatedAt());
         response.setGenuinenessScore(user.getGenuinenessScore());
+        response.setGenuinityScore(user.getGenuinenessScore());
         return response;
     }
 
@@ -36,4 +40,3 @@ public class UserRegistrationResponse {
         return response;
     }
 }
-

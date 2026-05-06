@@ -1,5 +1,6 @@
 package com.ironside.challengesphere.service.impl;
 
+import com.google.auth.oauth2.GoogleCredentials;
 import com.google.auth.oauth2.ServiceAccountCredentials;
 import com.google.cloud.vision.v1.AnnotateImageRequest;
 import com.google.cloud.vision.v1.AnnotateImageResponse;
@@ -12,7 +13,6 @@ import com.google.cloud.vision.v1.ImageSource;
 import com.google.cloud.vision.v1.Likelihood;
 import com.google.cloud.vision.v1.SafeSearchAnnotation;
 import com.ironside.challengesphere.service.ContentModerationService;
-import com.ironside.challengesphere.util.Constants;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import org.apache.logging.log4j.LogManager;
@@ -21,6 +21,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.io.FileInputStream;
+import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -40,13 +41,17 @@ public class ContentModerationServiceImpl implements ContentModerationService {
     @Value("${gcs.key.path}")
     private String keyPath;
 
+    @Value("${gcs.bucket.name}")
+    private String bucketName;
+
     private volatile ImageAnnotatorClient client;
 
     @PostConstruct
     void init() {
         try {
+            GoogleCredentials credentials = resolveCredentials();
             ImageAnnotatorSettings settings = ImageAnnotatorSettings.newBuilder()
-                    .setCredentialsProvider(() -> ServiceAccountCredentials.fromStream(new FileInputStream(keyPath)))
+                    .setCredentialsProvider(() -> credentials)
                     .build();
             this.client = ImageAnnotatorClient.create(settings);
             logger.info("Vision SafeSearch client initialized");
@@ -55,6 +60,13 @@ public class ContentModerationServiceImpl implements ContentModerationService {
             // scan() will log and short-circuit to CLEAN until ops fixes the key.
             logger.error("Failed to initialize Vision SafeSearch client — moderation will no-op until fixed", e);
         }
+    }
+
+    private GoogleCredentials resolveCredentials() throws Exception {
+        if (keyPath != null && !keyPath.isBlank() && new File(keyPath).exists()) {
+            return ServiceAccountCredentials.fromStream(new FileInputStream(keyPath));
+        }
+        return GoogleCredentials.getApplicationDefault();
     }
 
     @PreDestroy
@@ -95,6 +107,8 @@ public class ContentModerationServiceImpl implements ContentModerationService {
         if (requests.isEmpty()) {
             return new Result(Verdict.CLEAN, List.of());
         }
+
+        logger.info("Running Vision SafeSearch for {} uploaded image(s)", requests.size());
 
         BatchAnnotateImagesResponse batch;
         try {
@@ -137,6 +151,7 @@ public class ContentModerationServiceImpl implements ContentModerationService {
         Verdict verdict = anyVeryLikely ? Verdict.BLOCK_AND_BAN
                 : anyLikely ? Verdict.FLAG_FOR_REVIEW
                 : Verdict.CLEAN;
+        logger.info("Vision SafeSearch result: verdict={}, findings={}", verdict, findings.size());
         return new Result(verdict, findings);
     }
 
@@ -155,7 +170,7 @@ public class ContentModerationServiceImpl implements ContentModerationService {
     //  - gs://bucket/object                          (pass through)
     //  - https://storage.googleapis.com/bucket/obj   (rewrite)
     //  - submissions/user_1/IMAGE/...jpg             (bare fileKey → prepend bucket)
-    private static String toGcsUri(String url) {
+    private String toGcsUri(String url) {
         if (url.startsWith("gs://")) return url;
         final String httpsPrefix = "https://storage.googleapis.com/";
         if (url.startsWith(httpsPrefix)) {
@@ -165,7 +180,7 @@ public class ContentModerationServiceImpl implements ContentModerationService {
         int q = url.indexOf('?');
         String path = q >= 0 ? url.substring(0, q) : url;
         if (path.startsWith("/")) path = path.substring(1);
-        return "gs://" + Constants.GCSBUCKETFORSUBMISSIONS + "/" + path;
+        return "gs://" + bucketName + "/" + path;
     }
 
     // [veryLikely, likely] — avoids returning an enum just for two bools.

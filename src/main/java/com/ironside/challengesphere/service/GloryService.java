@@ -1,6 +1,7 @@
 package com.ironside.challengesphere.service;
 
 import com.ironside.challengesphere.exception.ChallengeSphereException;
+import com.ironside.challengesphere.api.response.GloryUserResponse;
 import com.ironside.challengesphere.model.Glory;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -24,7 +25,7 @@ public interface GloryService {
      * Paginated variant — intended for public/UI consumption. Unbounded lists of
      * glories scale with each submission's popularity (easily 100k+ on a viral post).
      */
-    Page<Glory> getGloriesForSubmission(Long submissionId, Pageable pageable) throws ChallengeSphereException;
+    Page<GloryUserResponse> getGloriesForSubmission(Long submissionId, Pageable pageable, Long callerId) throws ChallengeSphereException;
     
     /**
      * Check if a user has given glory to a submission

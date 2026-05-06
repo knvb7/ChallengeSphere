@@ -11,7 +11,6 @@ import java.util.List;
 
 @Data
 public class CreateSubmissionRequest {
-    @NotNull(message = "User ID is required")
     private Long userId;
 
     @NotNull(message = "Challenge ID is required")

@@ -2,14 +2,19 @@ package com.ironside.challengesphere.service.impl;
 
 import com.ironside.challengesphere.api.response.CommentResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
+import com.ironside.challengesphere.model.Challenge;
 import com.ironside.challengesphere.model.Comment;
 import com.ironside.challengesphere.model.Submission;
 import com.ironside.challengesphere.model.User;
+import com.ironside.challengesphere.model.UserChallenge;
+import com.ironside.challengesphere.repository.ChallengeRepository;
 import com.ironside.challengesphere.repository.CommentRepository;
-import com.ironside.challengesphere.repository.FollowRepository;
 import com.ironside.challengesphere.repository.SubmissionRepository;
+import com.ironside.challengesphere.repository.UserBlockRepository;
+import com.ironside.challengesphere.repository.UserChallengeRepository;
 import com.ironside.challengesphere.repository.UserRepository;
 import com.ironside.challengesphere.service.CommentService;
+import com.ironside.challengesphere.service.NotificationService;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -19,6 +24,8 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.sql.Timestamp;
 import java.util.List;
@@ -41,7 +48,16 @@ public class CommentServiceImpl implements CommentService {
     private UserRepository userRepository;
 
     @Autowired
-    private FollowRepository followRepository;
+    private ChallengeRepository challengeRepository;
+
+    @Autowired
+    private UserChallengeRepository userChallengeRepository;
+
+    @Autowired
+    private NotificationService notificationService;
+
+    @Autowired
+    private UserBlockRepository userBlockRepository;
 
     @Override
     public Page<CommentResponse> getCommentsForSubmission(Long submissionId, Long callerId, Pageable pageable) throws ChallengeSphereException {
@@ -55,8 +71,7 @@ public class CommentServiceImpl implements CommentService {
                         logger
                 ));
 
-        if (!submission.getUserId().equals(callerId)
-                && !followRepository.existsActiveMutualFollow(callerId, submission.getUserId())) {
+        if (!canInteractWithSubmission(submission, callerId)) {
             throw new ChallengeSphereException(
                     "Not authorized to view comments on this submission",
                     HttpStatus.FORBIDDEN,
@@ -92,9 +107,7 @@ public class CommentServiceImpl implements CommentService {
                         logger
                 ));
 
-        // Submission interactions are limited to the owner or users with a mutual follow.
-        if (!submission.getUserId().equals(userId)
-                && !followRepository.existsActiveMutualFollow(userId, submission.getUserId())) {
+        if (!canInteractWithSubmission(submission, userId)) {
             throw new ChallengeSphereException(
                     "Not authorized to comment on this submission",
                     HttpStatus.FORBIDDEN,
@@ -122,6 +135,8 @@ public class CommentServiceImpl implements CommentService {
         logger.info("Created comment with id: {} for submission: {}", savedComment.getId(), submissionId);
 
         submissionRepository.incrementCommentCount(submissionId);
+
+        notifyCommentAfterCommit(submission, userId, savedComment.getId());
 
         return savedComment;
     }
@@ -183,5 +198,55 @@ public class CommentServiceImpl implements CommentService {
         logger.info("Soft deleted comment with id: {}", commentId);
 
         submissionRepository.decrementCommentCount(comment.getSubmissionId());
+    }
+
+    private boolean canInteractWithSubmission(Submission submission, Long viewerId) {
+        if (submission == null || viewerId == null) {
+            return false;
+        }
+        if (viewerId.equals(submission.getUserId())) {
+            return true;
+        }
+        if (userBlockRepository.existsActiveBlockBetween(viewerId, submission.getUserId())) {
+            return false;
+        }
+        if (!Boolean.TRUE.equals(submission.getActive())) {
+            return false;
+        }
+
+        Challenge challenge = challengeRepository.findById(submission.getChallengeId()).orElse(null);
+        if (challenge == null || !Boolean.TRUE.equals(challenge.getActive())) {
+            return false;
+        }
+
+        if (!Boolean.TRUE.equals(challenge.getIsPrivate()) && !Boolean.TRUE.equals(submission.getIsPrivate())) {
+            return true;
+        }
+
+        return userChallengeRepository.findByUserIdAndChallengeId(viewerId, submission.getChallengeId())
+                .map(UserChallenge::getActive)
+                .orElse(false);
+    }
+
+    private void notifyCommentAfterCommit(Submission submission, Long userId, Long commentId) {
+        Runnable trigger = () -> {
+            try {
+                notificationService.notifyCommentAsync(submission, userId, commentId);
+            } catch (Exception e) {
+                logger.warn("Failed to schedule comment notification for commentId={}: {}", commentId, e.getMessage());
+            }
+        };
+
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    trigger.run();
+                }
+            });
+            return;
+        }
+
+        trigger.run();
     }
 }

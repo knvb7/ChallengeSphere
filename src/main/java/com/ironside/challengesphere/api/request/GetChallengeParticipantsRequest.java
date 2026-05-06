@@ -7,4 +7,6 @@ import lombok.Data;
 public class GetChallengeParticipantsRequest {
     @NotNull(message = "Challenge ID is required")
     private Long challengeId;
+
+    private Long currentUserId;
 }

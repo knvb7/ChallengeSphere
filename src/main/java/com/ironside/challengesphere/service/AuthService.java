@@ -12,5 +12,8 @@ public interface AuthService {
     AuthResponse login(LoginRequest request) throws ChallengeSphereException;
     AuthResponse refresh(String refreshToken) throws ChallengeSphereException;
     AuthResponse loginWithGoogle(GoogleAuthRequest request) throws ChallengeSphereException;
+    void logout(String accessToken, String refreshToken);
+    User getCurrentUser(String accessToken) throws ChallengeSphereException;
     User getCurrentUser() throws ChallengeSphereException;
+    void changePassword(Long userId, String currentPassword, String newPassword, String confirmPassword) throws ChallengeSphereException;
 }

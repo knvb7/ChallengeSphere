@@ -13,6 +13,8 @@ import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.model.User;
 import org.springframework.stereotype.Service;
 
+import java.util.List;
+
 @Service
 public interface UserService {
     UserRegistrationResponse registerUser(UserRegistrationRequest request) throws ChallengeSphereException;
@@ -23,4 +25,9 @@ public interface UserService {
     FollowersFollowingResponse getFollowers(GetFollowersFollowingRequest request) throws ChallengeSphereException;
     FollowersFollowingResponse getFollowing(GetFollowersFollowingRequest request) throws ChallengeSphereException;
     ToggleUserActivationResponse toggleUserActivation(ToggleActivateUserRequest request) throws ChallengeSphereException;
+    void blockUser(Long blockerUserId, Long blockedUserId) throws ChallengeSphereException;
+    void unblockUser(Long blockerUserId, Long blockedUserId) throws ChallengeSphereException;
+    List<User> getBlockedUsers(Long blockerUserId) throws ChallengeSphereException;
+    void reportUser(Long reporterUserId, Long reportedUserId, String reason, String details) throws ChallengeSphereException;
+    boolean isBlockedEitherDirection(Long firstUserId, Long secondUserId);
 }

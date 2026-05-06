@@ -6,6 +6,9 @@ import com.ironside.challengesphere.api.response.PresignedUrlsResponse;
 import com.ironside.challengesphere.api.response.SubmissionResponse;
 import com.ironside.challengesphere.api.response.SubmissionsResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
+import com.ironside.challengesphere.model.Submission;
+import com.ironside.challengesphere.security.SecurityAccess;
+import com.ironside.challengesphere.security.UserPrincipal;
 import com.ironside.challengesphere.service.SubmissionService;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
@@ -15,6 +18,7 @@ import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
@@ -32,7 +36,10 @@ public class SubmissionController {
      * POST /api/v1/submissions
      */
     @PostMapping
-    public ResponseEntity<SubmissionResponse> createSubmission(@Valid @RequestBody CreateSubmissionRequest request) throws ChallengeSphereException {
+    public ResponseEntity<SubmissionResponse> createSubmission(
+            @AuthenticationPrincipal UserPrincipal principal,
+            @Valid @RequestBody CreateSubmissionRequest request) throws ChallengeSphereException {
+        request.setUserId(SecurityAccess.requireUserId(principal));
         logger.info("Received submission request for user: {}, challenge: {}, day: {}",
                 request.getUserId(), request.getChallengeId(), request.getDayNumber());
 
@@ -46,7 +53,9 @@ public class SubmissionController {
      */
     @PostMapping("/presigned-urls")
     public ResponseEntity<PresignedUrlsResponse> generatePresignedUrls(
+            @AuthenticationPrincipal UserPrincipal principal,
             @Valid @RequestBody GeneratePresignedUrlsRequest request) throws ChallengeSphereException {
+        request.setUserId(SecurityAccess.requireUserId(principal));
         logger.info("Received request to generate presigned URLs for user: {} with {} files",
                 request.getUserId(), request.getMediaFiles().size());
 
@@ -64,10 +73,11 @@ public class SubmissionController {
             @PathVariable Long challengeId,
             @RequestParam(defaultValue = "1") @Min(1) int page,
             @RequestParam(defaultValue = "10") @Min(1) @Max(100) int pageSize,
-            @RequestParam Long callerId) throws ChallengeSphereException {
+            @RequestParam(required = false) Long callerId,
+            @AuthenticationPrincipal UserPrincipal principal) throws ChallengeSphereException {
 
         logger.info("Getting submissions for user: {}, challenge: {}, page: {}, pageSize: {}", userId, challengeId, page, pageSize);
-        SubmissionsResponse response = submissionService.getSubmissionsByUserAndChallenge(userId, challengeId, page, pageSize, callerId);
+        SubmissionsResponse response = submissionService.getSubmissionsByUserAndChallenge(userId, challengeId, page, pageSize, SecurityAccess.requireUserId(principal));
         return ResponseEntity.ok(response);
     }
 
@@ -80,10 +90,11 @@ public class SubmissionController {
             @PathVariable Long challengeId,
             @RequestParam(defaultValue = "1") @Min(1) int page,
             @RequestParam(defaultValue = "10") @Min(1) @Max(100) int pageSize,
-            @RequestParam Long callerId) throws ChallengeSphereException {
+            @RequestParam(required = false) Long callerId,
+            @AuthenticationPrincipal UserPrincipal principal) throws ChallengeSphereException {
 
         logger.info("Getting submissions for challenge: {}, page: {}, pageSize: {}", challengeId, page, pageSize);
-        SubmissionsResponse response = submissionService.getSubmissionsByChallenge(challengeId, page, pageSize, callerId);
+        SubmissionsResponse response = submissionService.getSubmissionsByChallenge(challengeId, page, pageSize, SecurityAccess.requireUserId(principal));
         return ResponseEntity.ok(response);
     }
 
@@ -96,10 +107,11 @@ public class SubmissionController {
             @PathVariable Long userId,
             @RequestParam(defaultValue = "1") @Min(1) int page,
             @RequestParam(defaultValue = "10") @Min(1) @Max(100) int pageSize,
-            @RequestParam Long callerId) throws ChallengeSphereException {
+            @RequestParam(required = false) Long callerId,
+            @AuthenticationPrincipal UserPrincipal principal) throws ChallengeSphereException {
 
         logger.info("Getting submissions for user: {}, page: {}, pageSize: {}", userId, page, pageSize);
-        SubmissionsResponse response = submissionService.getSubmissionsByUser(userId, page, pageSize, callerId);
+        SubmissionsResponse response = submissionService.getSubmissionsByUser(userId, page, pageSize, SecurityAccess.requireUserId(principal));
         return ResponseEntity.ok(response);
     }
 
@@ -110,11 +122,13 @@ public class SubmissionController {
      * TODO: replace with @AuthenticationPrincipal once SecurityConfig is re-enabled.
      */
     @GetMapping("/{submissionId}")
-    public ResponseEntity<com.ironside.challengesphere.model.Submission> getSubmissionById(
+    public ResponseEntity<Submission> getSubmissionById(
             @PathVariable Long submissionId,
-            @RequestParam(required = false) Long callerId) throws ChallengeSphereException {
-        logger.info("Getting submission by id: {}, callerId: {}", submissionId, callerId);
-        com.ironside.challengesphere.model.Submission submission = submissionService.getSubmissionById(submissionId, callerId);
+            @RequestParam(required = false) Long callerId,
+            @AuthenticationPrincipal UserPrincipal principal) throws ChallengeSphereException {
+        Long actorUserId = SecurityAccess.requireUserId(principal);
+        logger.info("Getting submission by id: {}, callerId: {}", submissionId, actorUserId);
+        Submission submission = submissionService.getSubmissionById(submissionId, actorUserId);
         if (submission == null) {
             return ResponseEntity.notFound().build();
         }

@@ -5,6 +5,7 @@ import java.util.Map;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -18,6 +19,8 @@ import com.ironside.challengesphere.api.request.GetLeaderboardRequest;
 import com.ironside.challengesphere.api.request.UpdateLeaderboardScoreRequest;
 import com.ironside.challengesphere.api.response.LeaderboardResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
+import com.ironside.challengesphere.security.SecurityAccess;
+import com.ironside.challengesphere.security.UserPrincipal;
 import com.ironside.challengesphere.service.LeaderboardService;
 
 import io.swagger.v3.oas.annotations.Operation;
@@ -45,6 +48,7 @@ public class LeaderboardController {
     @Operation(summary = "Get leaderboard for a challenge", 
                description = "Returns the top participants ranked by their scores")
     public ResponseEntity<LeaderboardResponse> getLeaderboard(
+            @AuthenticationPrincipal UserPrincipal principal,
             @PathVariable @Parameter(description = "Challenge ID") Long challengeId,
             @RequestParam(defaultValue = "10") @Parameter(description = "Number of entries to return (max 100)") Integer limit,
             @RequestParam(required = false) @Parameter(description = "Optional user ID to include their rank") Long userId,
@@ -53,10 +57,11 @@ public class LeaderboardController {
         logger.info("GET /api/v1/leaderboard/challenge/{} - limit: {}, userId: {}, type: {}", 
             challengeId, limit, userId, type);
         
+        Long actorUserId = SecurityAccess.requireUserId(principal);
         GetLeaderboardRequest request = GetLeaderboardRequest.builder()
                 .challengeId(challengeId)
                 .limit(Math.min(limit, 100)) // Cap at 100
-                .userId(userId)
+                .userId(userId == null ? actorUserId : userId)
                 .type(GetLeaderboardRequest.LeaderboardType.valueOf(type.toUpperCase()))
                 .build();
         

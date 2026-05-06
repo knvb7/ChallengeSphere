@@ -36,8 +36,19 @@ public interface NotificationRepository extends JpaRepository<Notification, Long
     @Query(value = "SELECT COUNT(*) FROM challengesphere.notifications WHERE user_id = :userId", nativeQuery = true)
     Long countNotificationsByUserId(@Param("userId") Long userId);
 
+    @Query(value = "SELECT COUNT(*) FROM challengesphere.notifications WHERE user_id = :userId AND read_at IS NULL", nativeQuery = true)
+    Long countUnreadNotificationsByUserId(@Param("userId") Long userId);
+
     @Query(value = "SELECT COUNT(*) FROM challengesphere.notifications WHERE user_id = :userId AND type = :type", nativeQuery = true)
     Long countNotificationsByUserIdAndType(@Param("userId") Long userId, @Param("type") String type);
+
+    @Modifying
+    @Query(value = "UPDATE challengesphere.notifications SET read_at = CURRENT_TIMESTAMP WHERE user_id = :userId AND read_at IS NULL", nativeQuery = true)
+    int markAllAsReadByUserId(@Param("userId") Long userId);
+
+    @Modifying
+    @Query(value = "UPDATE challengesphere.notifications SET read_at = CURRENT_TIMESTAMP WHERE id = :notificationId AND user_id = :userId AND read_at IS NULL", nativeQuery = true)
+    int markAsRead(@Param("userId") Long userId, @Param("notificationId") Long notificationId);
 
     @Modifying
     @Query(value = "DELETE FROM challengesphere.notifications WHERE user_id = :userId", nativeQuery = true)

@@ -17,10 +17,10 @@ public interface GloryRepository extends JpaRepository<Glory, Long> {
     @Query(value = "SELECT * FROM challengesphere.glories WHERE submission_id = :submissionId AND user_id = :userId", nativeQuery = true)
     Optional<Glory> findBySubmissionIdAndUserId(@Param("submissionId") Long submissionId, @Param("userId") Long userId);
 
-    @Query(value = "SELECT * FROM challengesphere.glories WHERE submission_id = :submissionId AND active = true", nativeQuery = true)
+    @Query(value = "SELECT * FROM challengesphere.glories WHERE submission_id = :submissionId AND active = true ORDER BY created_at DESC", nativeQuery = true)
     List<Glory> findActiveBySubmissionId(@Param("submissionId") Long submissionId);
 
-    @Query(value = "SELECT * FROM challengesphere.glories WHERE submission_id = :submissionId AND active = true",
+    @Query(value = "SELECT * FROM challengesphere.glories WHERE submission_id = :submissionId AND active = true ORDER BY created_at DESC",
             countQuery = "SELECT COUNT(*) FROM challengesphere.glories WHERE submission_id = :submissionId AND active = true",
             nativeQuery = true)
     Page<Glory> findActiveBySubmissionId(@Param("submissionId") Long submissionId, Pageable pageable);

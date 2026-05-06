@@ -1,5 +1,6 @@
 package com.ironside.challengesphere.util;
 
+import com.google.auth.oauth2.GoogleCredentials;
 import com.google.auth.oauth2.ServiceAccountCredentials;
 import com.google.cloud.storage.*;
 import com.ironside.challengesphere.api.request.GeneratePresignedUrlsRequest;
@@ -11,6 +12,7 @@ import org.springframework.stereotype.Component;
 
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.File;
 import java.net.URL;
 import java.util.concurrent.TimeUnit;
 
@@ -29,11 +31,20 @@ public class GetSignedUrlForGcs {
 
     @Scheduled(initialDelay = 0, fixedDelay = Long.MAX_VALUE)
     public void storage() throws IOException {
+        GoogleCredentials credentials = resolveCredentials();
         storage = StorageOptions.newBuilder()
                 .setProjectId(projectId)
-                .setCredentials(ServiceAccountCredentials.fromStream(new FileInputStream(keyPath)))
+                .setCredentials(credentials)
                 .build()
                 .getService();
+        logger.info("GCS client initialized for project {}", projectId);
+    }
+
+    private GoogleCredentials resolveCredentials() throws IOException {
+        if (keyPath != null && !keyPath.isBlank() && new File(keyPath).exists()) {
+            return ServiceAccountCredentials.fromStream(new FileInputStream(keyPath));
+        }
+        return GoogleCredentials.getApplicationDefault();
     }
 
 
@@ -60,5 +71,38 @@ public class GetSignedUrlForGcs {
 
         logger.info("Generated V4 PUT signed URL for object: {}", objectName);
         return signedUrl.toString();
+    }
+
+    public static String generateV4GetObjectSignedUrl(
+            String bucketName,
+            String objectName,
+            Long expirationTime
+    ) {
+        BlobInfo blobInfo = BlobInfo.newBuilder(BlobId.of(bucketName, objectName)).build();
+
+        URL signedUrl = storage.signUrl(
+                blobInfo,
+                expirationTime,
+                TimeUnit.SECONDS,
+                Storage.SignUrlOption.httpMethod(HttpMethod.GET),
+                Storage.SignUrlOption.withV4Signature()
+        );
+
+        logger.debug("Generated V4 GET signed URL for object: {}", objectName);
+        return signedUrl.toString();
+    }
+
+    public static void updateObjectCacheControl(String bucketName, String objectName, String cacheControl) {
+        Blob blob = storage.get(BlobId.of(bucketName, objectName));
+        if (blob == null) {
+            logger.warn("Skipping cache-control update; GCS object not found: {}", objectName);
+            return;
+        }
+
+        blob.toBuilder()
+                .setCacheControl(cacheControl)
+                .build()
+                .update();
+        logger.debug("Updated cache-control for GCS object {} to {}", objectName, cacheControl);
     }
 }

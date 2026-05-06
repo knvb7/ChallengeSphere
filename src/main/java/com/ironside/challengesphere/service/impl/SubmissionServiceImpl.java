@@ -3,10 +3,11 @@ package com.ironside.challengesphere.service.impl;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
-import com.ironside.challengesphere.util.Constants;
 import com.ironside.challengesphere.util.GetSignedUrlForGcs;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -27,18 +28,21 @@ import com.ironside.challengesphere.api.response.SubmissionResponse;
 import com.ironside.challengesphere.api.response.SubmissionsResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.model.Challenge;
+import com.ironside.challengesphere.model.Follow;
 import com.ironside.challengesphere.model.Submission;
 import com.ironside.challengesphere.model.User;
 import com.ironside.challengesphere.model.UserChallenge;
 import com.ironside.challengesphere.repository.ChallengeRepository;
 import com.ironside.challengesphere.repository.FollowRepository;
 import com.ironside.challengesphere.repository.SubmissionRepository;
+import com.ironside.challengesphere.repository.UserBlockRepository;
 import com.ironside.challengesphere.repository.UserChallengeRepository;
 import com.ironside.challengesphere.repository.UserRepository;
 import com.ironside.challengesphere.repository.ModerationFlagRepository;
 import com.ironside.challengesphere.model.ModerationFlag;
 import com.ironside.challengesphere.service.ContentModerationService;
 import com.ironside.challengesphere.service.LeaderboardService;
+import com.ironside.challengesphere.service.NotificationService;
 import com.ironside.challengesphere.service.SubmissionService;
 
 @Service
@@ -68,6 +72,18 @@ public class SubmissionServiceImpl implements SubmissionService {
 
     @Autowired
     private ModerationFlagRepository moderationFlagRepository;
+
+    @Autowired
+    private RedisCacheServiceImpl cacheService;
+
+    @Autowired
+    private NotificationService notificationService;
+
+    @Autowired
+    private UserBlockRepository userBlockRepository;
+
+    @Autowired
+    private MediaUrlService mediaUrlService;
 
     @Value("${gcs.bucket.name}")
     private String bucketName;
@@ -173,6 +189,12 @@ public class SubmissionServiceImpl implements SubmissionService {
             // immediately (no submission row). LIKELY saves the submission hidden
             // (active=false) and queues a flag for human review.
             ContentModerationService.Result moderation = contentModerationService.scan(request.getMediaUrls());
+            logger.info("Vision SafeSearch completed for submission upload: user={}, challenge={}, mediaCount={}, verdict={}, findings={}",
+                    userId,
+                    challengeId,
+                    request.getMediaUrls() == null ? 0 : request.getMediaUrls().size(),
+                    moderation.verdict(),
+                    moderation.findings().size());
             if (moderation.verdict() == ContentModerationService.Verdict.BLOCK_AND_BAN) {
                 String summary = summarizeFindings(moderation);
                 logger.warn("Banning user {} for disallowed content: {}", userId, summary);
@@ -187,6 +209,8 @@ public class SubmissionServiceImpl implements SubmissionService {
                 );
             }
 
+            mediaUrlService.applyPrivateImageCacheHeaders(request.getMediaUrls());
+
             // Create submission
             Submission submission = new Submission();
             submission.setUserId(userId);
@@ -200,7 +224,12 @@ public class SubmissionServiceImpl implements SubmissionService {
                 submission.setMediaUrls(mediaUrlsString);
             }
 
-            submission.setIsPrivate(request.getIsPrivate() != null ? request.getIsPrivate() : false);
+            boolean challengeIsPrivate = Boolean.TRUE.equals(challenge.getIsPrivate());
+            if (challengeIsPrivate) {
+                submission.setIsPrivate(true);
+            } else {
+                submission.setIsPrivate(request.getIsPrivate() != null ? request.getIsPrivate() : false);
+            }
 
             // Set submission date - defaults to today if not provided
             Timestamp submissionTime = request.getSubmissionDate() != null ? request.getSubmissionDate() : Timestamp.from(Instant.now());
@@ -245,6 +274,16 @@ public class SubmissionServiceImpl implements SubmissionService {
                 }
             }
 
+            if (Boolean.TRUE.equals(savedSubmission.getActive())) {
+                Set<Long> notificationRecipients = fanOutSubmissionToFeedTimelines(savedSubmission, challenge, userId);
+                try {
+                    notificationService.notifySubmission(savedSubmission, challenge, notificationRecipients);
+                } catch (Exception e) {
+                    logger.warn("Failed to create submission notifications for submissionId={}: {}",
+                            savedSubmission.getId(), e.getMessage());
+                }
+            }
+
             return SubmissionResponse.success(savedSubmission, request.getMediaUrls());
 
         } catch (ChallengeSphereException e) {
@@ -265,7 +304,7 @@ public class SubmissionServiceImpl implements SubmissionService {
         logger.info("Getting submissions for user: {}, challenge: {}, page: {}, pageSize: {}", userId, challengeId, page, pageSize);
 
         try {
-            ensureMutualFollowAccess(userId, callerId, "posts");
+            ensureFollowAccess(userId, callerId, "posts");
 
             if (userId.equals(callerId)) {
                 Pageable pageable = PageRequest.of(Math.max(0, page - 1), pageSize, Sort.by(Sort.Direction.ASC, "day_number"));
@@ -275,7 +314,7 @@ public class SubmissionServiceImpl implements SubmissionService {
                 logger.info("Found {} submissions for user: {}, challenge: {} (showing page {}/{})",
                         totalCount, userId, challengeId, page, submissionPage.getTotalPages());
 
-                return SubmissionsResponse.create(submissionPage.getContent(), page, pageSize, totalCount);
+                return SubmissionsResponse.create(withReadableMediaUrls(submissionPage.getContent()), page, pageSize, totalCount);
             }
 
             List<Submission> visibleSubmissions = submissionRepository.findActiveByUserIdAndChallengeId(userId, challengeId).stream()
@@ -290,8 +329,10 @@ public class SubmissionServiceImpl implements SubmissionService {
 
             logger.info("Found {} visible submissions for user: {}, challenge: {}",
                     totalCount, userId, challengeId);
-            return SubmissionsResponse.create(paginatedSubmissions, page, pageSize, totalCount);
+            return SubmissionsResponse.create(withReadableMediaUrls(paginatedSubmissions), page, pageSize, totalCount);
 
+        } catch (ChallengeSphereException e) {
+            throw e;
         } catch (Exception e) {
             logger.error("Error getting submissions for user: {}, challenge: {}: {}", userId, challengeId, e.getMessage(), e);
             throw new ChallengeSphereException(
@@ -320,7 +361,7 @@ public class SubmissionServiceImpl implements SubmissionService {
 
             logger.info("Found {} active submissions for challenge: {} (showing page {}/{})",
                     totalCount, challengeId, page, totalCount == 0 ? 0 : (int) Math.ceil((double) totalCount / pageSize));
-            return SubmissionsResponse.create(paginatedSubmissions, page, pageSize, totalCount);
+            return SubmissionsResponse.create(withReadableMediaUrls(paginatedSubmissions), page, pageSize, totalCount);
 
         } catch (Exception e) {
             logger.error("Error getting submissions for challenge {}: {}", challengeId, e.getMessage(), e);
@@ -338,7 +379,7 @@ public class SubmissionServiceImpl implements SubmissionService {
         logger.info("Getting submissions for user: {}, page: {}, pageSize: {}", userId, page, pageSize);
 
         try {
-            ensureMutualFollowAccess(userId, callerId, "posts");
+            ensureFollowAccess(userId, callerId, "posts");
 
             if (userId.equals(callerId)) {
                 Pageable pageable = PageRequest.of(Math.max(0, page - 1), pageSize, Sort.by(Sort.Direction.DESC, "submission_time"));
@@ -348,7 +389,7 @@ public class SubmissionServiceImpl implements SubmissionService {
                 logger.info("Found {} active submissions for user: {} (showing page {}/{})",
                         totalCount, userId, page, submissionPage.getTotalPages());
 
-                return SubmissionsResponse.create(submissionPage.getContent(), page, pageSize, totalCount);
+                return SubmissionsResponse.create(withReadableMediaUrls(submissionPage.getContent()), page, pageSize, totalCount);
             }
 
             List<Submission> visibleSubmissions = submissionRepository.findPublicByUserId(userId);
@@ -360,8 +401,10 @@ public class SubmissionServiceImpl implements SubmissionService {
                     .toList();
 
             logger.info("Found {} visible submissions for user: {}", totalCount, userId);
-            return SubmissionsResponse.create(paginatedSubmissions, page, pageSize, totalCount);
+            return SubmissionsResponse.create(withReadableMediaUrls(paginatedSubmissions), page, pageSize, totalCount);
 
+        } catch (ChallengeSphereException e) {
+            throw e;
         } catch (Exception e) {
             logger.error("Error getting submissions for user {}: {}", userId, e.getMessage(), e);
             throw new ChallengeSphereException(
@@ -437,13 +480,13 @@ public class SubmissionServiceImpl implements SubmissionService {
         }
     }
 
-    private static PresignedUrlsResponse.PresignedUrlInfo getPresignedUrlInfo(GeneratePresignedUrlsRequest.MediaFileInfo mediaFile, String fileKey, long expirationTimeInSeconds) {
+    private PresignedUrlsResponse.PresignedUrlInfo getPresignedUrlInfo(GeneratePresignedUrlsRequest.MediaFileInfo mediaFile, String fileKey, long expirationTimeInSeconds) {
         return new PresignedUrlsResponse.PresignedUrlInfo(
                 mediaFile.getFileName(),
                 mediaFile.getMediaType().name(),
                 mediaFile.getContentType().getMimeType(),
                 GetSignedUrlForGcs.generateV4PutObjectSignedUrl(
-                        Constants.GCSBUCKETFORSUBMISSIONS,
+                        bucketName,
                         fileKey,
                         expirationTimeInSeconds,
                         mediaFile.getContentType()),
@@ -479,7 +522,35 @@ public class SubmissionServiceImpl implements SubmissionService {
                     logger
             );
         }
-        return submission;
+        return withReadableMediaUrls(submission);
+    }
+
+    private List<Submission> withReadableMediaUrls(List<Submission> submissions) {
+        return submissions.stream()
+                .map(this::withReadableMediaUrls)
+                .toList();
+    }
+
+    private Submission withReadableMediaUrls(Submission submission) {
+        if (submission == null) {
+            return null;
+        }
+        Submission copy = new Submission();
+        copy.setId(submission.getId());
+        copy.setUserId(submission.getUserId());
+        copy.setChallengeId(submission.getChallengeId());
+        copy.setDayNumber(submission.getDayNumber());
+        copy.setDescription(submission.getDescription());
+        copy.setMediaUrls(mediaUrlService.toReadableMediaUrls(submission.getMediaUrls()));
+        copy.setIsPrivate(submission.getIsPrivate());
+        copy.setSubmissionTime(submission.getSubmissionTime());
+        copy.setCreatedAt(submission.getCreatedAt());
+        copy.setUpdatedAt(submission.getUpdatedAt());
+        copy.setActive(submission.getActive());
+        copy.setGloriesCount(submission.getGloriesCount());
+        copy.setCommentsCount(submission.getCommentsCount());
+        copy.setVersion(submission.getVersion());
+        return copy;
     }
 
     private boolean canViewSubmission(Submission submission, Long callerId) {
@@ -489,13 +560,28 @@ public class SubmissionServiceImpl implements SubmissionService {
         if (callerId.equals(submission.getUserId())) {
             return true;
         }
-        if (!Boolean.TRUE.equals(submission.getActive()) || Boolean.TRUE.equals(submission.getIsPrivate())) {
+        if (userBlockRepository.existsActiveBlockBetween(callerId, submission.getUserId())) {
             return false;
         }
-        return followRepository.existsActiveMutualFollow(callerId, submission.getUserId());
+        if (!Boolean.TRUE.equals(submission.getActive())) {
+            return false;
+        }
+
+        Challenge challenge = challengeRepository.findById(submission.getChallengeId()).orElse(null);
+        if (challenge == null || !Boolean.TRUE.equals(challenge.getActive())) {
+            return false;
+        }
+
+        if (!Boolean.TRUE.equals(challenge.getIsPrivate()) && !Boolean.TRUE.equals(submission.getIsPrivate())) {
+            return true;
+        }
+
+        return userChallengeRepository.findByUserIdAndChallengeId(callerId, submission.getChallengeId())
+                .map(UserChallenge::getActive)
+                .orElse(false);
     }
 
-    private void ensureMutualFollowAccess(Long ownerUserId, Long viewerUserId, String contentType)
+    private void ensureFollowAccess(Long ownerUserId, Long viewerUserId, String contentType)
             throws ChallengeSphereException {
         if (viewerUserId == null) {
             throw new ChallengeSphereException(
@@ -507,13 +593,50 @@ public class SubmissionServiceImpl implements SubmissionService {
         if (ownerUserId.equals(viewerUserId)) {
             return;
         }
-        if (!followRepository.existsActiveMutualFollow(viewerUserId, ownerUserId)) {
+        if (userBlockRepository.existsActiveBlockBetween(ownerUserId, viewerUserId)) {
             throw new ChallengeSphereException(
-                    "You can only view this user's " + contentType + " after you both follow each other",
+                    "Not authorized to view this user's " + contentType,
                     HttpStatus.FORBIDDEN,
                     logger
             );
         }
+        if (!followRepository.existsActiveMutualFollow(viewerUserId, ownerUserId)) {
+            throw new ChallengeSphereException(
+                    "You can only view this user's " + contentType + " if you follow each other",
+                    HttpStatus.FORBIDDEN,
+                    logger
+            );
+        }
+    }
+
+    private Set<Long> fanOutSubmissionToFeedTimelines(Submission submission, Challenge challenge, Long authorUserId) {
+        if (submission == null || submission.getId() == null || challenge == null || authorUserId == null) {
+            return Set.of();
+        }
+
+        double score = submission.getCreatedAt() != null
+                ? submission.getCreatedAt().getTime()
+                : System.currentTimeMillis();
+
+        if (!Boolean.TRUE.equals(challenge.getIsPrivate())) {
+            if (Boolean.TRUE.equals(submission.getIsPrivate())) {
+                return Set.of();
+            }
+            Set<Long> followerIds = followRepository.findActiveFollowsByFollowingId(authorUserId).stream()
+                    .map(Follow::getFollowerId)
+                    .filter(followerId -> !userBlockRepository.existsActiveBlockBetween(authorUserId, followerId))
+                    .collect(java.util.stream.Collectors.toSet());
+            cacheService.fanOutToFollowerTimelines(followerIds, submission.getId(), score);
+            return followerIds;
+        }
+
+        Set<Long> challengeMemberIds = new HashSet<>(userChallengeRepository.findActiveByChallengeId(challenge.getId()).stream()
+                .map(UserChallenge::getUserId)
+                .collect(java.util.stream.Collectors.toSet()));
+        challengeMemberIds.remove(authorUserId);
+        challengeMemberIds.removeIf(memberId -> userBlockRepository.existsActiveBlockBetween(authorUserId, memberId));
+        cacheService.fanOutToFollowerTimelines(challengeMemberIds, submission.getId(), score);
+        return challengeMemberIds;
     }
 
     private static String summarizeFindings(ContentModerationService.Result result) {

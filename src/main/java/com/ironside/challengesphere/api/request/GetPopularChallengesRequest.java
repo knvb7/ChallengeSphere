@@ -7,6 +7,8 @@ import java.time.LocalDate;
 
 @Data
 public class GetPopularChallengesRequest {
+    private Long currentUserId;
+
     private Boolean active;
 
     private LocalDate startDate;
@@ -19,4 +21,3 @@ public class GetPopularChallengesRequest {
     @Min(value = 1, message = "Page size must be at least 1")
     private int pageSize = 10;
 }
-

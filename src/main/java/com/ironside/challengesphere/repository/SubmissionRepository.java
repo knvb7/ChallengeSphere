@@ -17,28 +17,30 @@ import com.ironside.challengesphere.model.Submission;
 @Repository
 public interface SubmissionRepository extends JpaRepository<Submission, Long> {
 
-    // Feed query - get submissions from users that the current user follows, plus the current user's own posts
+    // Feed query - followed users first, including private challenge posts only when the viewer is a participant.
     @Query(value = "SELECT s.* FROM challengesphere.submissions s " +
+            "JOIN challengesphere.challenges c ON c.id = s.challenge_id " +
             "WHERE s.active = true " +
-            "AND s.is_private = false " +
             "AND (s.user_id = :userId OR EXISTS (" +
             "  SELECT 1 FROM challengesphere.follows f " +
             "  WHERE f.follower_id = :userId AND f.following_id = s.user_id AND f.active = true" +
-            ") AND EXISTS (" +
-            "  SELECT 1 FROM challengesphere.follows f " +
-            "  WHERE f.follower_id = s.user_id AND f.following_id = :userId AND f.active = true" +
             ")) " +
-            "ORDER BY s.created_at DESC",
+            "AND ((c.private = false AND s.is_private = false) OR (c.private = true AND EXISTS (" +
+            "  SELECT 1 FROM challengesphere.user_challenges uc " +
+            "  WHERE uc.challenge_id = s.challenge_id AND uc.user_id = :userId AND uc.active = true" +
+            "))) " +
+            "ORDER BY s.created_at DESC, s.id DESC",
             countQuery = "SELECT COUNT(*) FROM challengesphere.submissions s " +
+                    "JOIN challengesphere.challenges c ON c.id = s.challenge_id " +
                     "WHERE s.active = true " +
-                    "AND s.is_private = false " +
                     "AND (s.user_id = :userId OR EXISTS (" +
                     "  SELECT 1 FROM challengesphere.follows f " +
                     "  WHERE f.follower_id = :userId AND f.following_id = s.user_id AND f.active = true" +
-                    ") AND EXISTS (" +
-                    "  SELECT 1 FROM challengesphere.follows f " +
-                    "  WHERE f.follower_id = s.user_id AND f.following_id = :userId AND f.active = true" +
-                    "))",
+                    ")) " +
+                    "AND ((c.private = false AND s.is_private = false) OR (c.private = true AND EXISTS (" +
+                    "  SELECT 1 FROM challengesphere.user_challenges uc " +
+                    "  WHERE uc.challenge_id = s.challenge_id AND uc.user_id = :userId AND uc.active = true" +
+                    ")))",
             nativeQuery = true)
     Page<Submission> findFeedForUser(@Param("userId") Long userId, Pageable pageable);
 
@@ -51,7 +53,7 @@ public interface SubmissionRepository extends JpaRepository<Submission, Long> {
             "  EXISTS (SELECT 1 FROM challengesphere.follows f WHERE f.follower_id = :viewerId AND f.following_id = s.user_id AND f.active = true) " +
             "  AND EXISTS (SELECT 1 FROM challengesphere.follows f WHERE f.follower_id = s.user_id AND f.following_id = :viewerId AND f.active = true)" +
             ")) " +
-            "ORDER BY (s.glories_count * 2 + s.comments_count) DESC, s.created_at DESC",
+            "ORDER BY (s.glories_count * 2 + s.comments_count) DESC, s.created_at DESC, s.id DESC",
             countQuery = "SELECT COUNT(*) FROM challengesphere.submissions s " +
                     "WHERE s.active = true " +
                     "AND s.is_private = false " +
@@ -63,21 +65,25 @@ public interface SubmissionRepository extends JpaRepository<Submission, Long> {
             nativeQuery = true)
     Page<Submission> findTrendingSubmissions(@Param("viewerId") Long viewerId, Pageable pageable);
 
-    // Explore feed - all public submissions sorted by recency
+    // Explore feed - own/followed users first, then random users' public challenge submissions.
     @Query(value = "SELECT s.* FROM challengesphere.submissions s " +
+            "JOIN challengesphere.challenges c ON c.id = s.challenge_id " +
             "WHERE s.active = true " +
-            "AND s.is_private = false " +
-            "AND (s.user_id = :viewerId OR (" +
-            "  EXISTS (SELECT 1 FROM challengesphere.follows f WHERE f.follower_id = :viewerId AND f.following_id = s.user_id AND f.active = true) " +
-            "  AND EXISTS (SELECT 1 FROM challengesphere.follows f WHERE f.follower_id = s.user_id AND f.following_id = :viewerId AND f.active = true)" +
+            "AND ((c.private = false AND s.is_private = false) OR (" +
+            "  c.private = true " +
+            "  AND (s.user_id = :viewerId OR EXISTS (SELECT 1 FROM challengesphere.follows f WHERE f.follower_id = :viewerId AND f.following_id = s.user_id AND f.active = true)) " +
+            "  AND EXISTS (SELECT 1 FROM challengesphere.user_challenges uc WHERE uc.challenge_id = s.challenge_id AND uc.user_id = :viewerId AND uc.active = true)" +
             ")) " +
-            "ORDER BY s.created_at DESC",
+            "ORDER BY CASE WHEN s.user_id = :viewerId OR EXISTS (" +
+            "  SELECT 1 FROM challengesphere.follows f WHERE f.follower_id = :viewerId AND f.following_id = s.user_id AND f.active = true" +
+            ") THEN 0 ELSE 1 END, s.created_at DESC, s.id DESC",
             countQuery = "SELECT COUNT(*) FROM challengesphere.submissions s " +
+                    "JOIN challengesphere.challenges c ON c.id = s.challenge_id " +
                     "WHERE s.active = true " +
-                    "AND s.is_private = false " +
-                    "AND (s.user_id = :viewerId OR (" +
-                    "  EXISTS (SELECT 1 FROM challengesphere.follows f WHERE f.follower_id = :viewerId AND f.following_id = s.user_id AND f.active = true) " +
-                    "  AND EXISTS (SELECT 1 FROM challengesphere.follows f WHERE f.follower_id = s.user_id AND f.following_id = :viewerId AND f.active = true)" +
+                    "AND ((c.private = false AND s.is_private = false) OR (" +
+                    "  c.private = true " +
+                    "  AND (s.user_id = :viewerId OR EXISTS (SELECT 1 FROM challengesphere.follows f WHERE f.follower_id = :viewerId AND f.following_id = s.user_id AND f.active = true)) " +
+                    "  AND EXISTS (SELECT 1 FROM challengesphere.user_challenges uc WHERE uc.challenge_id = s.challenge_id AND uc.user_id = :viewerId AND uc.active = true)" +
                     "))",
             nativeQuery = true)
     Page<Submission> findPublicSubmissions(@Param("viewerId") Long viewerId, Pageable pageable);
@@ -107,12 +113,15 @@ public interface SubmissionRepository extends JpaRepository<Submission, Long> {
     Page<Submission> findActiveByChallengeId(@Param("challengeId") Long challengeId, Pageable pageable);
 
     // Find all public active submissions by challenge
-    @Query(value = "SELECT * FROM challengesphere.submissions s WHERE s.challenge_id = :challengeId " +
-            "AND s.active = true AND s.is_private = false " +
-            "AND (s.user_id = :viewerId OR (" +
-            "  EXISTS (SELECT 1 FROM challengesphere.follows f WHERE f.follower_id = :viewerId AND f.following_id = s.user_id AND f.active = true) " +
-            "  AND EXISTS (SELECT 1 FROM challengesphere.follows f WHERE f.follower_id = s.user_id AND f.following_id = :viewerId AND f.active = true)" +
-            ")) ORDER BY s.created_at DESC", nativeQuery = true)
+    @Query(value = "SELECT s.* FROM challengesphere.submissions s " +
+            "JOIN challengesphere.challenges c ON c.id = s.challenge_id " +
+            "WHERE s.challenge_id = :challengeId " +
+            "AND s.active = true " +
+            "AND ((c.private = false AND s.is_private = false) OR (" +
+            "  c.private = true " +
+            "  AND EXISTS (SELECT 1 FROM challengesphere.user_challenges uc WHERE uc.challenge_id = s.challenge_id AND uc.user_id = :viewerId AND uc.active = true)" +
+            ")) " +
+            "ORDER BY s.created_at DESC", nativeQuery = true)
     List<Submission> findPublicActiveByChallengeId(@Param("challengeId") Long challengeId, @Param("viewerId") Long viewerId);
 
     // Find all active submissions by user
@@ -124,6 +133,9 @@ public interface SubmissionRepository extends JpaRepository<Submission, Long> {
             countQuery = "SELECT COUNT(*) FROM challengesphere.submissions WHERE user_id = :userId AND active = true",
             nativeQuery = true)
     Page<Submission> findActiveByUserId(@Param("userId") Long userId, Pageable pageable);
+
+    @Query(value = "SELECT COUNT(*) FROM challengesphere.submissions WHERE user_id = :userId AND active = true", nativeQuery = true)
+    Integer countActiveByUserId(@Param("userId") Long userId);
 
     // Transaction-scoped advisory lock — used to serialize concurrent writers
     // for the same (user, challenge, day) tuple so the 5-per-day cap is atomic.

@@ -1,5 +1,6 @@
 package com.ironside.challengesphere.api.request;
 
+import com.fasterxml.jackson.annotation.JsonAlias;
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
@@ -22,6 +23,10 @@ public class UpdateUserRequest {
 
     private String hashedPassword;
 
+    @JsonAlias({"genuinenessScore"})
+    private Integer genuinityScore;
+
+    // Backward-compatible field name; prefer genuinityScore going forward.
     private Integer genuinenessScore;
 
     private Boolean active;

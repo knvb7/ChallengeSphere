@@ -11,7 +11,6 @@ import java.util.List;
 @Data
 public class GeneratePresignedUrlsRequest {
 
-    @NotNull(message = "User ID is required")
     private Long userId;
 
     @NotEmpty(message = "At least one media file is required")
