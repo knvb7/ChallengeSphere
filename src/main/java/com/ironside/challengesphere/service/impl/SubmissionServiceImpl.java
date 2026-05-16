@@ -17,6 +17,7 @@ import java.net.URI;
 import java.net.URLConnection;
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
@@ -70,6 +71,7 @@ public class SubmissionServiceImpl implements SubmissionService {
     private static final int COLLAGE_WIDTH = 1080;
     private static final int COLLAGE_HEIGHT = 1350;
     private static final int MAX_COLLAGE_PHOTOS = 9;
+    private static final int SUBMISSION_GRACE_DAYS = 2;
 
     @Autowired
     private SubmissionRepository submissionRepository;
@@ -150,7 +152,7 @@ public class SubmissionServiceImpl implements SubmissionService {
                             logger
                     ));
 
-            if (!challenge.getActive()) {
+            if (!Boolean.TRUE.equals(challenge.getActive())) {
                 throw new ChallengeSphereException(
                         "Cannot submit to an inactive challenge",
                         HttpStatus.BAD_REQUEST,
@@ -180,6 +182,13 @@ public class SubmissionServiceImpl implements SubmissionService {
             }
 
             // Validate day number doesn't exceed challenge duration
+            if (dayNumber == null || dayNumber < 1) {
+                throw new ChallengeSphereException(
+                        "Day number must be greater than zero",
+                        HttpStatus.BAD_REQUEST,
+                        logger
+                );
+            }
             if (challenge.getNumberOfDays() != null && dayNumber > challenge.getNumberOfDays()) {
                 throw new ChallengeSphereException(
                         "Day number " + dayNumber + " exceeds challenge duration of " + challenge.getNumberOfDays() + " days",
@@ -187,6 +196,7 @@ public class SubmissionServiceImpl implements SubmissionService {
                         logger
                 );
             }
+            ensureSubmissionDayAcceptsUpload(challenge, dayNumber);
 
             // Serialize concurrent writers for the same (user, challenge, day) tuple so the
             // 5-per-day cap is atomic. The lock is scoped to this transaction — two requests
@@ -197,7 +207,10 @@ public class SubmissionServiceImpl implements SubmissionService {
 
             // Enforce max 5 submissions per day per user per challenge
             List<Submission> existingSubmissions = submissionRepository.findByUserChallengeAndDay(userId, challengeId, dayNumber);
-            if (existingSubmissions.size() >= 5) {
+            long activeSubmissionCount = existingSubmissions.stream()
+                    .filter(submission -> Boolean.TRUE.equals(submission.getActive()))
+                    .count();
+            if (activeSubmissionCount >= 5) {
                 logger.warn("Submission limit reached for user: {}, challenge: {}, day: {}", userId, challengeId, dayNumber);
                 throw new ChallengeSphereException(
                         "You have reached the maximum of 5 submissions for day " + dayNumber + ".",
@@ -329,14 +342,18 @@ public class SubmissionServiceImpl implements SubmissionService {
             ensureFollowAccess(userId, callerId, "posts");
 
             if (userId.equals(callerId)) {
-                Pageable pageable = PageRequest.of(Math.max(0, page - 1), pageSize, Sort.by(Sort.Direction.ASC, "day_number"));
-                Page<Submission> submissionPage = submissionRepository.findByUserIdAndChallengeId(userId, challengeId, pageable);
-                int totalCount = (int) submissionPage.getTotalElements();
+                List<Submission> activeSubmissions = submissionRepository.findActiveByUserIdAndChallengeId(userId, challengeId);
+                int totalCount = activeSubmissions.size();
+                int offset = Math.max(0, page - 1) * pageSize;
+                List<Submission> paginatedSubmissions = activeSubmissions.stream()
+                        .skip(offset)
+                        .limit(pageSize)
+                        .toList();
 
                 logger.info("Found {} submissions for user: {}, challenge: {} (showing page {}/{})",
-                        totalCount, userId, challengeId, page, submissionPage.getTotalPages());
+                        totalCount, userId, challengeId, page, totalCount == 0 ? 0 : (int) Math.ceil((double) totalCount / pageSize));
 
-                return SubmissionsResponse.create(withReadableMediaUrls(submissionPage.getContent()), page, pageSize, totalCount);
+                return SubmissionsResponse.create(withReadableMediaUrls(paginatedSubmissions), page, pageSize, totalCount);
             }
 
             List<Submission> visibleSubmissions = submissionRepository.findActiveByUserIdAndChallengeId(userId, challengeId).stream()
@@ -390,6 +407,13 @@ public class SubmissionServiceImpl implements SubmissionService {
                         logger
                 );
             }
+            Challenge challenge = challengeRepository.findById(submission.getChallengeId())
+                    .orElseThrow(() -> new ChallengeSphereException(
+                            "Challenge not found with id: " + submission.getChallengeId(),
+                            HttpStatus.NOT_FOUND,
+                            logger
+                    ));
+            ensureSubmissionDayAcceptsUpload(challenge, submission.getDayNumber());
 
             ContentModerationService.Result moderation = contentModerationService.scan(request.getMediaUrls());
             if (moderation.verdict() == ContentModerationService.Verdict.BLOCK_AND_BAN) {
@@ -613,7 +637,7 @@ public class SubmissionServiceImpl implements SubmissionService {
                 mediaFile.getFileName(),
                 mediaFile.getMediaType().name(),
                 mediaFile.getContentType().getMimeType(),
-                GetSignedUrlForGcs.generateV4PutObjectSignedUrl(
+                GetSignedUrlForGcs.generatePutObjectSignedUrl(
                         bucketName,
                         fileKey,
                         expirationTimeInSeconds,
@@ -1059,6 +1083,62 @@ public class SubmissionServiceImpl implements SubmissionService {
         }
     }
 
+    private void ensureSubmissionDayAcceptsUpload(Challenge challenge, Integer dayNumber) throws ChallengeSphereException {
+        if (challenge == null) {
+            throw new ChallengeSphereException(
+                    "Challenge not found",
+                    HttpStatus.NOT_FOUND,
+                    logger
+            );
+        }
+        if (!Boolean.TRUE.equals(challenge.getActive())) {
+            throw new ChallengeSphereException(
+                    "Cannot submit to an inactive challenge",
+                    HttpStatus.BAD_REQUEST,
+                    logger
+            );
+        }
+        if (dayNumber == null || dayNumber < 1) {
+            throw new ChallengeSphereException(
+                    "Day number must be greater than zero",
+                    HttpStatus.BAD_REQUEST,
+                    logger
+            );
+        }
+        if (challenge.getNumberOfDays() != null && dayNumber > challenge.getNumberOfDays()) {
+            throw new ChallengeSphereException(
+                    "Day number " + dayNumber + " exceeds challenge duration of " + challenge.getNumberOfDays() + " days",
+                    HttpStatus.BAD_REQUEST,
+                    logger
+            );
+        }
+        if (challenge.getStartDate() == null) {
+            throw new ChallengeSphereException(
+                    "Challenge start date is required for submissions",
+                    HttpStatus.BAD_REQUEST,
+                    logger
+            );
+        }
+
+        LocalDate challengeDay = challenge.getStartDate().plusDays(dayNumber - 1L);
+        LocalDate today = LocalDate.now();
+        if (today.isBefore(challengeDay)) {
+            throw new ChallengeSphereException(
+                    "Cannot upload before day " + dayNumber + " starts",
+                    HttpStatus.BAD_REQUEST,
+                    logger
+            );
+        }
+        LocalDate lastAllowedDate = challengeDay.plusDays(SUBMISSION_GRACE_DAYS);
+        if (today.isAfter(lastAllowedDate)) {
+            throw new ChallengeSphereException(
+                    "Uploads for day " + dayNumber + " are only allowed through " + lastAllowedDate,
+                    HttpStatus.BAD_REQUEST,
+                    logger
+            );
+        }
+    }
+
     private void invalidateSubmissionCaches(Submission submission) {
         if (submission == null) {
             return;
@@ -1077,13 +1157,13 @@ public class SubmissionServiceImpl implements SubmissionService {
         if (callerId == null) {
             return false;
         }
+        if (!Boolean.TRUE.equals(submission.getActive())) {
+            return false;
+        }
         if (callerId.equals(submission.getUserId())) {
             return true;
         }
         if (userBlockRepository.existsActiveBlockBetween(callerId, submission.getUserId())) {
-            return false;
-        }
-        if (!Boolean.TRUE.equals(submission.getActive())) {
             return false;
         }
 

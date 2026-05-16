@@ -257,4 +257,5 @@ public class ChallengeController {
         logger.info("POST /api/v1/challenges/presigned-urls for userId={}", request.getUserId());
         return ResponseEntity.ok(challengeService.generateChallengePresignedUrls(request));
     }
+
 }

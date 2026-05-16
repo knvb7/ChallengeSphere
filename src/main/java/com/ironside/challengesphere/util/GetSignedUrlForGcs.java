@@ -48,7 +48,7 @@ public class GetSignedUrlForGcs {
     }
 
 
-    public static String generateV4PutObjectSignedUrl(
+    public static String generatePutObjectSignedUrl(
             String bucketName,
             String objectName,
             Long expirationTime,
@@ -59,7 +59,7 @@ public class GetSignedUrlForGcs {
                 .setContentType(contentType.getMimeType())
                 .build();
 
-        // Generate V4 signed URL for HTTP PUT (client uploads directly to GCS)
+        // V4 with only the host header signed avoids V2's Content-Type-sensitive string-to-sign.
         URL signedUrl = storage.signUrl(
                 blobInfo,
                 expirationTime,
@@ -103,5 +103,14 @@ public class GetSignedUrlForGcs {
                 .build()
                 .update();
         logger.debug("Updated cache-control for GCS object {} to {}", objectName, cacheControl);
+    }
+
+    public static void uploadObject(String bucketName, String objectName, byte[] content, String contentType) {
+        BlobInfo blobInfo = BlobInfo.newBuilder(BlobId.of(bucketName, objectName))
+                .setContentType(contentType)
+                .setCacheControl("public, max-age=31536000, immutable")
+                .build();
+        storage.create(blobInfo, content);
+        logger.info("Uploaded object to GCS: {}", objectName);
     }
 }

@@ -56,6 +56,7 @@ import com.ironside.challengesphere.service.NotificationService;
 @Service
 public class ChallengeServiceImpl implements ChallengeService {
     private static final Logger logger = LogManager.getLogger(ChallengeServiceImpl.class);
+    private static final int MAX_CHALLENGE_COVER_PHOTOS = 5;
 
     @Autowired
     private ChallengeRepository challengeRepository;
@@ -78,6 +79,9 @@ public class ChallengeServiceImpl implements ChallengeService {
     @Autowired
     private RedisCacheServiceImpl cacheService;
 
+    @Autowired
+    private MediaUrlService mediaUrlService;
+
     @Value("${gcs.bucket.name}")
     private String bucketName;
 
@@ -89,7 +93,7 @@ public class ChallengeServiceImpl implements ChallengeService {
             Optional<Challenge> cached = cacheService.getCachedChallenge(challengeId, Challenge.class);
             if (cached.isPresent()) {
                 logger.debug("Cache hit for challenge id: {}", challengeId);
-                return cached;
+                return cached.map(this::withReadableCoverPhotoUrls);
             }
 
             logger.debug("Cache miss for challenge id: {}, fetching from DB", challengeId);
@@ -97,7 +101,7 @@ public class ChallengeServiceImpl implements ChallengeService {
 
             challenge.ifPresent(c -> cacheService.cacheChallenge(c.getId(), c));
 
-            return challenge;
+            return challenge.map(this::withReadableCoverPhotoUrls);
         } catch (Exception e) {
             logger.error("Error fetching challenge by id {}: {}", challengeId, e.getMessage(), e);
             throw new ChallengeSphereException(
@@ -162,7 +166,13 @@ public class ChallengeServiceImpl implements ChallengeService {
             logger.info("Found {} challenges for userId: {} (page {}/{})",
                     paginatedChallenges.size(), userId, page, (int) Math.ceil((double) totalCount / pageSize));
 
-            UserChallengesResponse response = UserChallengesResponse.create(userId, paginatedChallenges, page, pageSize, totalCount);
+            UserChallengesResponse response = UserChallengesResponse.create(
+                    userId,
+                    withReadableCoverPhotoUrls(paginatedChallenges),
+                    page,
+                    pageSize,
+                    totalCount
+            );
 
             // Cache the response asynchronously
 //            cacheService.cacheUserChallenges(userId, page, pageSize, activeFilter, response);
@@ -263,7 +273,7 @@ public class ChallengeServiceImpl implements ChallengeService {
                     savedChallenge.getCreatorId(),
                     savedChallenge.getCurrentOwnerId(),
                     savedChallenge.getNumberOfDays(),
-                    savedChallenge.getCoverPhotoUrls()
+                    toReadableCoverPhotoUrls(savedChallenge.getCoverPhotoUrls())
             );
 
         } catch (ChallengeSphereException e) {
@@ -352,7 +362,7 @@ public class ChallengeServiceImpl implements ChallengeService {
 
             logger.info("Retrieved {} challenges from DB",
                     result.size());
-            return result;
+            return withReadableCoverPhotoUrls(result);
         } catch (Exception e) {
             logger.error("Error fetching challenges by ids {}: {}", challengeIds, e.getMessage(), e);
             throw new ChallengeSphereException(
@@ -761,6 +771,9 @@ public class ChallengeServiceImpl implements ChallengeService {
                     .skip(offset)
                     .limit(pageSize)
                     .collect(Collectors.toList());
+            paginatedChallenges.forEach(challenge ->
+                    challenge.setCoverPhotoUrls(toReadableCoverPhotoUrls(challenge.getCoverPhotoUrls()))
+            );
 
             logger.info("Found {} challenges for hashtags '{}' (showing page {}/{})",
                     totalCount, hashtags, page, (int) Math.ceil((double) totalCount / pageSize));
@@ -858,6 +871,9 @@ public class ChallengeServiceImpl implements ChallengeService {
                     .skip(offset)
                     .limit(pageSize)
                     .collect(Collectors.toList());
+            paginatedChallenges.forEach(challenge ->
+                    challenge.setCoverPhotoUrls(toReadableCoverPhotoUrls(challenge.getCoverPhotoUrls()))
+            );
 
             logger.info("Found {} public challenges matching criteria (showing page {}/{})",
                     totalCount, page, (int) Math.ceil((double) totalCount / pageSize));
@@ -933,7 +949,7 @@ public class ChallengeServiceImpl implements ChallengeService {
                     .map(challenge -> {
                         int participantCount = finalParticipantMap.getOrDefault(challenge.getId(), 0L).intValue();
                         return RecentChallengesResponse.ChallengeInfo.fromChallenge(
-                                challenge, 0, 0, participantCount);
+                                withReadableCoverPhotoUrls(challenge), 0, 0, participantCount);
                     })
                     .toList();
 
@@ -1012,7 +1028,7 @@ public class ChallengeServiceImpl implements ChallengeService {
         cacheService.invalidateChallenge(id);
         cacheService.invalidateAllFeeds();
         logger.info("Challenge {} updated successfully", id);
-        return updated;
+        return withReadableCoverPhotoUrls(updated);
     }
 
     @Override
@@ -1042,7 +1058,7 @@ public class ChallengeServiceImpl implements ChallengeService {
                         .orElse(false);
             }
 
-            return ChallengeDetailResponse.from(challenge, participantCount, isJoined);
+            return ChallengeDetailResponse.from(withReadableCoverPhotoUrls(challenge), participantCount, isJoined);
         } catch (ChallengeSphereException e) {
             throw e;
         } catch (Exception e) {
@@ -1156,7 +1172,9 @@ public class ChallengeServiceImpl implements ChallengeService {
                 int totalDays = c.getNumberOfDays();
                 int completionPct = totalDays > 0 ? (int) Math.round((daysCompleted * 100.0) / totalDays) : 0;
 
-                MyChallengesResponse.ChallengeSummary summary = MyChallengesResponse.ChallengeSummary.from(c);
+                MyChallengesResponse.ChallengeSummary summary = MyChallengesResponse.ChallengeSummary.from(
+                        withReadableCoverPhotoUrls(c)
+                );
                 summary.setDaysCompleted(daysCompleted);
                 summary.setCurrentStreak(computeCurrentStreak(submittedDays));
                 summary.setCompletionPercentage(completionPct);
@@ -1181,7 +1199,7 @@ public class ChallengeServiceImpl implements ChallengeService {
             if (!userRepository.existsById(request.getUserId())) {
                 throw new ChallengeSphereException("User not found with id: " + request.getUserId(), HttpStatus.NOT_FOUND, logger);
             }
-            if (request.getMediaFiles().size() > 5) {
+            if (request.getMediaFiles().size() > MAX_CHALLENGE_COVER_PHOTOS) {
                 throw new ChallengeSphereException("A challenge can have at most 5 cover photos", HttpStatus.BAD_REQUEST, logger);
             }
 
@@ -1195,7 +1213,7 @@ public class ChallengeServiceImpl implements ChallengeService {
                         file.getFileName(),
                         file.getMediaType().name(),
                         file.getContentType().getMimeType(),
-                        com.ironside.challengesphere.util.GetSignedUrlForGcs.generateV4PutObjectSignedUrl(
+                        com.ironside.challengesphere.util.GetSignedUrlForGcs.generatePutObjectSignedUrl(
                                 bucketName,
                                 key, expiry, file.getContentType()),
                         key, expiry));
@@ -1213,6 +1231,54 @@ public class ChallengeServiceImpl implements ChallengeService {
         if (raw == null || raw.isBlank()) return null;
         String[] parts = raw.split(",");
         return parts.length > 0 ? parts[0].trim() : null;
+    }
+
+    private List<Challenge> withReadableCoverPhotoUrls(List<Challenge> challenges) {
+        if (challenges == null || challenges.isEmpty()) {
+            return List.of();
+        }
+        return challenges.stream()
+                .map(this::withReadableCoverPhotoUrls)
+                .toList();
+    }
+
+    private Challenge withReadableCoverPhotoUrls(Challenge challenge) {
+        if (challenge == null) {
+            return null;
+        }
+
+        Challenge copy = new Challenge();
+        copy.setId(challenge.getId());
+        copy.setHashtags(challenge.getHashtags());
+        copy.setCategories(challenge.getCategories());
+        copy.setTitle(challenge.getTitle());
+        copy.setDescription(challenge.getDescription());
+        copy.setBenefits(challenge.getBenefits());
+        copy.setIsPrivate(challenge.getIsPrivate());
+        copy.setStartDate(challenge.getStartDate());
+        copy.setActive(challenge.getActive());
+        copy.setCreatedAt(challenge.getCreatedAt());
+        copy.setCreatorId(challenge.getCreatorId());
+        copy.setCurrentOwnerId(challenge.getCurrentOwnerId());
+        copy.setNumberOfDays(challenge.getNumberOfDays());
+        copy.setCoverPhotoUrls(toReadableCoverPhotoUrls(challenge.getCoverPhotoUrls()));
+        return copy;
+    }
+
+    private String toReadableCoverPhotoUrls(String rawCoverPhotoUrls) {
+        if (rawCoverPhotoUrls == null || rawCoverPhotoUrls.isBlank()) {
+            return rawCoverPhotoUrls;
+        }
+        if (mediaUrlService == null) {
+            return rawCoverPhotoUrls;
+        }
+
+        try {
+            return mediaUrlService.toReadableMediaUrls(rawCoverPhotoUrls);
+        } catch (Exception e) {
+            logger.warn("Failed to prepare readable challenge cover URL(s): {}", e.getMessage());
+            return rawCoverPhotoUrls;
+        }
     }
 
     private List<String> getRequestedCoverPhotoUrls(ChallengeCreateRequest request) {
