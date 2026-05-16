@@ -14,14 +14,22 @@ public class ChallengeSphereException extends BaseException {
     private static final long serialVersionUID = 1L;
 
     public ChallengeSphereException(String message, HttpStatus status, Logger logger){
-        logger.error("Message is : {} , Status is : {}", message, status);
+        if (isServerError(status)) {
+            logger.error("Message is : {} , Status is : {}", message, status);
+        } else {
+            logger.warn("Message is : {} , Status is : {}", message, status);
+        }
         this.setStatus(status);
         this.setResponseMessage(message);
         this.setApiError(createApiError(message));
     }
 
     public ChallengeSphereException(String errorMessage, HttpStatus status, Logger logger, Throwable ex){
-        logger.error("Message is : {} , Status is : {}, stackTrace is : {}", errorMessage, status, ex.getStackTrace());
+        if (isServerError(status)) {
+            logger.error("Message is : {} , Status is : {}", errorMessage, status, ex);
+        } else {
+            logger.warn("Message is : {} , Status is : {}", errorMessage, status);
+        }
         this.setStatus(status);
         this.setE(ex);
         this.setResponseMessage(errorMessage);
@@ -33,5 +41,9 @@ public class ChallengeSphereException extends BaseException {
     }
     private ApiError createApiError(String message) {
         return new ApiError(Timestamp.from(Instant.now()), message, null, 0);
+    }
+
+    private boolean isServerError(HttpStatus status) {
+        return status != null && status.is5xxServerError();
     }
 }

@@ -84,7 +84,7 @@ public class ChallengeServiceImpl implements ChallengeService {
     @Override
     public Optional<Challenge> getChallengeById(Long challengeId) throws ChallengeSphereException {
         logger.info("Fetching challenge by id: {}", challengeId);
-        
+
         try {
             Optional<Challenge> cached = cacheService.getCachedChallenge(challengeId, Challenge.class);
             if (cached.isPresent()) {
@@ -182,6 +182,7 @@ public class ChallengeServiceImpl implements ChallengeService {
     }
 
     @Override
+    @Transactional
     public ChallengeCreateResponse createChallenge(ChallengeCreateRequest request) throws ChallengeSphereException {
         logger.info("Creating challenge with title: {} for creator userId: {}", request.getTitle(), request.getCreatorUserId());
 
@@ -208,11 +209,20 @@ public class ChallengeServiceImpl implements ChallengeService {
             challenge.setActive(true);
             challenge.setCreatedAt(new Timestamp(System.currentTimeMillis()));
             challenge.setNumberOfDays(request.getNumberOfDays());
-            if (request.getCoverPhotoUrls() != null && !request.getCoverPhotoUrls().isEmpty()) {
-                challenge.setCoverPhotoUrls(String.join(",", request.getCoverPhotoUrls()));
+            List<String> requestedCoverPhotoUrls = getRequestedCoverPhotoUrls(request);
+            if (requestedCoverPhotoUrls != null) {
+                challenge.setCoverPhotoUrls(serializeCoverPhotoUrls(requestedCoverPhotoUrls));
             }
 
             Challenge savedChallenge = challengeRepository.save(challenge);
+            UserChallenge creatorParticipant = new UserChallenge();
+            creatorParticipant.setUserId(request.getCreatorUserId());
+            creatorParticipant.setChallengeId(savedChallenge.getId());
+            creatorParticipant.setJoinedAt(new Timestamp(System.currentTimeMillis()));
+            creatorParticipant.setCompleted(false);
+            creatorParticipant.setActive(true);
+            userChallengeRepository.save(creatorParticipant);
+
             logger.info("Successfully created challenge with id: {} for user: {}", savedChallenge.getId(), request.getCreatorUserId());
             cacheService.cacheChallenge(savedChallenge.getId(), savedChallenge);
             cacheService.invalidateAllFeeds();
@@ -310,10 +320,10 @@ public class ChallengeServiceImpl implements ChallengeService {
     public List<Challenge> getChallengeByIds(List<Long> challengeIds, Long currentUserId) throws ChallengeSphereException {
         try {
             logger.info("Fetching challenges by ids: {}", challengeIds);
-            
+
             List<Challenge> result = new ArrayList<>();
             List<Long> cacheMisses = new ArrayList<>();
-            
+
             // Try to get challenges from cache first
             // for (Long challengeId : challengeIds) {
             //     Optional<Challenge> cached = cacheService.getCachedChallenge(challengeId, Challenge.class);
@@ -341,7 +351,7 @@ public class ChallengeServiceImpl implements ChallengeService {
                     .toList());
 
             logger.info("Retrieved {} challenges from DB",
-                result.size());
+                    result.size());
             return result;
         } catch (Exception e) {
             logger.error("Error fetching challenges by ids {}: {}", challengeIds, e.getMessage(), e);
@@ -451,7 +461,7 @@ public class ChallengeServiceImpl implements ChallengeService {
                             "Challenge not found with id: " + challengeId,
                             HttpStatus.NOT_FOUND,
                             logger
-            ));
+                    ));
 
             if (!Boolean.TRUE.equals(challenge.getActive())) {
                 throw new ChallengeSphereException(
@@ -525,7 +535,7 @@ public class ChallengeServiceImpl implements ChallengeService {
 
                 userChallengeRepository.saveAll(userChallenges);
                 logger.info("Successfully joined {} users to challenge {}", successfulUserIds.size(), challengeId);
-                
+
                 // Update challengesAccepted count for all successfully joined users
                 for (Long userId : successfulUserIds) {
                     updateChallengesAcceptedCountAsync(userId, true);
@@ -609,7 +619,7 @@ public class ChallengeServiceImpl implements ChallengeService {
             if (!toDeactivate.isEmpty()) {
                 userChallengeRepository.saveAll(toDeactivate);
                 logger.info("Successfully deactivated {} users from challenge {}", successfulUserIds.size(), challengeId);
-                
+
                 // Update challengesAccepted count for all successfully deactivated users
                 for (Long userId : successfulUserIds) {
                     updateChallengesAcceptedCountAsync(userId, false);
@@ -853,7 +863,7 @@ public class ChallengeServiceImpl implements ChallengeService {
                     totalCount, page, (int) Math.ceil((double) totalCount / pageSize));
 
             PopularChallengesResponse response = PopularChallengesResponse.create(paginatedChallenges, page, pageSize, totalCount);
-            
+
             return response;
 
         } catch (Exception e) {
@@ -909,7 +919,7 @@ public class ChallengeServiceImpl implements ChallengeService {
             List<Long> challengeIds = challenges.stream()
                     .map(Challenge::getId)
                     .toList();
-            
+
             Map<Long, Long> participantCountMap = new java.util.HashMap<>();
             if (!challengeIds.isEmpty()) {
                 List<UserChallenge> userChallenges = userChallengeRepository.findByChallengeIdIn(challengeIds);
@@ -945,10 +955,10 @@ public class ChallengeServiceImpl implements ChallengeService {
     @Override
     public List<Long> getTrendingChallengeIds(int limit) {
         logger.info("Getting trending challenge IDs, limit: {}", limit);
-        
+
         if (limit < 1) limit = 10;
         if (limit > 100) limit = 100;
-        
+
         return List.of();
     }
 
@@ -993,10 +1003,9 @@ public class ChallengeServiceImpl implements ChallengeService {
         if (request.getActive() != null) {
             challenge.setActive(request.getActive());
         }
-        if (request.getCoverPhotoUrls() != null) {
-            challenge.setCoverPhotoUrls(request.getCoverPhotoUrls().isEmpty()
-                    ? null
-                    : String.join(",", request.getCoverPhotoUrls()));
+        List<String> requestedCoverPhotoUrls = getRequestedCoverPhotoUrls(request);
+        if (requestedCoverPhotoUrls != null) {
+            challenge.setCoverPhotoUrls(serializeCoverPhotoUrls(requestedCoverPhotoUrls));
         }
 
         Challenge updated = challengeRepository.save(challenge);
@@ -1112,7 +1121,7 @@ public class ChallengeServiceImpl implements ChallengeService {
             if (pageSize > 100) pageSize = 100;
 
             List<UserChallenge> userChallenges = userChallengeRepository.findActiveByUserId(userId);
-            
+
             if (status != null && !status.isBlank()) {
                 boolean filterCompleted = "completed".equalsIgnoreCase(status);
                 userChallenges = userChallenges.stream()
@@ -1204,6 +1213,60 @@ public class ChallengeServiceImpl implements ChallengeService {
         if (raw == null || raw.isBlank()) return null;
         String[] parts = raw.split(",");
         return parts.length > 0 ? parts[0].trim() : null;
+    }
+
+    private List<String> getRequestedCoverPhotoUrls(ChallengeCreateRequest request) {
+        if (request.getCoverPhotoUrls() != null) {
+            return request.getCoverPhotoUrls();
+        }
+        if (request.getMediaUrls() != null) {
+            return request.getMediaUrls();
+        }
+        if (request.getMediaUrl() != null) {
+            return List.of(request.getMediaUrl());
+        }
+        return null;
+    }
+
+    private List<String> getRequestedCoverPhotoUrls(ChallengeUpdateRequest request) {
+        if (request.getCoverPhotoUrls() != null) {
+            return request.getCoverPhotoUrls();
+        }
+        if (request.getMediaUrls() != null) {
+            return request.getMediaUrls();
+        }
+        if (request.getMediaUrl() != null) {
+            return List.of(request.getMediaUrl());
+        }
+        return null;
+    }
+
+    private String serializeCoverPhotoUrls(List<String> urls) {
+        List<String> normalizedUrls = urls.stream()
+                .map(this::normalizeCoverPhotoUrl)
+                .filter(url -> url != null && !url.isBlank())
+                .toList();
+        return normalizedUrls.isEmpty() ? null : String.join(",", normalizedUrls);
+    }
+
+    private String normalizeCoverPhotoUrl(String url) {
+        if (url == null || url.isBlank()) {
+            return null;
+        }
+
+        String trimmed = url.trim();
+        if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+            return trimmed;
+        }
+        if (trimmed.startsWith("gs://")) {
+            return "https://storage.googleapis.com/" + trimmed.substring("gs://".length());
+        }
+
+        String objectKey = trimmed.replaceFirst("^/+", "");
+        if (objectKey.startsWith(bucketName + "/")) {
+            return "https://storage.googleapis.com/" + objectKey;
+        }
+        return "https://storage.googleapis.com/" + bucketName + "/" + objectKey;
     }
 
     private int computeCurrentStreak(List<Integer> days) {

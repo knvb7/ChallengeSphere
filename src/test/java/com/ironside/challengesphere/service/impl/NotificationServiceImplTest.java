@@ -158,13 +158,15 @@ class NotificationServiceImplTest {
 
     @Test
     @SuppressWarnings("unchecked")
-    void notifyChallengeInvitesOnlySendsToSelectedFollowersOrFollowingWithInvitePreference() throws Exception {
+    void notifyChallengeInvitesSendsToRequestedUsersWithInvitePreference() throws Exception {
         User actor = user(1L, "creator");
         User follower = user(2L, "follower");
         User following = user(3L, "following");
+        User stranger = user(4L, "stranger");
         User disabled = user(5L, "disabled");
         UserPreferences followerPrefs = prefs(2L);
         UserPreferences followingPrefs = prefs(3L);
+        UserPreferences strangerPrefs = prefs(4L);
         UserPreferences disabledPrefs = prefs(5L);
         disabledPrefs.setAllowChallengeInvites(false);
 
@@ -175,10 +177,8 @@ class NotificationServiceImplTest {
         challenge.setIsPrivate(true);
 
         when(userRepository.findById(1L)).thenReturn(Optional.of(actor));
-        when(followRepository.findActiveFollowsByFollowerId(1L)).thenReturn(List.of(follow(1L, 3L)));
-        when(followRepository.findActiveFollowsByFollowingId(1L)).thenReturn(List.of(follow(2L, 1L), follow(5L, 1L)));
-        when(preferencesRepository.findByUserIdIn(any())).thenReturn(List.of(followerPrefs, followingPrefs, disabledPrefs));
-        when(userRepository.findAllById(any())).thenReturn(List.of(follower, following, disabled));
+        when(preferencesRepository.findByUserIdIn(any())).thenReturn(List.of(followerPrefs, followingPrefs, strangerPrefs, disabledPrefs));
+        when(userRepository.findAllById(any())).thenReturn(List.of(follower, following, stranger, disabled));
         when(notificationRepository.saveAll(any()))
                 .thenAnswer(invocation -> {
                     Collection<Notification> notifications = new ArrayList<>();
@@ -194,11 +194,13 @@ class NotificationServiceImplTest {
         List<Notification> saved = new ArrayList<>();
         captor.getValue().forEach(saved::add);
 
-        assertEquals(2, saved.size());
-        assertEquals(Set.of(2L, 3L), saved.stream().map(Notification::getUserId).collect(java.util.stream.Collectors.toSet()));
+        assertEquals(3, saved.size());
+        assertEquals(Set.of(2L, 3L, 4L), saved.stream().map(Notification::getUserId).collect(java.util.stream.Collectors.toSet()));
         assertEquals("CHALLENGE_INVITE", saved.get(0).getType());
 
         JsonNode action = objectMapper.readTree(saved.get(0).getActionObject());
+        assertEquals("CHALLENGE_INVITE", action.get("actionType").asText());
+        assertEquals("PENDING", action.get("status").asText());
         assertEquals(10L, action.get("challengeId").asLong());
         assertEquals("Morning Run", action.get("challengeTitle").asText());
     }

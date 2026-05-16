@@ -65,8 +65,7 @@ public class GetSignedUrlForGcs {
                 expirationTime,
                 TimeUnit.SECONDS,
                 Storage.SignUrlOption.httpMethod(HttpMethod.PUT),
-                Storage.SignUrlOption.withV4Signature(),
-                Storage.SignUrlOption.withExtHeaders(java.util.Map.of("Content-Type", contentType.getMimeType()))
+                Storage.SignUrlOption.withV4Signature()
         );
 
         logger.info("Generated V4 PUT signed URL for object: {}", objectName);

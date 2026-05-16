@@ -9,6 +9,7 @@ import com.ironside.challengesphere.api.response.ToggleUserActivationResponse;
 import com.ironside.challengesphere.api.response.FollowActionResponse;
 import com.ironside.challengesphere.api.response.FollowersFollowingResponse;
 import com.ironside.challengesphere.api.response.UserRegistrationResponse;
+import com.ironside.challengesphere.api.response.UserSearchResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.model.User;
 import org.springframework.stereotype.Service;
@@ -19,6 +20,7 @@ import java.util.List;
 public interface UserService {
     UserRegistrationResponse registerUser(UserRegistrationRequest request) throws ChallengeSphereException;
     User getUser(GetUserPayload getUserPayload) throws ChallengeSphereException;
+    UserSearchResponse searchUsers(String query, Long currentUserId, Integer page, Integer pageSize) throws ChallengeSphereException;
     User updateUserDetails(UpdateUserRequest updateUserRequest) throws ChallengeSphereException;
     FollowActionResponse follow(Long followerId, Long followingId) throws ChallengeSphereException;
     FollowActionResponse unfollow(Long followerId, Long followingId) throws ChallengeSphereException;

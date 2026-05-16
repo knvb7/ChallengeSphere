@@ -34,5 +34,10 @@ public class ChallengeCreateRequest {
     @Size(max = 5, message = "A challenge can have at most 5 cover photos")
     private List<String> coverPhotoUrls; // GCS URLs after upload via presigned URL flow
 
+    @Size(max = 5, message = "A challenge can have at most 5 cover photos")
+    private List<String> mediaUrls; // Backward-compatible alias for challenge cover photos
+
+    private String mediaUrl; // Backward-compatible single cover photo alias
+
     private List<Long> invitedUserIds;
 }

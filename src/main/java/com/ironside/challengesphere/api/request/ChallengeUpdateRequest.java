@@ -21,4 +21,9 @@ public class ChallengeUpdateRequest {
 
     @Size(max = 5, message = "A challenge can have at most 5 cover photos")
     private List<String> coverPhotoUrls; // replaces all existing cover photos when provided
+
+    @Size(max = 5, message = "A challenge can have at most 5 cover photos")
+    private List<String> mediaUrls; // Backward-compatible alias for challenge cover photos
+
+    private String mediaUrl; // Backward-compatible single cover photo alias
 }

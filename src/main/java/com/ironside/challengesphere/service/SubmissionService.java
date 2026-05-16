@@ -13,10 +13,14 @@ import com.ironside.challengesphere.model.Submission;
 @Service
 public interface SubmissionService {
     SubmissionResponse createSubmission(CreateSubmissionRequest request) throws ChallengeSphereException;
+    SubmissionResponse reuploadSubmission(Long submissionId, CreateSubmissionRequest request) throws ChallengeSphereException;
+    void deleteSubmission(Long submissionId, Long userId) throws ChallengeSphereException;
     SubmissionsResponse getSubmissionsByUserAndChallenge(Long userId, Long challengeId, int page, int pageSize, Long callerId) throws ChallengeSphereException;
     SubmissionsResponse getSubmissionsByChallenge(Long challengeId, int page, int pageSize, Long callerId) throws ChallengeSphereException;
     SubmissionsResponse getSubmissionsByUser(Long userId, int page, int pageSize, Long callerId) throws ChallengeSphereException;
     PresignedUrlsResponse generatePresignedUrls(GeneratePresignedUrlsRequest request) throws ChallengeSphereException;
+
+    byte[] generateChallengeCollage(Long userId, Long challengeId) throws ChallengeSphereException;
     
     /**
      * Get a single submission by ID.

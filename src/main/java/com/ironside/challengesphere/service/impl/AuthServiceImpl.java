@@ -4,6 +4,8 @@ import com.google.api.client.googleapis.auth.oauth2.GoogleIdToken;
 import com.google.api.client.googleapis.auth.oauth2.GoogleIdTokenVerifier;
 import com.google.api.client.http.javanet.NetHttpTransport;
 import com.google.api.client.json.gson.GsonFactory;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ironside.challengesphere.api.request.GoogleAuthRequest;
 import com.ironside.challengesphere.api.request.LoginRequest;
 import com.ironside.challengesphere.api.request.UserRegistrationRequest;
@@ -21,19 +23,36 @@ import org.springframework.http.HttpStatus;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.StringUtils;
 
 import java.io.IOException;
+import java.net.URI;
+import java.net.URLEncoder;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.security.GeneralSecurityException;
 import java.sql.Timestamp;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 @Service
 public class AuthServiceImpl implements AuthService {
 
     private static final Logger logger = LogManager.getLogger(AuthServiceImpl.class);
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final TypeReference<Map<String, Object>> JSON_MAP = new TypeReference<>() {};
+    private static final HttpClient GOOGLE_HTTP_CLIENT = HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(6))
+            .build();
+    private static final URI GOOGLE_USERINFO_URI = URI.create("https://www.googleapis.com/oauth2/v3/userinfo");
 
     private final UserRepository userRepository;
     private final JwtService jwtService;
@@ -66,17 +85,18 @@ public class AuthServiceImpl implements AuthService {
             throw new ChallengeSphereException("Google Sign-In is currently disabled",
                     HttpStatus.SERVICE_UNAVAILABLE, logger);
         }
-        if (googleClientId == null || googleClientId.isBlank()) {
+        List<String> allowedAudiences = getAllowedGoogleAudiences();
+        if (allowedAudiences.isEmpty()) {
             throw new ChallengeSphereException("Google Sign-In is not configured on this server",
                     HttpStatus.SERVICE_UNAVAILABLE, logger);
         }
 
-        GoogleIdToken.Payload payload = verifyGoogleToken(request.getIdToken());
+        GoogleProfile profile = verifyGoogleCredentials(request, allowedAudiences);
 
-        String googleId = payload.getSubject();
-        String email = payload.getEmail();
-        String name = (String) payload.get("name");
-        String pictureUrl = (String) payload.get("picture");
+        String googleId = profile.googleId();
+        String email = profile.email();
+        String name = profile.name();
+        String pictureUrl = profile.pictureUrl();
 
         User user = userRepository.findByGoogleId(googleId)
                 .orElseGet(() -> userRepository.findByEmailId(email)
@@ -193,11 +213,29 @@ public class AuthServiceImpl implements AuthService {
 
     // --- helpers ---
 
-    private GoogleIdToken.Payload verifyGoogleToken(String idTokenString) throws ChallengeSphereException {
+    private GoogleProfile verifyGoogleCredentials(GoogleAuthRequest request, List<String> allowedAudiences)
+            throws ChallengeSphereException {
+        if (request == null) {
+            throw new ChallengeSphereException("Google credentials are required", HttpStatus.BAD_REQUEST, logger);
+        }
+
+        if (StringUtils.hasText(request.getIdToken())) {
+            return verifyGoogleIdToken(request.getIdToken(), allowedAudiences);
+        }
+
+        if (StringUtils.hasText(request.getAccessToken())) {
+            return verifyGoogleAccessToken(request.getAccessToken(), allowedAudiences);
+        }
+
+        throw new ChallengeSphereException("Google token is required", HttpStatus.BAD_REQUEST, logger);
+    }
+
+    private GoogleProfile verifyGoogleIdToken(String idTokenString, List<String> allowedAudiences)
+            throws ChallengeSphereException {
         try {
             GoogleIdTokenVerifier verifier = new GoogleIdTokenVerifier.Builder(
                     new NetHttpTransport(), GsonFactory.getDefaultInstance())
-                    .setAudience(Collections.singletonList(googleClientId))
+                    .setAudience(allowedAudiences)
                     .build();
 
             GoogleIdToken idToken = verifier.verify(idTokenString);
@@ -205,12 +243,124 @@ public class AuthServiceImpl implements AuthService {
                 throw new ChallengeSphereException("Invalid Google ID token",
                         HttpStatus.UNAUTHORIZED, logger);
             }
-            return idToken.getPayload();
+            GoogleIdToken.Payload payload = idToken.getPayload();
+            String email = payload.getEmail();
+            if (!StringUtils.hasText(email)) {
+                throw new ChallengeSphereException("Google account email is required",
+                        HttpStatus.UNAUTHORIZED, logger);
+            }
+            Object emailVerified = payload.get("email_verified");
+            if (emailVerified != null && !Boolean.parseBoolean(String.valueOf(emailVerified))) {
+                throw new ChallengeSphereException("Google account email is not verified",
+                        HttpStatus.UNAUTHORIZED, logger);
+            }
+            return new GoogleProfile(
+                    payload.getSubject(),
+                    email,
+                    (String) payload.get("name"),
+                    (String) payload.get("picture")
+            );
         } catch (GeneralSecurityException | IOException e) {
             logger.error("Google token verification failed: {}", e.getMessage());
             throw new ChallengeSphereException("Google token verification failed",
                     HttpStatus.UNAUTHORIZED, logger);
         }
+    }
+
+    private GoogleProfile verifyGoogleAccessToken(String accessToken, List<String> allowedAudiences)
+            throws ChallengeSphereException {
+        try {
+            Map<String, Object> tokenInfo = getGoogleTokenInfo(accessToken);
+            String audience = firstText(tokenInfo.get("aud"), tokenInfo.get("audience"));
+            String authorizedParty = firstText(tokenInfo.get("azp"), tokenInfo.get("issued_to"));
+            boolean audienceAllowed = StringUtils.hasText(audience) && allowedAudiences.contains(audience);
+            boolean authorizedPartyAllowed = StringUtils.hasText(authorizedParty) && allowedAudiences.contains(authorizedParty);
+            if (!audienceAllowed && !authorizedPartyAllowed) {
+                logger.warn("Rejected Google access token with audience={} authorizedParty={}", audience, authorizedParty);
+                throw new ChallengeSphereException("Invalid Google access token audience",
+                        HttpStatus.UNAUTHORIZED, logger);
+            }
+
+            Map<String, Object> userInfo = getGoogleUserInfo(accessToken);
+            String googleId = firstText(userInfo.get("sub"), tokenInfo.get("sub"), tokenInfo.get("user_id"));
+            String email = firstText(userInfo.get("email"), tokenInfo.get("email"));
+            if (!StringUtils.hasText(googleId) || !StringUtils.hasText(email)) {
+                throw new ChallengeSphereException("Google account details are incomplete",
+                        HttpStatus.UNAUTHORIZED, logger);
+            }
+
+            String verified = firstText(userInfo.get("email_verified"), tokenInfo.get("email_verified"), tokenInfo.get("verified_email"));
+            if (StringUtils.hasText(verified) && !Boolean.parseBoolean(verified)) {
+                throw new ChallengeSphereException("Google account email is not verified",
+                        HttpStatus.UNAUTHORIZED, logger);
+            }
+
+            return new GoogleProfile(
+                    googleId,
+                    email,
+                    stringValue(userInfo.get("name")),
+                    stringValue(userInfo.get("picture"))
+            );
+        } catch (ChallengeSphereException e) {
+            throw e;
+        } catch (Exception e) {
+            logger.error("Google access token verification failed: {}", e.getMessage());
+            throw new ChallengeSphereException("Google token verification failed",
+                    HttpStatus.UNAUTHORIZED, logger);
+        }
+    }
+
+    private Map<String, Object> getGoogleTokenInfo(String accessToken) throws IOException, InterruptedException {
+        String encodedToken = URLEncoder.encode(accessToken, StandardCharsets.UTF_8);
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create("https://oauth2.googleapis.com/tokeninfo?access_token=" + encodedToken))
+                .timeout(Duration.ofSeconds(8))
+                .GET()
+                .build();
+        return executeGoogleJsonRequest(request);
+    }
+
+    private Map<String, Object> getGoogleUserInfo(String accessToken) throws IOException, InterruptedException {
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(GOOGLE_USERINFO_URI)
+                .timeout(Duration.ofSeconds(8))
+                .header("Authorization", "Bearer " + accessToken)
+                .GET()
+                .build();
+        return executeGoogleJsonRequest(request);
+    }
+
+    private Map<String, Object> executeGoogleJsonRequest(HttpRequest request) throws IOException, InterruptedException {
+        HttpResponse<String> response = GOOGLE_HTTP_CLIENT.send(request, HttpResponse.BodyHandlers.ofString());
+        if (response.statusCode() < 200 || response.statusCode() >= 300) {
+            logger.warn("Google token endpoint returned status={} body={}", response.statusCode(), response.body());
+            throw new IOException("Google token endpoint returned " + response.statusCode());
+        }
+        return OBJECT_MAPPER.readValue(response.body(), JSON_MAP);
+    }
+
+    private String firstText(Object... values) {
+        for (Object value : values) {
+            String text = stringValue(value);
+            if (StringUtils.hasText(text)) {
+                return text;
+            }
+        }
+        return null;
+    }
+
+    private String stringValue(Object value) {
+        return value == null ? null : String.valueOf(value);
+    }
+
+    private List<String> getAllowedGoogleAudiences() {
+        if (googleClientId == null || googleClientId.isBlank()) {
+            return Collections.emptyList();
+        }
+        return Arrays.stream(googleClientId.split(","))
+                .map(String::trim)
+                .filter(clientId -> !clientId.isBlank())
+                .collect(Collectors.toList());
     }
 
     private User linkGoogleId(User user, String googleId, String pictureUrl) {
@@ -301,5 +451,8 @@ public class AuthServiceImpl implements AuthService {
             throw new ChallengeSphereException("Password must contain at least one letter and one number",
                     HttpStatus.BAD_REQUEST, logger);
         }
+    }
+
+    private record GoogleProfile(String googleId, String email, String name, String pictureUrl) {
     }
 }

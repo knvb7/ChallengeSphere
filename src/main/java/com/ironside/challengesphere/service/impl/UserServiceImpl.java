@@ -8,6 +8,8 @@ import java.util.stream.Collectors;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -22,6 +24,7 @@ import com.ironside.challengesphere.api.response.FollowActionResponse;
 import com.ironside.challengesphere.api.response.FollowersFollowingResponse;
 import com.ironside.challengesphere.api.response.ToggleUserActivationResponse;
 import com.ironside.challengesphere.api.response.UserRegistrationResponse;
+import com.ironside.challengesphere.api.response.UserSearchResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.model.Follow;
 import com.ironside.challengesphere.model.User;
@@ -147,6 +150,47 @@ public class UserServiceImpl implements UserService {
         }
 
         throw new ChallengeSphereException("User not found with provided parameters", HttpStatus.NOT_FOUND, logger);
+    }
+
+    @Override
+    public UserSearchResponse searchUsers(String query, Long currentUserId, Integer page, Integer pageSize)
+            throws ChallengeSphereException {
+        int safePage = Math.max(1, page == null ? 1 : page);
+        int safePageSize = Math.min(50, Math.max(1, pageSize == null ? 10 : pageSize));
+        String normalizedQuery = normalizeUserSearchQuery(query);
+
+        if (normalizedQuery.isEmpty()) {
+            return UserSearchResponse.empty(normalizedQuery, safePage, safePageSize);
+        }
+
+        try {
+            Long viewerId = currentUserId == null ? -1L : currentUserId;
+            Page<User> results = userRepository.searchDiscoverUsers(
+                    normalizedQuery,
+                    viewerId,
+                    PageRequest.of(safePage - 1, safePageSize)
+            );
+
+            List<User> visibleUsers = new java.util.ArrayList<>();
+            for (User user : results.getContent()) {
+                visibleUsers.add(restrictedProfile(user));
+            }
+
+            return UserSearchResponse.of(
+                    normalizedQuery,
+                    visibleUsers,
+                    safePage,
+                    safePageSize,
+                    results.getTotalElements()
+            );
+        } catch (Exception e) {
+            logger.error("Error searching users for query '{}': {}", normalizedQuery, e.getMessage(), e);
+            throw new ChallengeSphereException(
+                    "Failed to search users",
+                    HttpStatus.INTERNAL_SERVER_ERROR,
+                    logger
+            );
+        }
     }
 
     /**
@@ -756,6 +800,17 @@ public class UserServiceImpl implements UserService {
             user.setSubmissionsCount(0);
         }
         return user;
+    }
+
+    private String normalizeUserSearchQuery(String query) {
+        if (query == null) {
+            return "";
+        }
+        String normalized = query.trim();
+        if (normalized.startsWith("@")) {
+            normalized = normalized.substring(1).trim();
+        }
+        return normalized;
     }
 
     private void ensureMutualProfileAccess(Long ownerUserId, Long viewerUserId, String contentType)

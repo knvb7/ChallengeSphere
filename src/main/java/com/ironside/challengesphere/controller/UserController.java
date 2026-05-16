@@ -9,6 +9,7 @@ import com.ironside.challengesphere.api.response.ToggleUserActivationResponse;
 import com.ironside.challengesphere.api.response.FollowActionResponse;
 import com.ironside.challengesphere.api.response.FollowersFollowingResponse;
 import com.ironside.challengesphere.api.response.UserRegistrationResponse;
+import com.ironside.challengesphere.api.response.UserSearchResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.model.User;
 import com.ironside.challengesphere.security.SecurityAccess;
@@ -73,6 +74,17 @@ public class UserController {
         getUserPayload.setUsername(username);
         User user = userService.getUser(getUserPayload);
         return ResponseEntity.ok(user);
+    }
+
+    @GetMapping("/search")
+    public ResponseEntity<UserSearchResponse> searchUsers(
+            @AuthenticationPrincipal UserPrincipal principal,
+            @RequestParam String query,
+            @RequestParam(defaultValue = "1") Integer page,
+            @RequestParam(defaultValue = "10") Integer pageSize) throws ChallengeSphereException {
+        Long actorUserId = SecurityAccess.requireUserId(principal);
+        UserSearchResponse response = userService.searchUsers(query, actorUserId, page, pageSize);
+        return ResponseEntity.ok(response);
     }
 
     @PutMapping

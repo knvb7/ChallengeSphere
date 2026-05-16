@@ -41,6 +41,11 @@ public class GlobalExceptionHandler {
         }
 
         HttpStatus status = ex.getStatus() != null ? ex.getStatus() : HttpStatus.INTERNAL_SERVER_ERROR;
+        if (status.is5xxServerError()) {
+            logger.error("BaseException occurred: {}", ex.getResponseMessage(), ex);
+        } else {
+            logger.warn("Request failed with {}: {}", status, ex.getResponseMessage());
+        }
         return new ResponseEntity<>(apiError, status);
     }
 

@@ -1,5 +1,6 @@
 package com.ironside.challengesphere.config;
 
+import com.ironside.challengesphere.exception.BaseException;
 import jakarta.servlet.http.HttpServletRequest;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -8,6 +9,7 @@ import org.aspectj.lang.annotation.Around;
 import org.aspectj.lang.annotation.Aspect;
 import org.aspectj.lang.annotation.Pointcut;
 import org.aspectj.lang.reflect.MethodSignature;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Component;
 import org.springframework.web.bind.annotation.*;
@@ -99,9 +101,18 @@ public class ApiLoggingAspect {
         } catch (Exception ex) {
             long duration = System.currentTimeMillis() - startTime;
 
-            logger.error("✘ API FAILED  | {} {} | Controller: {}.{} | Exception: {} - {} | Duration: {} ms",
-                    httpMethod, requestUri, className, methodName,
-                    ex.getClass().getSimpleName(), ex.getMessage(), duration);
+            HttpStatus status = ex instanceof BaseException baseException && baseException.getStatus() != null
+                    ? baseException.getStatus()
+                    : HttpStatus.INTERNAL_SERVER_ERROR;
+            if (status.is5xxServerError()) {
+                logger.error("✘ API FAILED  | {} {} | Controller: {}.{} | Exception: {} - {} | Duration: {} ms",
+                        httpMethod, requestUri, className, methodName,
+                        ex.getClass().getSimpleName(), ex.getMessage(), duration);
+            } else {
+                logger.warn("API rejected | {} {} | Controller: {}.{} | Status: {} | Exception: {} - {} | Duration: {} ms",
+                        httpMethod, requestUri, className, methodName, status.value(),
+                        ex.getClass().getSimpleName(), ex.getMessage(), duration);
+            }
 
             throw ex;
         }
@@ -139,5 +150,4 @@ public class ApiLoggingAspect {
                 || obj.getClass().isPrimitive();
     }
 }
-
 
