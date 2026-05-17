@@ -112,6 +112,35 @@ public interface SubmissionRepository extends JpaRepository<Submission, Long> {
             nativeQuery = true)
     Page<Submission> findActiveByChallengeId(@Param("challengeId") Long challengeId, Pageable pageable);
 
+    // Visible submissions for a challenge day; service layer shuffles only the returned page.
+    @Query(value = "SELECT s.* FROM challengesphere.submissions s " +
+            "JOIN challengesphere.challenges c ON c.id = s.challenge_id " +
+            "WHERE s.challenge_id = :challengeId " +
+            "AND s.day_number = :dayNumber " +
+            "AND s.active = true " +
+            "AND c.active = true " +
+            "AND (s.user_id = :viewerId OR ( " +
+            "  NOT EXISTS (SELECT 1 FROM challengesphere.user_blocks ub WHERE ub.active = true AND ((ub.blocker_user_id = :viewerId AND ub.blocked_user_id = s.user_id) OR (ub.blocker_user_id = s.user_id AND ub.blocked_user_id = :viewerId))) " +
+            "  AND ((c.private = false AND s.is_private = false) OR EXISTS (SELECT 1 FROM challengesphere.user_challenges uc WHERE uc.challenge_id = s.challenge_id AND uc.user_id = :viewerId AND uc.active = true)) " +
+            ")) " +
+            "ORDER BY s.created_at DESC, s.id DESC",
+            countQuery = "SELECT COUNT(*) FROM challengesphere.submissions s " +
+                    "JOIN challengesphere.challenges c ON c.id = s.challenge_id " +
+                    "WHERE s.challenge_id = :challengeId " +
+                    "AND s.day_number = :dayNumber " +
+                    "AND s.active = true " +
+                    "AND c.active = true " +
+                    "AND (s.user_id = :viewerId OR ( " +
+                    "  NOT EXISTS (SELECT 1 FROM challengesphere.user_blocks ub WHERE ub.active = true AND ((ub.blocker_user_id = :viewerId AND ub.blocked_user_id = s.user_id) OR (ub.blocker_user_id = s.user_id AND ub.blocked_user_id = :viewerId))) " +
+                    "  AND ((c.private = false AND s.is_private = false) OR EXISTS (SELECT 1 FROM challengesphere.user_challenges uc WHERE uc.challenge_id = s.challenge_id AND uc.user_id = :viewerId AND uc.active = true)) " +
+                    "))",
+            nativeQuery = true)
+    Page<Submission> findVisibleByChallengeIdAndDayNumber(
+            @Param("challengeId") Long challengeId,
+            @Param("dayNumber") Integer dayNumber,
+            @Param("viewerId") Long viewerId,
+            Pageable pageable);
+
     // Find all public active submissions by challenge
     @Query(value = "SELECT s.* FROM challengesphere.submissions s " +
             "JOIN challengesphere.challenges c ON c.id = s.challenge_id " +

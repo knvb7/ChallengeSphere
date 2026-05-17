@@ -151,6 +151,24 @@ public class SubmissionController {
     }
 
     /**
+     * Get random visible submissions for a challenge day.
+     * GET /api/v1/submissions/challenge/{challengeId}/global?dayNumber={day}
+     */
+    @GetMapping("/challenge/{challengeId}/global")
+    public ResponseEntity<SubmissionsResponse> getRandomChallengeSubmissionsByDay(
+            @PathVariable Long challengeId,
+            @RequestParam @Min(1) Integer dayNumber,
+            @RequestParam(defaultValue = "1") @Min(1) int page,
+            @RequestParam(defaultValue = "20") @Min(1) @Max(100) int pageSize,
+            @AuthenticationPrincipal UserPrincipal principal) throws ChallengeSphereException {
+
+        Long callerId = SecurityAccess.requireUserId(principal);
+        logger.info("Getting random submissions for challenge: {}, day: {}, page: {}, pageSize: {}", challengeId, dayNumber, page, pageSize);
+        SubmissionsResponse response = submissionService.getRandomChallengeSubmissionsByDay(challengeId, dayNumber, page, pageSize, callerId);
+        return ResponseEntity.ok(response);
+    }
+
+    /**
      * Get all active submissions by a user (with pagination)
      * GET /api/v1/submissions/user/{userId}
      */

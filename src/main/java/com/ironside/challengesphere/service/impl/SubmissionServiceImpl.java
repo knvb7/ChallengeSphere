@@ -19,6 +19,7 @@ import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
@@ -339,8 +340,6 @@ public class SubmissionServiceImpl implements SubmissionService {
         logger.info("Getting submissions for user: {}, challenge: {}, page: {}, pageSize: {}", userId, challengeId, page, pageSize);
 
         try {
-            ensureFollowAccess(userId, callerId, "posts");
-
             if (userId.equals(callerId)) {
                 List<Submission> activeSubmissions = submissionRepository.findActiveByUserIdAndChallengeId(userId, challengeId);
                 int totalCount = activeSubmissions.size();
@@ -357,7 +356,7 @@ public class SubmissionServiceImpl implements SubmissionService {
             }
 
             List<Submission> visibleSubmissions = submissionRepository.findActiveByUserIdAndChallengeId(userId, challengeId).stream()
-                    .filter(submission -> !Boolean.TRUE.equals(submission.getIsPrivate()))
+                    .filter(submission -> canViewSubmission(submission, callerId))
                     .toList();
             int totalCount = visibleSubmissions.size();
             int offset = Math.max(0, page - 1) * pageSize;
@@ -370,10 +369,44 @@ public class SubmissionServiceImpl implements SubmissionService {
                     totalCount, userId, challengeId);
             return SubmissionsResponse.create(withReadableMediaUrls(paginatedSubmissions), page, pageSize, totalCount);
 
-        } catch (ChallengeSphereException e) {
-            throw e;
         } catch (Exception e) {
             logger.error("Error getting submissions for user: {}, challenge: {}: {}", userId, challengeId, e.getMessage(), e);
+            throw new ChallengeSphereException(
+                    "Failed to get submissions",
+                    HttpStatus.INTERNAL_SERVER_ERROR,
+                    logger
+            );
+        }
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public SubmissionsResponse getRandomChallengeSubmissionsByDay(Long challengeId, Integer dayNumber, int page, int pageSize, Long callerId) throws ChallengeSphereException {
+        logger.info("Getting random challenge submissions: challenge={}, day={}, page={}, pageSize={}", challengeId, dayNumber, page, pageSize);
+
+        if (dayNumber == null || dayNumber < 1) {
+            throw new ChallengeSphereException(
+                    "Day number must be greater than zero",
+                    HttpStatus.BAD_REQUEST,
+                    logger
+            );
+        }
+
+        try {
+            Pageable pageable = PageRequest.of(Math.max(0, page - 1), pageSize);
+            Page<Submission> submissionPage = submissionRepository.findVisibleByChallengeIdAndDayNumber(
+                    challengeId,
+                    dayNumber,
+                    callerId,
+                    pageable
+            );
+            List<Submission> paginatedSubmissions = new ArrayList<>(submissionPage.getContent());
+            Collections.shuffle(paginatedSubmissions);
+
+            logger.info("Found {} visible submissions for challenge: {}, day: {}", submissionPage.getTotalElements(), challengeId, dayNumber);
+            return SubmissionsResponse.create(withReadableMediaUrls(paginatedSubmissions), page, pageSize, (int) submissionPage.getTotalElements());
+        } catch (Exception e) {
+            logger.error("Error getting random submissions for challenge {}, day {}: {}", challengeId, dayNumber, e.getMessage(), e);
             throw new ChallengeSphereException(
                     "Failed to get submissions",
                     HttpStatus.INTERNAL_SERVER_ERROR,

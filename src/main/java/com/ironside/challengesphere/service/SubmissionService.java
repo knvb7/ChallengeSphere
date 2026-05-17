@@ -17,6 +17,7 @@ public interface SubmissionService {
     void deleteSubmission(Long submissionId, Long userId) throws ChallengeSphereException;
     SubmissionsResponse getSubmissionsByUserAndChallenge(Long userId, Long challengeId, int page, int pageSize, Long callerId) throws ChallengeSphereException;
     SubmissionsResponse getSubmissionsByChallenge(Long challengeId, int page, int pageSize, Long callerId) throws ChallengeSphereException;
+    SubmissionsResponse getRandomChallengeSubmissionsByDay(Long challengeId, Integer dayNumber, int page, int pageSize, Long callerId) throws ChallengeSphereException;
     SubmissionsResponse getSubmissionsByUser(Long userId, int page, int pageSize, Long callerId) throws ChallengeSphereException;
     PresignedUrlsResponse generatePresignedUrls(GeneratePresignedUrlsRequest request) throws ChallengeSphereException;
 
