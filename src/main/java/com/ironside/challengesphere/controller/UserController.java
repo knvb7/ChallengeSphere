@@ -7,6 +7,7 @@ import com.ironside.challengesphere.api.request.UpdateUserRequest;
 import com.ironside.challengesphere.api.request.UserRegistrationRequest;
 import com.ironside.challengesphere.api.response.ToggleUserActivationResponse;
 import com.ironside.challengesphere.api.response.FollowActionResponse;
+import com.ironside.challengesphere.api.response.FollowRelationshipResponse;
 import com.ironside.challengesphere.api.response.FollowersFollowingResponse;
 import com.ironside.challengesphere.api.response.UserRegistrationResponse;
 import com.ironside.challengesphere.api.response.UserSearchResponse;
@@ -116,6 +117,15 @@ public class UserController {
         }
         logger.info("Follow request - followerId: {}, followingId: {}", actorUserId, followingId);
         FollowActionResponse response = userService.follow(actorUserId, followingId);
+        return ResponseEntity.ok(response);
+    }
+
+    @GetMapping("/{userId}/relationship")
+    public ResponseEntity<FollowRelationshipResponse> getFollowRelationship(
+            @AuthenticationPrincipal UserPrincipal principal,
+            @PathVariable Long userId) throws ChallengeSphereException {
+        Long actorUserId = SecurityAccess.requireUserId(principal);
+        FollowRelationshipResponse response = userService.getFollowRelationship(actorUserId, userId);
         return ResponseEntity.ok(response);
     }
 

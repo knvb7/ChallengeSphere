@@ -1155,13 +1155,6 @@ public class SubmissionServiceImpl implements SubmissionService {
 
         LocalDate challengeDay = challenge.getStartDate().plusDays(dayNumber - 1L);
         LocalDate today = LocalDate.now();
-        if (today.isBefore(challengeDay)) {
-            throw new ChallengeSphereException(
-                    "Cannot upload before day " + dayNumber + " starts",
-                    HttpStatus.BAD_REQUEST,
-                    logger
-            );
-        }
         LocalDate lastAllowedDate = challengeDay.plusDays(SUBMISSION_GRACE_DAYS);
         if (today.isAfter(lastAllowedDate)) {
             throw new ChallengeSphereException(

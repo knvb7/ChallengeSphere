@@ -21,6 +21,7 @@ import com.ironside.challengesphere.api.request.ToggleActivateUserRequest;
 import com.ironside.challengesphere.api.request.UpdateUserRequest;
 import com.ironside.challengesphere.api.request.UserRegistrationRequest;
 import com.ironside.challengesphere.api.response.FollowActionResponse;
+import com.ironside.challengesphere.api.response.FollowRelationshipResponse;
 import com.ironside.challengesphere.api.response.FollowersFollowingResponse;
 import com.ironside.challengesphere.api.response.ToggleUserActivationResponse;
 import com.ironside.challengesphere.api.response.UserRegistrationResponse;
@@ -442,6 +443,39 @@ public class UserServiceImpl implements UserService {
                     logger
             );
         }
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public FollowRelationshipResponse getFollowRelationship(Long viewerUserId, Long targetUserId) throws ChallengeSphereException {
+        if (viewerUserId == null || targetUserId == null || viewerUserId <= 0 || targetUserId <= 0) {
+            throw new ChallengeSphereException(
+                    "Valid viewer and target user IDs are required",
+                    HttpStatus.BAD_REQUEST,
+                    logger
+            );
+        }
+
+        if (!userRepository.existsById(targetUserId)) {
+            throw new ChallengeSphereException(
+                    "User not found with id: " + targetUserId,
+                    HttpStatus.NOT_FOUND,
+                    logger
+            );
+        }
+
+        if (!viewerUserId.equals(targetUserId)
+                && userBlockRepository.existsActiveBlockBetween(viewerUserId, targetUserId)) {
+            throw new ChallengeSphereException(
+                    "Not authorized to view this user",
+                    HttpStatus.FORBIDDEN,
+                    logger
+            );
+        }
+
+        boolean isFollowing = followRepository.existsByFollowerIdAndFollowingIdAndActive(viewerUserId, targetUserId);
+        boolean isFollowedBy = followRepository.existsByFollowerIdAndFollowingIdAndActive(targetUserId, viewerUserId);
+        return FollowRelationshipResponse.of(viewerUserId, targetUserId, isFollowing, isFollowedBy);
     }
 
     @Override

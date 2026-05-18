@@ -25,7 +25,6 @@ import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -199,15 +198,6 @@ public class NotificationServiceImpl implements NotificationService {
                     .filter(userId -> !Objects.equals(userId, actorUserId))
                     .collect(Collectors.toSet());
             if (requestedRecipients.isEmpty()) {
-                return;
-            }
-
-            Set<Long> inviteableUserIds = new HashSet<>();
-            followRepository.findActiveFollowsByFollowerId(actorUserId).forEach(follow -> inviteableUserIds.add(follow.getFollowingId()));
-            followRepository.findActiveFollowsByFollowingId(actorUserId).forEach(follow -> inviteableUserIds.add(follow.getFollowerId()));
-            requestedRecipients.retainAll(inviteableUserIds);
-            if (requestedRecipients.isEmpty()) {
-                logger.info("No selected invite recipients are followers/following for challengeId={}", challenge.getId());
                 return;
             }
 
@@ -404,6 +394,8 @@ public class NotificationServiceImpl implements NotificationService {
 
     private Map<String, Object> baseChallengeInvitePayload(User actor, User recipient, Challenge challenge) {
         Map<String, Object> data = baseActorPayload(actor);
+        data.put("actionType", TYPE_CHALLENGE_INVITE);
+        data.put("status", "PENDING");
         data.put("challengeId", challenge.getId());
         data.put("challengeTitle", challenge.getTitle());
         data.put("creatorUserId", challenge.getCreatorId());
