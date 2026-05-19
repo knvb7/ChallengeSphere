@@ -15,10 +15,8 @@ import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.springframework.http.HttpHeaders;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
-import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.validation.annotation.Validated;
@@ -112,25 +110,6 @@ public class SubmissionController {
         logger.info("Getting submissions for user: {}, challenge: {}, page: {}, pageSize: {}", userId, challengeId, page, pageSize);
         SubmissionsResponse response = submissionService.getSubmissionsByUserAndChallenge(userId, challengeId, page, pageSize, SecurityAccess.requireUserId(principal));
         return ResponseEntity.ok(response);
-    }
-
-    /**
-     * Download an Instagram-ready collage for a user's challenge submissions.
-     * GET /api/v1/submissions/user/{userId}/challenge/{challengeId}/collage
-     */
-    @GetMapping(value = "/user/{userId}/challenge/{challengeId}/collage", produces = MediaType.IMAGE_JPEG_VALUE)
-    public ResponseEntity<byte[]> downloadChallengeCollage(
-            @PathVariable Long userId,
-            @PathVariable Long challengeId,
-            @AuthenticationPrincipal UserPrincipal principal) throws ChallengeSphereException {
-        SecurityAccess.requireSelf(principal, userId);
-        logger.info("Generating challenge collage for user: {}, challenge: {}", userId, challengeId);
-
-        byte[] collage = submissionService.generateChallengeCollage(userId, challengeId);
-        return ResponseEntity.ok()
-                .contentType(MediaType.IMAGE_JPEG)
-                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"challenge-collage.jpg\"")
-                .body(collage);
     }
 
     /**

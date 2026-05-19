@@ -20,8 +20,6 @@ public interface SubmissionService {
     SubmissionsResponse getRandomChallengeSubmissionsByDay(Long challengeId, Integer dayNumber, int page, int pageSize, Long callerId) throws ChallengeSphereException;
     SubmissionsResponse getSubmissionsByUser(Long userId, int page, int pageSize, Long callerId) throws ChallengeSphereException;
     PresignedUrlsResponse generatePresignedUrls(GeneratePresignedUrlsRequest request) throws ChallengeSphereException;
-
-    byte[] generateChallengeCollage(Long userId, Long challengeId) throws ChallengeSphereException;
     
     /**
      * Get a single submission by ID.
