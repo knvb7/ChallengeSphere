@@ -43,6 +43,7 @@ import com.ironside.challengesphere.api.response.RecentChallengesResponse;
 import com.ironside.challengesphere.api.response.UserChallengesResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.model.Challenge;
+import com.ironside.challengesphere.model.Submission;
 import com.ironside.challengesphere.model.User;
 import com.ironside.challengesphere.model.UserChallenge;
 import com.ironside.challengesphere.repository.ChallengeRepository;
@@ -386,6 +387,14 @@ public class ChallengeServiceImpl implements ChallengeService {
             }
             challengeRepository.saveAll(challenges);
 
+            List<UserChallenge> participantLinks = userChallengeRepository.findByChallengeIds(challengeIds).stream()
+                    .filter(userChallenge -> Boolean.TRUE.equals(userChallenge.getActive()))
+                    .peek(userChallenge -> userChallenge.setActive(false))
+                    .toList();
+            if (!participantLinks.isEmpty()) {
+                userChallengeRepository.saveAll(participantLinks);
+            }
+
             // Invalidate list caches since challenge status changed
             // cacheService.invalidateRecentChallenges();
             // cacheService.invalidateTrendingChallenges();
@@ -509,9 +518,12 @@ public class ChallengeServiceImpl implements ChallengeService {
 
             // Batch check: Find existing UserChallenge associations (single query)
             List<UserChallenge> existingAssociations = userChallengeRepository.findByChallengeId(challengeId);
-            Set<Long> alreadyJoinedUserIds = existingAssociations.stream()
+            Map<Long, UserChallenge> existingByUserId = existingAssociations.stream()
+                    .filter(userChallenge -> userIds.contains(userChallenge.getUserId()))
+                    .collect(Collectors.toMap(UserChallenge::getUserId, userChallenge -> userChallenge, (a, b) -> a));
+            Set<Long> alreadyJoinedUserIds = existingByUserId.values().stream()
+                    .filter(userChallenge -> Boolean.TRUE.equals(userChallenge.getActive()))
                     .map(UserChallenge::getUserId)
-                    .filter(userIds::contains)
                     .collect(Collectors.toSet());
 
             if (!alreadyJoinedUserIds.isEmpty()) {
@@ -528,20 +540,23 @@ public class ChallengeServiceImpl implements ChallengeService {
             failedUserIds.addAll(nonExistentUserIds);
             failedUserIds.addAll(alreadyJoinedUserIds);
 
-            // Batch insert: Create all UserChallenge associations at once
+            // Batch insert/update: Create new associations and reactivate previously inactive links.
             if (!successfulUserIds.isEmpty()) {
                 Timestamp now = new Timestamp(System.currentTimeMillis());
-                List<UserChallenge> userChallenges = successfulUserIds.stream()
-                        .map(userId -> {
-                            UserChallenge userChallenge = new UserChallenge();
-                            userChallenge.setUserId(userId);
-                            userChallenge.setChallengeId(challengeId);
-                            userChallenge.setJoinedAt(now);
-                            userChallenge.setActive(true);
-                            userChallenge.setCompleted(false);
-                            return userChallenge;
-                        })
-                        .collect(Collectors.toList());
+                List<UserChallenge> userChallenges = new ArrayList<>();
+                for (Long userId : successfulUserIds) {
+                    UserChallenge userChallenge = existingByUserId.get(userId);
+                    if (userChallenge == null) {
+                        userChallenge = new UserChallenge();
+                        userChallenge.setUserId(userId);
+                        userChallenge.setChallengeId(challengeId);
+                    }
+                    userChallenge.setJoinedAt(now);
+                    userChallenge.setActive(true);
+                    userChallenge.setCompleted(false);
+                    userChallenge.setCompletedAt(null);
+                    userChallenges.add(userChallenge);
+                }
 
                 userChallengeRepository.saveAll(userChallenges);
                 logger.info("Successfully joined {} users to challenge {}", successfulUserIds.size(), challengeId);
@@ -1080,17 +1095,18 @@ public class ChallengeServiceImpl implements ChallengeService {
             List<com.ironside.challengesphere.model.Submission> submissions =
                     submissionRepository.findActiveByUserIdAndChallengeId(userId, challengeId);
 
-            Map<Integer, com.ironside.challengesphere.model.Submission> byDay = submissions.stream()
+            int totalDays = challenge.getNumberOfDays();
+            Map<Integer, Submission> byDay = submissions.stream()
+                    .filter(submission -> isValidChallengeDay(submission.getDayNumber(), totalDays))
                     .collect(Collectors.toMap(
-                            com.ironside.challengesphere.model.Submission::getDayNumber,
+                            Submission::getDayNumber,
                             s -> s,
                             (a, b) -> a // keep first if duplicate day
                     ));
 
-            int totalDays = challenge.getNumberOfDays();
             List<ChallengeProgressResponse.DayProgress> days = new ArrayList<>();
             for (int d = 1; d <= totalDays; d++) {
-                com.ironside.challengesphere.model.Submission s = byDay.get(d);
+                Submission s = byDay.get(d);
                 if (s != null) {
                     String thumbnail = firstUrl(s.getMediaUrls());
                     days.add(ChallengeProgressResponse.DayProgress.submitted(
@@ -1164,12 +1180,9 @@ public class ChallengeServiceImpl implements ChallengeService {
                 List<com.ironside.challengesphere.model.Submission> subs =
                         submissionRepository.findActiveByUserIdAndChallengeId(userId, uc.getChallengeId());
 
-                List<Integer> submittedDays = subs.stream()
-                        .map(com.ironside.challengesphere.model.Submission::getDayNumber)
-                        .collect(Collectors.toList());
-
-                int daysCompleted = submittedDays.size();
                 int totalDays = c.getNumberOfDays();
+                List<Integer> submittedDays = distinctSubmittedDays(subs, totalDays);
+                int daysCompleted = submittedDays.size();
                 int completionPct = totalDays > 0 ? (int) Math.round((daysCompleted * 100.0) / totalDays) : 0;
 
                 MyChallengesResponse.ChallengeSummary summary = MyChallengesResponse.ChallengeSummary.from(
@@ -1231,6 +1244,22 @@ public class ChallengeServiceImpl implements ChallengeService {
         if (raw == null || raw.isBlank()) return null;
         String[] parts = raw.split(",");
         return parts.length > 0 ? parts[0].trim() : null;
+    }
+
+    private List<Integer> distinctSubmittedDays(List<Submission> submissions, int totalDays) {
+        if (submissions == null || submissions.isEmpty()) {
+            return List.of();
+        }
+        return submissions.stream()
+                .map(Submission::getDayNumber)
+                .filter(dayNumber -> isValidChallengeDay(dayNumber, totalDays))
+                .distinct()
+                .sorted()
+                .toList();
+    }
+
+    private boolean isValidChallengeDay(Integer dayNumber, int totalDays) {
+        return dayNumber != null && dayNumber >= 1 && (totalDays <= 0 || dayNumber <= totalDays);
     }
 
     private List<Challenge> withReadableCoverPhotoUrls(List<Challenge> challenges) {

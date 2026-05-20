@@ -97,6 +97,35 @@ public class MediaUrlService {
         }
     }
 
+    public void deleteMediaObjects(List<String> mediaUrls) {
+        if (mediaUrls == null || mediaUrls.isEmpty()) {
+            return;
+        }
+
+        for (String objectName : toGcsObjectNames(mediaUrls)) {
+            try {
+                GetSignedUrlForGcs.deleteObject(bucketName, objectName);
+            } catch (Exception e) {
+                logger.warn("Failed to delete GCS object {}: {}", objectName, e.getMessage());
+            }
+        }
+    }
+
+    List<String> toGcsObjectNames(List<String> mediaUrls) {
+        if (mediaUrls == null || mediaUrls.isEmpty()) {
+            return List.of();
+        }
+
+        List<String> objectNames = new ArrayList<>();
+        for (String mediaUrl : mediaUrls) {
+            String objectName = extractGcsObjectName(mediaUrl);
+            if (objectName != null && !objectName.isBlank()) {
+                objectNames.add(objectName);
+            }
+        }
+        return objectNames;
+    }
+
     private String extractGcsObjectName(String mediaUrl) {
         if (mediaUrl == null || mediaUrl.isBlank()) {
             return null;

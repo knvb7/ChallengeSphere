@@ -78,11 +78,23 @@ public class ContentModerationServiceImpl implements ContentModerationService {
 
     @Override
     public Result scan(List<String> mediaUrls) {
+        return scanInternal(mediaUrls, false);
+    }
+
+    @Override
+    public Result scanStrict(List<String> mediaUrls) {
+        return scanInternal(mediaUrls, true);
+    }
+
+    private Result scanInternal(List<String> mediaUrls, boolean strict) {
         if (mediaUrls == null || mediaUrls.isEmpty()) {
             return new Result(Verdict.CLEAN, List.of());
         }
         if (client == null) {
             logger.error("Vision client not initialized — skipping moderation for {} URLs", mediaUrls.size());
+            if (strict) {
+                throw new IllegalStateException("Vision client is not initialized");
+            }
             return new Result(Verdict.CLEAN, List.of());
         }
 
@@ -118,6 +130,9 @@ public class ContentModerationServiceImpl implements ContentModerationService {
             // transient Vision outage would be worse than briefly letting
             // content through.
             logger.error("Vision SafeSearch batch call failed — allowing submission through", e);
+            if (strict) {
+                throw new IllegalStateException("Vision SafeSearch batch call failed", e);
+            }
             return new Result(Verdict.CLEAN, List.of());
         }
 
@@ -131,6 +146,9 @@ public class ContentModerationServiceImpl implements ContentModerationService {
             String url = scannableUrls.get(i);
             if (r.hasError()) {
                 logger.warn("Vision SafeSearch error on {}: {}", url, r.getError().getMessage());
+                if (strict) {
+                    throw new IllegalStateException("Vision SafeSearch error on " + url + ": " + r.getError().getMessage());
+                }
                 continue;
             }
             SafeSearchAnnotation s = r.getSafeSearchAnnotation();

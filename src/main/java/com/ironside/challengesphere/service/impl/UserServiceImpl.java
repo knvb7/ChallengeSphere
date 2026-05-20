@@ -67,6 +67,9 @@ public class UserServiceImpl implements UserService {
     @Autowired
     private UserReportRepository userReportRepository;
 
+    @Autowired
+    private MediaUrlService mediaUrlService;
+
     @Override
     public User getUser(GetUserPayload getUserPayload) throws ChallengeSphereException {
         Long userId = getUserPayload.getUserId();
@@ -788,20 +791,20 @@ public class UserServiceImpl implements UserService {
 
     private User restrictProfileForViewer(User user, Long currentUserId) throws ChallengeSphereException {
         if (user == null || user.getId() == null) {
-            return attachSummaryCounts(user);
+            return withReadableProfilePicUrl(attachSummaryCounts(user));
         }
         if (currentUserId != null && !currentUserId.equals(user.getId())
                 && userBlockRepository.existsActiveBlockBetween(currentUserId, user.getId())) {
             throw new ChallengeSphereException("Not authorized to view this user", HttpStatus.FORBIDDEN, logger);
         }
         if (currentUserId == null) {
-            return restrictedProfile(user);
+            return withReadableProfilePicUrl(restrictedProfile(user));
         }
         if (followRepository.existsActiveMutualFollow(currentUserId, user.getId())) {
-            return attachSummaryCounts(user);
+            return withReadableProfilePicUrl(attachSummaryCounts(user));
         }
 
-        return restrictedProfile(user);
+        return withReadableProfilePicUrl(restrictedProfile(user));
     }
 
     private User restrictedProfile(User user) {
@@ -832,6 +835,18 @@ public class UserServiceImpl implements UserService {
         } catch (Exception e) {
             logger.warn("Failed to attach submissions count for userId={}: {}", user.getId(), e.getMessage());
             user.setSubmissionsCount(0);
+        }
+        return user;
+    }
+
+    private User withReadableProfilePicUrl(User user) {
+        if (user == null || user.getProfilePicUrl() == null || user.getProfilePicUrl().isBlank() || mediaUrlService == null) {
+            return user;
+        }
+        try {
+            user.setProfilePicUrl(mediaUrlService.toReadableMediaUrl(user.getProfilePicUrl()));
+        } catch (Exception e) {
+            logger.warn("Failed to prepare readable profile photo URL for userId={}: {}", user.getId(), e.getMessage());
         }
         return user;
     }

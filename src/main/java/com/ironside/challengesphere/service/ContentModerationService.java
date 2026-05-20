@@ -31,4 +31,11 @@ public interface ContentModerationService {
      * should alert on log-level errors from this path.
      */
     Result scan(List<String> mediaUrls);
+
+    /**
+     * Strict scan for asynchronous post-upload moderation.
+     * Unlike scan(), Vision client/API/object-read failures must surface to the
+     * caller so it can remove optimistically published media.
+     */
+    Result scanStrict(List<String> mediaUrls);
 }

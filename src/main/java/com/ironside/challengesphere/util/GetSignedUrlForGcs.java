@@ -105,6 +105,16 @@ public class GetSignedUrlForGcs {
         logger.debug("Updated cache-control for GCS object {} to {}", objectName, cacheControl);
     }
 
+    public static boolean deleteObject(String bucketName, String objectName) {
+        boolean deleted = storage.delete(BlobId.of(bucketName, objectName));
+        if (deleted) {
+            logger.info("Deleted GCS object: {}", objectName);
+        } else {
+            logger.warn("GCS object was not found for deletion: {}", objectName);
+        }
+        return deleted;
+    }
+
     public static void uploadObject(String bucketName, String objectName, byte[] content, String contentType) {
         BlobInfo blobInfo = BlobInfo.newBuilder(BlobId.of(bucketName, objectName))
                 .setContentType(contentType)

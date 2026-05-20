@@ -40,8 +40,6 @@ import com.ironside.challengesphere.repository.SubmissionRepository;
 import com.ironside.challengesphere.repository.UserBlockRepository;
 import com.ironside.challengesphere.repository.UserChallengeRepository;
 import com.ironside.challengesphere.repository.UserRepository;
-import com.ironside.challengesphere.repository.ModerationFlagRepository;
-import com.ironside.challengesphere.model.ModerationFlag;
 import com.ironside.challengesphere.service.ContentModerationService;
 import com.ironside.challengesphere.service.LeaderboardService;
 import com.ironside.challengesphere.service.NotificationService;
@@ -74,9 +72,6 @@ public class SubmissionServiceImpl implements SubmissionService {
     private ContentModerationService contentModerationService;
 
     @Autowired
-    private ModerationFlagRepository moderationFlagRepository;
-
-    @Autowired
     private RedisCacheServiceImpl cacheService;
 
     @Autowired
@@ -87,6 +82,9 @@ public class SubmissionServiceImpl implements SubmissionService {
 
     @Autowired
     private MediaUrlService mediaUrlService;
+
+    @Autowired
+    private SubmissionModerationJob submissionModerationJob;
 
     @Value("${gcs.bucket.name}")
     private String bucketName;
@@ -198,31 +196,6 @@ public class SubmissionServiceImpl implements SubmissionService {
                 );
             }
 
-            // Content moderation — run Vision SafeSearch on the uploaded media before
-            // anything is persisted. VERY_LIKELY on adult/racy/violence bans the user
-            // immediately (no submission row). LIKELY saves the submission hidden
-            // (active=false) and queues a flag for human review.
-            ContentModerationService.Result moderation = contentModerationService.scan(request.getMediaUrls());
-            logger.info("Vision SafeSearch completed for submission upload: user={}, challenge={}, mediaCount={}, verdict={}, findings={}",
-                    userId,
-                    challengeId,
-                    request.getMediaUrls() == null ? 0 : request.getMediaUrls().size(),
-                    moderation.verdict(),
-                    moderation.findings().size());
-            if (moderation.verdict() == ContentModerationService.Verdict.BLOCK_AND_BAN) {
-                String summary = summarizeFindings(moderation);
-                logger.warn("Banning user {} for disallowed content: {}", userId, summary);
-                user.setActive(false);
-                user.setBannedAt(new Timestamp(System.currentTimeMillis()));
-                user.setBanReason("Content policy violation: " + summary);
-                userRepository.save(user);
-                throw new ChallengeSphereException(
-                        "Submission rejected for content policy violation. Your account has been suspended.",
-                        HttpStatus.FORBIDDEN,
-                        logger
-                );
-            }
-
             mediaUrlService.applyPrivateImageCacheHeaders(request.getMediaUrls());
 
             // Create submission
@@ -249,43 +222,34 @@ public class SubmissionServiceImpl implements SubmissionService {
             Timestamp submissionTime = request.getSubmissionDate() != null ? request.getSubmissionDate() : Timestamp.from(Instant.now());
             submission.setSubmissionTime(submissionTime);
             submission.setCreatedAt(new Timestamp(System.currentTimeMillis()));
-            // FLAG_FOR_REVIEW → hidden until a moderator resolves the flag.
-            boolean flagged = moderation.verdict() == ContentModerationService.Verdict.FLAG_FOR_REVIEW;
-            submission.setActive(!flagged);
+            submission.setActive(true);
             submission.setGloriesCount(0L);
             submission.setCommentsCount(0L);
             submission.setVersion(0);
 
             Submission savedSubmission = submissionRepository.save(submission);
 
-            if (flagged) {
-                for (ContentModerationService.Finding f : moderation.findings()) {
-                    ModerationFlag flag = new ModerationFlag();
-                    flag.setSubmissionId(savedSubmission.getId());
-                    flag.setUserId(userId);
-                    flag.setCategory(f.category());
-                    flag.setSeverity(f.severity());
-                    flag.setMediaUrl(f.mediaUrl());
-                    flag.setCreatedAt(new Timestamp(System.currentTimeMillis()));
-                    moderationFlagRepository.save(flag);
-                }
-                logger.warn("Submission {} flagged for review ({} findings) — user {}",
-                        savedSubmission.getId(), moderation.findings().size(), userId);
-            }
             logger.info("Successfully created submission with id: {} for user: {}, challenge: {}, day: {}",
                     savedSubmission.getId(), userId, challengeId, dayNumber);
 
-            // Don't credit points for flagged submissions — if the admin later
-            // approves it, the approval flow can award the score at that point.
-            if (!flagged) {
-                try {
-                    leaderboardService.incrementScore(challengeId, userId, 10, "New submission for day " + dayNumber);
-                    logger.debug("Updated leaderboard score for user: {} in challenge: {}", userId, challengeId);
-                } catch (Exception e) {
-                    // Don't fail the submission if leaderboard update fails
-                    logger.warn("Failed to update leaderboard score for user: {} in challenge: {}: {}",
-                            userId, challengeId, e.getMessage());
-                }
+            try {
+                submissionModerationJob.moderateSubmissionAsync(
+                        savedSubmission.getId(),
+                        userId,
+                        challengeId,
+                        request.getMediaUrls() == null ? List.of() : List.copyOf(request.getMediaUrls())
+                );
+            } catch (Exception e) {
+                logger.warn("Failed to enqueue moderation for submission {}: {}", savedSubmission.getId(), e.getMessage());
+            }
+
+            try {
+                leaderboardService.incrementScore(challengeId, userId, 10, "New submission for day " + dayNumber);
+                logger.debug("Updated leaderboard score for user: {} in challenge: {}", userId, challengeId);
+            } catch (Exception e) {
+                // Don't fail the submission if leaderboard update fails
+                logger.warn("Failed to update leaderboard score for user: {} in challenge: {}: {}",
+                        userId, challengeId, e.getMessage());
             }
 
             if (Boolean.TRUE.equals(savedSubmission.getActive())) {
