@@ -30,6 +30,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.Map;
@@ -83,15 +84,22 @@ public class AuthController {
         ));
     }
 
+    @GetMapping("/username-availability")
+    public ResponseEntity<Map<String, Object>> usernameAvailability(@RequestParam String username) {
+        String candidate = username == null ? "" : username.trim();
+        boolean valid = candidate.matches("^[a-zA-Z0-9_]{3,50}$");
+        boolean available = valid && userRepository.findByUsername(candidate).isEmpty();
+        return ResponseEntity.ok(Map.of(
+                "username", candidate,
+                "valid", valid,
+                "available", available
+        ));
+    }
+
     @PostMapping("/register")
     public ResponseEntity<AuthResponse> register(@Valid @RequestBody UserRegistrationRequest request)
             throws ChallengeSphereException {
-        if (request.getPhone() != null && !request.getPhone().isBlank()) {
-            if (request.getOtpCode() == null || request.getOtpCode().isBlank()) {
-                throw new ChallengeSphereException(
-                        "OTP code is required when phone is provided. Call /auth/otp/send first.",
-                        HttpStatus.BAD_REQUEST, logger);
-            }
+        if (StringUtils.hasText(request.getPhone()) && StringUtils.hasText(request.getOtpCode())) {
             boolean approved = smsService.verifyOtp(request.getPhone(), request.getOtpCode());
             if (!approved) {
                 throw new ChallengeSphereException("Invalid or expired verification code",
