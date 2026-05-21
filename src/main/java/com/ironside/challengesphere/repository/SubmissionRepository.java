@@ -21,6 +21,7 @@ public interface SubmissionRepository extends JpaRepository<Submission, Long> {
     @Query(value = "SELECT s.* FROM challengesphere.submissions s " +
             "JOIN challengesphere.challenges c ON c.id = s.challenge_id " +
             "WHERE s.active = true " +
+            "AND c.active = true " +
             "AND (s.user_id = :userId OR EXISTS (" +
             "  SELECT 1 FROM challengesphere.follows f " +
             "  WHERE f.follower_id = :userId AND f.following_id = s.user_id AND f.active = true" +
@@ -33,6 +34,7 @@ public interface SubmissionRepository extends JpaRepository<Submission, Long> {
             countQuery = "SELECT COUNT(*) FROM challengesphere.submissions s " +
                     "JOIN challengesphere.challenges c ON c.id = s.challenge_id " +
                     "WHERE s.active = true " +
+                    "AND c.active = true " +
                     "AND (s.user_id = :userId OR EXISTS (" +
                     "  SELECT 1 FROM challengesphere.follows f " +
                     "  WHERE f.follower_id = :userId AND f.following_id = s.user_id AND f.active = true" +
@@ -46,7 +48,9 @@ public interface SubmissionRepository extends JpaRepository<Submission, Long> {
 
     // Trending feed - public submissions sorted by engagement
     @Query(value = "SELECT s.* FROM challengesphere.submissions s " +
+            "JOIN challengesphere.challenges c ON c.id = s.challenge_id " +
             "WHERE s.active = true " +
+            "AND c.active = true " +
             "AND s.is_private = false " +
             "AND s.created_at > NOW() - INTERVAL '7 days' " +
             "AND (s.user_id = :viewerId OR (" +
@@ -55,7 +59,9 @@ public interface SubmissionRepository extends JpaRepository<Submission, Long> {
             ")) " +
             "ORDER BY (s.glories_count * 2 + s.comments_count) DESC, s.created_at DESC, s.id DESC",
             countQuery = "SELECT COUNT(*) FROM challengesphere.submissions s " +
+                    "JOIN challengesphere.challenges c ON c.id = s.challenge_id " +
                     "WHERE s.active = true " +
+                    "AND c.active = true " +
                     "AND s.is_private = false " +
                     "AND s.created_at > NOW() - INTERVAL '7 days' " +
                     "AND (s.user_id = :viewerId OR (" +
@@ -69,6 +75,7 @@ public interface SubmissionRepository extends JpaRepository<Submission, Long> {
     @Query(value = "SELECT s.* FROM challengesphere.submissions s " +
             "JOIN challengesphere.challenges c ON c.id = s.challenge_id " +
             "WHERE s.active = true " +
+            "AND c.active = true " +
             "AND ((c.private = false AND s.is_private = false) OR (" +
             "  c.private = true " +
             "  AND (s.user_id = :viewerId OR EXISTS (SELECT 1 FROM challengesphere.follows f WHERE f.follower_id = :viewerId AND f.following_id = s.user_id AND f.active = true)) " +
@@ -80,6 +87,7 @@ public interface SubmissionRepository extends JpaRepository<Submission, Long> {
             countQuery = "SELECT COUNT(*) FROM challengesphere.submissions s " +
                     "JOIN challengesphere.challenges c ON c.id = s.challenge_id " +
                     "WHERE s.active = true " +
+                    "AND c.active = true " +
                     "AND ((c.private = false AND s.is_private = false) OR (" +
                     "  c.private = true " +
                     "  AND (s.user_id = :viewerId OR EXISTS (SELECT 1 FROM challengesphere.follows f WHERE f.follower_id = :viewerId AND f.following_id = s.user_id AND f.active = true)) " +
@@ -146,6 +154,7 @@ public interface SubmissionRepository extends JpaRepository<Submission, Long> {
             "JOIN challengesphere.challenges c ON c.id = s.challenge_id " +
             "WHERE s.challenge_id = :challengeId " +
             "AND s.active = true " +
+            "AND c.active = true " +
             "AND ((c.private = false AND s.is_private = false) OR (" +
             "  c.private = true " +
             "  AND EXISTS (SELECT 1 FROM challengesphere.user_challenges uc WHERE uc.challenge_id = s.challenge_id AND uc.user_id = :viewerId AND uc.active = true)" +
@@ -154,12 +163,19 @@ public interface SubmissionRepository extends JpaRepository<Submission, Long> {
     List<Submission> findPublicActiveByChallengeId(@Param("challengeId") Long challengeId, @Param("viewerId") Long viewerId);
 
     // Find all active submissions by user
-    @Query(value = "SELECT * FROM challengesphere.submissions WHERE user_id = :userId AND active = true ORDER BY submission_time DESC", nativeQuery = true)
+    @Query(value = "SELECT s.* FROM challengesphere.submissions s " +
+            "JOIN challengesphere.challenges c ON c.id = s.challenge_id " +
+            "WHERE s.user_id = :userId AND s.active = true AND c.active = true " +
+            "ORDER BY s.submission_time DESC", nativeQuery = true)
     List<Submission> findActiveByUserId(@Param("userId") Long userId);
 
     // Paginated: active submissions by user
-    @Query(value = "SELECT * FROM challengesphere.submissions WHERE user_id = :userId AND active = true",
-            countQuery = "SELECT COUNT(*) FROM challengesphere.submissions WHERE user_id = :userId AND active = true",
+    @Query(value = "SELECT s.* FROM challengesphere.submissions s " +
+            "JOIN challengesphere.challenges c ON c.id = s.challenge_id " +
+            "WHERE s.user_id = :userId AND s.active = true AND c.active = true",
+            countQuery = "SELECT COUNT(*) FROM challengesphere.submissions s " +
+                    "JOIN challengesphere.challenges c ON c.id = s.challenge_id " +
+                    "WHERE s.user_id = :userId AND s.active = true AND c.active = true",
             nativeQuery = true)
     Page<Submission> findActiveByUserId(@Param("userId") Long userId, Pageable pageable);
 
@@ -177,7 +193,10 @@ public interface SubmissionRepository extends JpaRepository<Submission, Long> {
     List<Submission> findByUserId(@Param("userId") Long userId);
 
     // Find all public submissions by user
-    @Query(value = "SELECT * FROM challengesphere.submissions WHERE user_id = :userId AND is_private = false AND active = true ORDER BY created_at DESC", nativeQuery = true)
+    @Query(value = "SELECT s.* FROM challengesphere.submissions s " +
+            "JOIN challengesphere.challenges c ON c.id = s.challenge_id " +
+            "WHERE s.user_id = :userId AND s.is_private = false AND s.active = true AND c.active = true " +
+            "ORDER BY s.created_at DESC", nativeQuery = true)
     List<Submission> findPublicByUserId(@Param("userId") Long userId);
 
     // Find submission by ID and user (for authorization checks)

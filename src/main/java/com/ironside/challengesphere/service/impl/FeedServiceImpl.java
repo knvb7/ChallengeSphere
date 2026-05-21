@@ -369,6 +369,9 @@ public class FeedServiceImpl implements FeedService {
                 logger.warn("Missing user or challenge data for submission {}", submission.getId());
                 continue;
             }
+            if (!Boolean.TRUE.equals(challenge.getActive())) {
+                continue;
+            }
             if (currentUserId != null && !currentUserId.equals(user.getId())
                     && userBlockRepository.existsActiveBlockBetween(currentUserId, user.getId())) {
                 continue;
