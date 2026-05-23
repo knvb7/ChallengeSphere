@@ -11,6 +11,8 @@ import java.sql.Timestamp;
 @Data
 @NoArgsConstructor
 public class Challenge {
+    public static final String MODE_DAILY = "DAILY";
+    public static final String MODE_ONE_OFF = "ONE_OFF";
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -52,6 +54,13 @@ public class Challenge {
     @Column(name = "number_of_days", nullable = false)
     private Integer numberOfDays;
 
+    @Column(name = "challenge_mode", nullable = false, length = 20, columnDefinition = "VARCHAR(20) DEFAULT 'DAILY'")
+    private String challengeMode = MODE_DAILY;
+
     @Column(name = "cover_photo_urls", columnDefinition = "TEXT")
     private String coverPhotoUrls; // Comma-separated GCS URLs, up to 5
+
+    public static boolean isOneOffMode(String challengeMode) {
+        return MODE_ONE_OFF.equalsIgnoreCase(challengeMode);
+    }
 }

@@ -15,12 +15,15 @@ import com.ironside.challengesphere.repository.UserBlockRepository;
 import com.ironside.challengesphere.repository.UserPreferencesRepository;
 import com.ironside.challengesphere.repository.UserRepository;
 import com.ironside.challengesphere.service.EmailService;
+import jakarta.persistence.Column;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.sql.Timestamp;
 import java.time.Instant;
@@ -203,6 +206,67 @@ class NotificationServiceImplTest {
         assertEquals("PENDING", action.get("status").asText());
         assertEquals(10L, action.get("challengeId").asLong());
         assertEquals("Morning Run", action.get("challengeTitle").asText());
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void notifyChallengeJoinedSendsChallengeUpdateToOwner() throws Exception {
+        User joiner = user(2L, "joiner");
+        User owner = user(1L, "owner");
+        UserPreferences ownerPrefs = prefs(1L);
+
+        Challenge challenge = new Challenge();
+        challenge.setId(10L);
+        challenge.setTitle("Morning Run");
+        challenge.setCreatorId(1L);
+        challenge.setCurrentOwnerId(1L);
+        challenge.setIsPrivate(false);
+
+        when(userRepository.findById(2L)).thenReturn(Optional.of(joiner));
+        when(preferencesRepository.findByUserIdIn(Set.of(1L))).thenReturn(List.of(ownerPrefs));
+        when(userRepository.findAllById(Set.of(1L))).thenReturn(List.of(owner));
+        when(notificationRepository.saveAll(any()))
+                .thenAnswer(invocation -> {
+                    Collection<Notification> notifications = new ArrayList<>();
+                    invocation.<Iterable<Notification>>getArgument(0).forEach(notifications::add);
+                    return notifications;
+                });
+
+        int created = notificationService.notifyChallengeJoined(challenge, 2L, List.of(1L));
+
+        ArgumentCaptor<Iterable<Notification>> captor = ArgumentCaptor.forClass(Iterable.class);
+        verify(notificationRepository).saveAll(captor.capture());
+
+        List<Notification> saved = new ArrayList<>();
+        captor.getValue().forEach(saved::add);
+
+        assertEquals(1, created);
+        assertEquals(1L, saved.get(0).getUserId());
+        assertEquals("CHALLENGE_UPDATE", saved.get(0).getType());
+
+        JsonNode action = objectMapper.readTree(saved.get(0).getActionObject());
+        assertEquals("JOINED", action.get("actionType").asText());
+        assertEquals(2L, action.get("actorUserId").asLong());
+        assertEquals(10L, action.get("challengeId").asLong());
+        assertEquals("Morning Run", action.get("challengeTitle").asText());
+    }
+
+    @Test
+    void notificationPayloadColumnsMapToText() throws Exception {
+        Column messageColumn = Notification.class.getDeclaredField("message").getAnnotation(Column.class);
+        Column actionObjectColumn = Notification.class.getDeclaredField("actionObject").getAnnotation(Column.class);
+
+        assertEquals("TEXT", messageColumn.columnDefinition());
+        assertEquals("TEXT", actionObjectColumn.columnDefinition());
+    }
+
+    @Test
+    void submissionNotificationsUseIndependentTransaction() throws Exception {
+        Transactional transactional = NotificationServiceImpl.class
+                .getMethod("notifySubmission", Submission.class, Challenge.class, Collection.class)
+                .getAnnotation(Transactional.class);
+
+        assertEquals(Propagation.REQUIRES_NEW, transactional.propagation());
     }
 
     private User user(Long id, String username) {

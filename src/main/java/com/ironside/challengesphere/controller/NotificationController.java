@@ -1,9 +1,14 @@
 package com.ironside.challengesphere.controller;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.ironside.challengesphere.api.request.JoinChallengeRequest;
+import com.ironside.challengesphere.api.response.JoinChallengeResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.model.Notification;
 import com.ironside.challengesphere.repository.NotificationRepository;
 import com.ironside.challengesphere.security.UserPrincipal;
+import com.ironside.challengesphere.service.ChallengeService;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -21,9 +26,14 @@ import java.util.Map;
 public class NotificationController {
 
     private static final Logger logger = LogManager.getLogger(NotificationController.class);
+    private static final String TYPE_CHALLENGE_INVITE = "CHALLENGE_INVITE";
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Autowired
     private NotificationRepository notificationRepository;
+
+    @Autowired
+    private ChallengeService challengeService;
 
     /**
      * GET /api/v1/notifications/{userId}
@@ -105,6 +115,38 @@ public class NotificationController {
         return ResponseEntity.ok().build();
     }
 
+    @PostMapping("/me/{notificationId}/challenge-invite/accept")
+    @Transactional
+    public ResponseEntity<JoinChallengeResponse> acceptChallengeInvite(
+            @PathVariable Long notificationId,
+            @AuthenticationPrincipal UserPrincipal principal) throws ChallengeSphereException {
+        Long userId = requireUserId(principal);
+        Notification notification = requireOwnChallengeInvite(notificationId, userId);
+        Long challengeId = extractChallengeId(notification);
+
+        JoinChallengeRequest request = new JoinChallengeRequest();
+        request.setChallengeId(challengeId);
+        request.setUserIds(List.of(userId));
+
+        JoinChallengeResponse response = challengeService.joinChallenge(request);
+        notificationRepository.markAsRead(userId, notificationId);
+        return ResponseEntity.ok(response);
+    }
+
+    @PostMapping("/me/{notificationId}/challenge-invite/ignore")
+    @Transactional
+    public ResponseEntity<Map<String, Object>> ignoreChallengeInvite(
+            @PathVariable Long notificationId,
+            @AuthenticationPrincipal UserPrincipal principal) throws ChallengeSphereException {
+        Long userId = requireUserId(principal);
+        requireOwnChallengeInvite(notificationId, userId);
+        notificationRepository.markAsRead(userId, notificationId);
+        return ResponseEntity.ok(Map.of(
+                "handled", true,
+                "notificationId", notificationId
+        ));
+    }
+
     private int clampLimit(int limit) {
         return Math.max(1, Math.min(limit, 100));
     }
@@ -120,6 +162,33 @@ public class NotificationController {
         Long currentUserId = requireUserId(principal);
         if (!currentUserId.equals(userId)) {
             throw new ChallengeSphereException("You can only access your own notifications", HttpStatus.FORBIDDEN, logger);
+        }
+    }
+
+    private Notification requireOwnChallengeInvite(Long notificationId, Long userId) throws ChallengeSphereException {
+        Notification notification = notificationRepository.findById(notificationId)
+                .orElseThrow(() -> new ChallengeSphereException("Notification not found", HttpStatus.NOT_FOUND, logger));
+        if (!userId.equals(notification.getUserId())) {
+            throw new ChallengeSphereException("You can only access your own notifications", HttpStatus.FORBIDDEN, logger);
+        }
+        if (notification.getType() == null || !TYPE_CHALLENGE_INVITE.equalsIgnoreCase(notification.getType())) {
+            throw new ChallengeSphereException("Notification is not a challenge invite", HttpStatus.BAD_REQUEST, logger);
+        }
+        return notification;
+    }
+
+    private Long extractChallengeId(Notification notification) throws ChallengeSphereException {
+        try {
+            JsonNode action = objectMapper.readTree(notification.getActionObject());
+            JsonNode challengeId = action.get("challengeId");
+            if (challengeId == null || !challengeId.canConvertToLong()) {
+                throw new ChallengeSphereException("Challenge invite is missing challenge details", HttpStatus.BAD_REQUEST, logger);
+            }
+            return challengeId.asLong();
+        } catch (ChallengeSphereException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new ChallengeSphereException("Challenge invite is missing challenge details", HttpStatus.BAD_REQUEST, logger);
         }
     }
 }

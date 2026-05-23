@@ -21,6 +21,7 @@ public class ChallengeDetailResponse {
     private Long creatorId;
     private Long currentOwnerId;
     private Integer numberOfDays;
+    private String challengeMode;
     private String coverPhotoUrls;
     private int participantCount;
     private boolean isJoined;
@@ -40,6 +41,7 @@ public class ChallengeDetailResponse {
         r.creatorId = challenge.getCreatorId();
         r.currentOwnerId = challenge.getCurrentOwnerId();
         r.numberOfDays = challenge.getNumberOfDays();
+        r.challengeMode = challenge.getChallengeMode();
         r.coverPhotoUrls = challenge.getCoverPhotoUrls();
         r.participantCount = participantCount;
         r.isJoined = isJoined;

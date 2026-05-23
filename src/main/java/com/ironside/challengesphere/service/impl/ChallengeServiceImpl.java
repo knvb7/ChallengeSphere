@@ -6,6 +6,7 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -219,7 +220,9 @@ public class ChallengeServiceImpl implements ChallengeService {
             challenge.setCurrentOwnerId(request.getCreatorUserId());
             challenge.setActive(true);
             challenge.setCreatedAt(new Timestamp(System.currentTimeMillis()));
-            challenge.setNumberOfDays(request.getNumberOfDays());
+            String challengeMode = normalizeChallengeMode(request.getChallengeMode());
+            challenge.setChallengeMode(challengeMode);
+            challenge.setNumberOfDays(resolveChallengeDuration(request.getNumberOfDays(), challengeMode));
             List<String> requestedCoverPhotoUrls = getRequestedCoverPhotoUrls(request);
             if (requestedCoverPhotoUrls != null) {
                 challenge.setCoverPhotoUrls(serializeCoverPhotoUrls(requestedCoverPhotoUrls));
@@ -274,6 +277,7 @@ public class ChallengeServiceImpl implements ChallengeService {
                     savedChallenge.getCreatorId(),
                     savedChallenge.getCurrentOwnerId(),
                     savedChallenge.getNumberOfDays(),
+                    savedChallenge.getChallengeMode(),
                     toReadableCoverPhotoUrls(savedChallenge.getCoverPhotoUrls())
             );
 
@@ -565,6 +569,8 @@ public class ChallengeServiceImpl implements ChallengeService {
                 for (Long userId : successfulUserIds) {
                     updateChallengesAcceptedCountAsync(userId, true);
                 }
+
+                notifyChallengeOwnersOfJoins(challenge, successfulUserIds);
             }
 
             // Return appropriate response based on results
@@ -1028,8 +1034,13 @@ public class ChallengeServiceImpl implements ChallengeService {
         if (request.getIsPrivate() != null) {
             challenge.setIsPrivate(request.getIsPrivate());
         }
+        if (request.getChallengeMode() != null) {
+            challenge.setChallengeMode(normalizeChallengeMode(request.getChallengeMode()));
+        }
         if (request.getNumberOfDays() != null) {
-            challenge.setNumberOfDays(request.getNumberOfDays());
+            challenge.setNumberOfDays(resolveChallengeDuration(request.getNumberOfDays(), challenge.getChallengeMode()));
+        } else if (Challenge.isOneOffMode(challenge.getChallengeMode())) {
+            challenge.setNumberOfDays(1);
         }
         if (request.getActive() != null) {
             challenge.setActive(request.getActive());
@@ -1180,9 +1191,10 @@ public class ChallengeServiceImpl implements ChallengeService {
                 List<com.ironside.challengesphere.model.Submission> subs =
                         submissionRepository.findActiveByUserIdAndChallengeId(userId, uc.getChallengeId());
 
-                int totalDays = c.getNumberOfDays();
+                boolean oneOff = Challenge.isOneOffMode(c.getChallengeMode());
+                int totalDays = oneOff ? 1 : c.getNumberOfDays();
                 List<Integer> submittedDays = distinctSubmittedDays(subs, totalDays);
-                int daysCompleted = submittedDays.size();
+                int daysCompleted = oneOff && !submittedDays.isEmpty() ? 1 : submittedDays.size();
                 int completionPct = totalDays > 0 ? (int) Math.round((daysCompleted * 100.0) / totalDays) : 0;
 
                 MyChallengesResponse.ChallengeSummary summary = MyChallengesResponse.ChallengeSummary.from(
@@ -1192,7 +1204,7 @@ public class ChallengeServiceImpl implements ChallengeService {
                 summary.setCurrentStreak(computeCurrentStreak(submittedDays));
                 summary.setCompletionPercentage(completionPct);
                 summary.setJoinedAt(uc.getJoinedAt());
-                summary.setCompleted(Boolean.TRUE.equals(uc.getCompleted()));
+                summary.setCompleted(oneOff ? daysCompleted == 1 : Boolean.TRUE.equals(uc.getCompleted()));
                 summaries.add(summary);
             }
 
@@ -1246,6 +1258,36 @@ public class ChallengeServiceImpl implements ChallengeService {
         return parts.length > 0 ? parts[0].trim() : null;
     }
 
+    private String normalizeChallengeMode(String challengeMode) throws ChallengeSphereException {
+        if (challengeMode == null || challengeMode.isBlank()) {
+            return Challenge.MODE_DAILY;
+        }
+
+        String normalized = challengeMode.trim()
+                .toUpperCase(Locale.ROOT)
+                .replace('-', '_')
+                .replace(' ', '_');
+        if ("DAILY".equals(normalized)) {
+            return Challenge.MODE_DAILY;
+        }
+        if ("ONE_OFF".equals(normalized) || "ONE_TIME".equals(normalized) || "ADHOC".equals(normalized)) {
+            return Challenge.MODE_ONE_OFF;
+        }
+
+        throw new ChallengeSphereException(
+                "Challenge mode must be DAILY or ONE_OFF",
+                HttpStatus.BAD_REQUEST,
+                logger
+        );
+    }
+
+    private int resolveChallengeDuration(Integer requestedDays, String challengeMode) {
+        if (Challenge.isOneOffMode(challengeMode)) {
+            return 1;
+        }
+        return requestedDays != null ? requestedDays : 1;
+    }
+
     private List<Integer> distinctSubmittedDays(List<Submission> submissions, int totalDays) {
         if (submissions == null || submissions.isEmpty()) {
             return List.of();
@@ -1290,6 +1332,7 @@ public class ChallengeServiceImpl implements ChallengeService {
         copy.setCreatorId(challenge.getCreatorId());
         copy.setCurrentOwnerId(challenge.getCurrentOwnerId());
         copy.setNumberOfDays(challenge.getNumberOfDays());
+        copy.setChallengeMode(challenge.getChallengeMode());
         copy.setCoverPhotoUrls(toReadableCoverPhotoUrls(challenge.getCoverPhotoUrls()));
         return copy;
     }
@@ -1450,5 +1493,27 @@ public class ChallengeServiceImpl implements ChallengeService {
         }
         return followRepository.existsByFollowerIdAndFollowingIdAndActive(ownerUserId, userId)
                 || followRepository.existsByFollowerIdAndFollowingIdAndActive(userId, ownerUserId);
+    }
+
+    private void notifyChallengeOwnersOfJoins(Challenge challenge, List<Long> successfulUserIds) {
+        Set<Long> recipientUserIds = new HashSet<>();
+        if (challenge.getCreatorId() != null) {
+            recipientUserIds.add(challenge.getCreatorId());
+        }
+        if (challenge.getCurrentOwnerId() != null) {
+            recipientUserIds.add(challenge.getCurrentOwnerId());
+        }
+        if (recipientUserIds.isEmpty()) {
+            return;
+        }
+
+        for (Long joinedUserId : successfulUserIds) {
+            try {
+                notificationService.notifyChallengeJoined(challenge, joinedUserId, recipientUserIds);
+            } catch (Exception e) {
+                logger.warn("Failed to notify challenge owner(s) for challengeId={} joinedUserId={}: {}",
+                        challenge.getId(), joinedUserId, e.getMessage());
+            }
+        }
     }
 }

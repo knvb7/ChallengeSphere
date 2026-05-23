@@ -353,9 +353,11 @@ public class FeedServiceImpl implements FeedService {
 
         // Batch check if current user has gloried these submissions
         Map<Long, Boolean> gloryMap = new HashMap<>();
+        Map<Long, Boolean> ungloryMap = new HashMap<>();
         if (currentUserId != null) {
             for (Long submissionId : submissionIds) {
                 gloryMap.put(submissionId, gloryRepository.existsBySubmissionIdAndUserId(submissionId, currentUserId));
+                ungloryMap.put(submissionId, gloryRepository.existsUngloriedBySubmissionIdAndUserId(submissionId, currentUserId));
             }
         }
 
@@ -378,13 +380,15 @@ public class FeedServiceImpl implements FeedService {
             }
 
             Boolean isGloried = currentUserId != null ? gloryMap.getOrDefault(submission.getId(), false) : null;
+            Boolean isUngloried = currentUserId != null ? ungloryMap.getOrDefault(submission.getId(), false) : null;
 
             FeedItemResponse item = FeedItemResponse.fromSubmission(
                     submission,
                     user.getUsername(),
                     user.getProfilePicUrl(),
                     challenge.getTitle(),
-                    isGloried
+                    isGloried,
+                    isUngloried
             );
             item.setMediaUrls(mediaUrlService.toReadableMediaUrlList(submission.getMediaUrls()));
             feedItems.add(item);

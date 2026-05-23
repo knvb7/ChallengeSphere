@@ -16,6 +16,7 @@ public class ChallengeUpdateRequest {
     private Boolean isPrivate;
     private Timestamp endDate;
     private Integer numberOfDays;
+    private String challengeMode;
     private String reminderTime;
     private Boolean active;
 

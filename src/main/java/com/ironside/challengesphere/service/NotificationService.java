@@ -18,6 +18,8 @@ public interface NotificationService {
 
     void notifyChallengeInvitesAsync(Challenge challenge, Long actorUserId, Collection<Long> requestedRecipientUserIds);
 
+    int notifyChallengeJoined(Challenge challenge, Long joiningUserId, Collection<Long> recipientUserIds);
+
     Notification notifyGlory(Submission submission, Long actorUserId);
 
     Notification notifyComment(Submission submission, Long actorUserId, Long commentId);

@@ -11,6 +11,7 @@ import java.util.Set;
 import java.util.UUID;
 
 import com.ironside.challengesphere.util.GetSignedUrlForGcs;
+import com.ironside.challengesphere.util.MediaTypes;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -22,6 +23,7 @@ import org.springframework.data.domain.Sort;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.multipart.MultipartFile;
 
 import com.ironside.challengesphere.api.request.CreateSubmissionRequest;
 import com.ironside.challengesphere.api.request.GeneratePresignedUrlsRequest;
@@ -158,22 +160,27 @@ public class SubmissionServiceImpl implements SubmissionService {
                 );
             }
 
-            // Validate day number doesn't exceed challenge duration
-            if (dayNumber == null || dayNumber < 1) {
-                throw new ChallengeSphereException(
-                        "Day number must be greater than zero",
-                        HttpStatus.BAD_REQUEST,
-                        logger
-                );
+            boolean oneOffChallenge = isOneOffChallenge(challenge);
+            if (oneOffChallenge) {
+                dayNumber = normalizeOneOffSubmissionDay(dayNumber);
+            } else {
+                // Validate day number doesn't exceed challenge duration
+                if (dayNumber == null || dayNumber < 1) {
+                    throw new ChallengeSphereException(
+                            "Day number must be greater than zero",
+                            HttpStatus.BAD_REQUEST,
+                            logger
+                    );
+                }
+                if (challenge.getNumberOfDays() != null && dayNumber > challenge.getNumberOfDays()) {
+                    throw new ChallengeSphereException(
+                            "Day number " + dayNumber + " exceeds challenge duration of " + challenge.getNumberOfDays() + " days",
+                            HttpStatus.BAD_REQUEST,
+                            logger
+                    );
+                }
+                ensureSubmissionDayAcceptsUpload(challenge, dayNumber);
             }
-            if (challenge.getNumberOfDays() != null && dayNumber > challenge.getNumberOfDays()) {
-                throw new ChallengeSphereException(
-                        "Day number " + dayNumber + " exceeds challenge duration of " + challenge.getNumberOfDays() + " days",
-                        HttpStatus.BAD_REQUEST,
-                        logger
-                );
-            }
-            ensureSubmissionDayAcceptsUpload(challenge, dayNumber);
 
             // Serialize concurrent writers for the same (user, challenge, day) tuple so the
             // 5-per-day cap is atomic. The lock is scoped to this transaction — two requests
@@ -187,7 +194,15 @@ public class SubmissionServiceImpl implements SubmissionService {
             long activeSubmissionCount = existingSubmissions.stream()
                     .filter(submission -> Boolean.TRUE.equals(submission.getActive()))
                     .count();
-            if (activeSubmissionCount >= 5) {
+            if (oneOffChallenge && activeSubmissionCount >= 1) {
+                logger.warn("One-off submission already exists for user: {}, challenge: {}", userId, challengeId);
+                throw new ChallengeSphereException(
+                        "This one-off challenge already has an active submission.",
+                        HttpStatus.BAD_REQUEST,
+                        logger
+                );
+            }
+            if (!oneOffChallenge && activeSubmissionCount >= 5) {
                 logger.warn("Submission limit reached for user: {}, challenge: {}, day: {}", userId, challengeId, dayNumber);
                 throw new ChallengeSphereException(
                         "You have reached the maximum of 5 submissions for day " + dayNumber + ".",
@@ -206,10 +221,7 @@ public class SubmissionServiceImpl implements SubmissionService {
             submission.setDescription(request.getDescription());
 
             // Convert media URLs list to comma-separated string
-            if (request.getMediaUrls() != null && !request.getMediaUrls().isEmpty()) {
-                String mediaUrlsString = String.join(",", request.getMediaUrls());
-                submission.setMediaUrls(mediaUrlsString);
-            }
+            submission.setMediaUrls(mediaUrlService.toStoredMediaUrlsString(request.getMediaUrls()));
 
             boolean challengeIsPrivate = Boolean.TRUE.equals(challenge.getIsPrivate());
             if (challengeIsPrivate) {
@@ -243,13 +255,17 @@ public class SubmissionServiceImpl implements SubmissionService {
                 logger.warn("Failed to enqueue moderation for submission {}: {}", savedSubmission.getId(), e.getMessage());
             }
 
-            try {
-                leaderboardService.incrementScore(challengeId, userId, 10, "New submission for day " + dayNumber);
-                logger.debug("Updated leaderboard score for user: {} in challenge: {}", userId, challengeId);
-            } catch (Exception e) {
-                // Don't fail the submission if leaderboard update fails
-                logger.warn("Failed to update leaderboard score for user: {} in challenge: {}: {}",
-                        userId, challengeId, e.getMessage());
+            if (oneOffChallenge) {
+                markOneOffChallengeCompleted(userChallenge);
+            } else {
+                try {
+                    leaderboardService.incrementScore(challengeId, userId, 10, "New submission for day " + dayNumber);
+                    logger.debug("Updated leaderboard score for user: {} in challenge: {}", userId, challengeId);
+                } catch (Exception e) {
+                    // Don't fail the submission if leaderboard update fails
+                    logger.warn("Failed to update leaderboard score for user: {} in challenge: {}: {}",
+                            userId, challengeId, e.getMessage());
+                }
             }
 
             if (Boolean.TRUE.equals(savedSubmission.getActive())) {
@@ -408,9 +424,7 @@ public class SubmissionServiceImpl implements SubmissionService {
 
             mediaUrlService.applyPrivateImageCacheHeaders(request.getMediaUrls());
             submission.setDescription(request.getDescription());
-            submission.setMediaUrls(request.getMediaUrls() == null || request.getMediaUrls().isEmpty()
-                    ? null
-                    : String.join(",", request.getMediaUrls()));
+            submission.setMediaUrls(mediaUrlService.toStoredMediaUrlsString(request.getMediaUrls()));
             if (request.getIsPrivate() != null) {
                 submission.setIsPrivate(request.getIsPrivate());
             }
@@ -622,6 +636,43 @@ public class SubmissionServiceImpl implements SubmissionService {
         );
     }
 
+    @Override
+    public String uploadSubmissionMedia(
+            Long userId,
+            MultipartFile file,
+            MediaTypes mediaType,
+            GeneratePresignedUrlsRequest.ContentType contentType) throws ChallengeSphereException {
+        if (file == null || file.isEmpty()) {
+            throw new ChallengeSphereException("Upload file is required", HttpStatus.BAD_REQUEST, logger);
+        }
+        if (mediaType != MediaTypes.SUBMISSION_PHOTO && mediaType != MediaTypes.SUBMISSION_VIDEO) {
+            throw new ChallengeSphereException("Unsupported submission media type", HttpStatus.BAD_REQUEST, logger);
+        }
+        if (contentType == null) {
+            throw new ChallengeSphereException("Content type is required", HttpStatus.BAD_REQUEST, logger);
+        }
+        if (!userRepository.existsById(userId)) {
+            throw new ChallengeSphereException("User not found with id: " + userId, HttpStatus.NOT_FOUND, logger);
+        }
+
+        String fileName = file.getOriginalFilename() == null ? "upload" : file.getOriginalFilename();
+        String fileKey = String.format("submissions/user_%d/%s/%d_%s%s",
+                userId,
+                mediaType.name(),
+                System.currentTimeMillis(),
+                UUID.randomUUID(),
+                getFileExtension(fileName));
+
+        try {
+            mediaUrlService.uploadObject(fileKey, file.getBytes(), contentType.getMimeType());
+            logger.info("Uploaded submission media through backend fallback for user: {}, key: {}", userId, fileKey);
+            return fileKey;
+        } catch (Exception e) {
+            logger.error("Backend media upload failed for user: {}, key: {}", userId, fileKey, e);
+            throw new ChallengeSphereException("Failed to upload submission media", HttpStatus.INTERNAL_SERVER_ERROR, logger, e);
+        }
+    }
+
     /**
      * Extract file extension from filename
      */
@@ -690,6 +741,30 @@ public class SubmissionServiceImpl implements SubmissionService {
         }
     }
 
+    private boolean isOneOffChallenge(Challenge challenge) {
+        return challenge != null && Challenge.isOneOffMode(challenge.getChallengeMode());
+    }
+
+    private Integer normalizeOneOffSubmissionDay(Integer dayNumber) throws ChallengeSphereException {
+        if (dayNumber == null || dayNumber == 1) {
+            return 1;
+        }
+        throw new ChallengeSphereException(
+                "One-off challenges only accept a single completion submission.",
+                HttpStatus.BAD_REQUEST,
+                logger
+        );
+    }
+
+    private void markOneOffChallengeCompleted(UserChallenge userChallenge) {
+        if (userChallenge == null || Boolean.TRUE.equals(userChallenge.getCompleted())) {
+            return;
+        }
+        userChallenge.setCompleted(true);
+        userChallenge.setCompletedAt(new Timestamp(System.currentTimeMillis()));
+        userChallengeRepository.save(userChallenge);
+    }
+
     private void ensureSubmissionDayAcceptsUpload(Challenge challenge, Integer dayNumber) throws ChallengeSphereException {
         if (challenge == null) {
             throw new ChallengeSphereException(
@@ -711,6 +786,10 @@ public class SubmissionServiceImpl implements SubmissionService {
                     HttpStatus.BAD_REQUEST,
                     logger
             );
+        }
+        if (isOneOffChallenge(challenge)) {
+            normalizeOneOffSubmissionDay(dayNumber);
+            return;
         }
         if (challenge.getNumberOfDays() != null && dayNumber > challenge.getNumberOfDays()) {
             throw new ChallengeSphereException(

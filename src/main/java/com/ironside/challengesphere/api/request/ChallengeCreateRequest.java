@@ -29,6 +29,8 @@ public class ChallengeCreateRequest {
     @Positive(message = "Number of days must be positive")
     private Integer numberOfDays;
 
+    private String challengeMode;
+
     private String reminderTime; // e.g. "08:00 AM"
 
     @Size(max = 5, message = "A challenge can have at most 5 cover photos")

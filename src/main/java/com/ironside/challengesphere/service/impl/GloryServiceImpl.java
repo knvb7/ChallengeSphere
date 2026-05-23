@@ -52,6 +52,9 @@ public class GloryServiceImpl implements GloryService {
     @Autowired
     private UserRepository userRepository;
 
+    @Autowired
+    private RedisCacheServiceImpl cacheService;
+
     @Override
     @Transactional
     public boolean toggleGlory(Long submissionId, Long userId) throws ChallengeSphereException {
@@ -102,6 +105,8 @@ public class GloryServiceImpl implements GloryService {
         else
             submissionRepository.decrementGloryCount(submissionId);
         logger.info("Updated glory count for submission: {} ({})", submissionId, isGiven ? "incremented" : "decremented");
+
+        invalidateInteractionCaches(submission);
 
         return isGiven;
     }
@@ -200,6 +205,7 @@ public class GloryServiceImpl implements GloryService {
         }
 
         logger.info("Toggled unglory={} for submission: {} by user: {}", isUngloried, submissionId, userId);
+        invalidateInteractionCaches(submission);
         return isUngloried;
     }
 
@@ -216,6 +222,18 @@ public class GloryServiceImpl implements GloryService {
         Long count = gloryRepository.countActiveBySubmissionId(submissionId);
 
         return count;
+    }
+
+    private void invalidateInteractionCaches(Submission submission) {
+        if (submission == null) {
+            return;
+        }
+        try {
+            cacheService.invalidateGloryCaches(submission.getId());
+            cacheService.invalidateAllFeeds();
+        } catch (Exception e) {
+            logger.warn("Failed to invalidate interaction caches for submission {}: {}", submission.getId(), e.getMessage());
+        }
     }
 
     private boolean canInteractWithSubmission(Submission submission, Long viewerId) {

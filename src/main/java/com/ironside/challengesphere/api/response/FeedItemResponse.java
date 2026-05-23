@@ -33,6 +33,7 @@ public class FeedItemResponse {
     private Long commentsCount;
     private Timestamp createdAt;
     private Boolean isGloriedByCurrentUser;
+    private Boolean isUngloriedByCurrentUser;
 
     /**
      * Create FeedItemResponse from Submission with additional user and challenge info
@@ -42,7 +43,8 @@ public class FeedItemResponse {
             String username,
             String userProfilePicUrl,
             String challengeTitle,
-            Boolean isGloriedByCurrentUser) {
+            Boolean isGloriedByCurrentUser,
+            Boolean isUngloriedByCurrentUser) {
         
         List<String> mediaUrlsList = null;
         if (submission.getMediaUrls() != null && !submission.getMediaUrls().isEmpty()) {
@@ -63,7 +65,7 @@ public class FeedItemResponse {
                 .commentsCount(submission.getCommentsCount())
                 .createdAt(submission.getCreatedAt())
                 .isGloriedByCurrentUser(isGloriedByCurrentUser)
+                .isUngloriedByCurrentUser(isUngloriedByCurrentUser)
                 .build();
     }
 }
-

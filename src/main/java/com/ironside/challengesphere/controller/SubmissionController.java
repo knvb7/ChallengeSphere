@@ -10,6 +10,7 @@ import com.ironside.challengesphere.model.Submission;
 import com.ironside.challengesphere.security.SecurityAccess;
 import com.ironside.challengesphere.security.UserPrincipal;
 import com.ironside.challengesphere.service.SubmissionService;
+import com.ironside.challengesphere.util.MediaTypes;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
@@ -17,10 +18,14 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
+
+import java.util.Map;
 
 @RestController
 @Validated
@@ -92,6 +97,21 @@ public class SubmissionController {
 
         PresignedUrlsResponse response = submissionService.generatePresignedUrls(request);
         return ResponseEntity.ok(response);
+    }
+
+    /**
+     * Upload media through the backend when the device cannot sustain a direct GCS PUT.
+     * POST /api/v1/submissions/upload-fallback
+     */
+    @PostMapping(value = "/upload-fallback", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<Map<String, String>> uploadMediaFallback(
+            @AuthenticationPrincipal UserPrincipal principal,
+            @RequestPart("file") MultipartFile file,
+            @RequestParam MediaTypes mediaType,
+            @RequestParam GeneratePresignedUrlsRequest.ContentType contentType) throws ChallengeSphereException {
+        Long userId = SecurityAccess.requireUserId(principal);
+        String fileKey = submissionService.uploadSubmissionMedia(userId, file, mediaType, contentType);
+        return ResponseEntity.ok(Map.of("fileKey", fileKey));
     }
 
     /**

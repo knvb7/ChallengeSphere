@@ -78,7 +78,8 @@ public class RateLimitingFilter extends OncePerRequestFilter {
             return new Limit("challenge-membership", 30, Duration.ofMinutes(1));
         }
         if ("POST".equals(method) && (path.equals("/api/v1/challenges/presigned-urls")
-                || path.equals("/api/v1/submissions/presigned-urls"))) {
+                || path.equals("/api/v1/submissions/presigned-urls")
+                || path.equals("/api/v1/submissions/upload-fallback"))) {
             return new Limit("upload-url", 20, Duration.ofMinutes(1));
         }
 

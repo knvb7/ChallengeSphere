@@ -9,6 +9,8 @@ import com.ironside.challengesphere.api.response.SubmissionResponse;
 import com.ironside.challengesphere.api.response.SubmissionsResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.model.Submission;
+import com.ironside.challengesphere.util.MediaTypes;
+import org.springframework.web.multipart.MultipartFile;
 
 @Service
 public interface SubmissionService {
@@ -20,6 +22,11 @@ public interface SubmissionService {
     SubmissionsResponse getRandomChallengeSubmissionsByDay(Long challengeId, Integer dayNumber, int page, int pageSize, Long callerId) throws ChallengeSphereException;
     SubmissionsResponse getSubmissionsByUser(Long userId, int page, int pageSize, Long callerId) throws ChallengeSphereException;
     PresignedUrlsResponse generatePresignedUrls(GeneratePresignedUrlsRequest request) throws ChallengeSphereException;
+    String uploadSubmissionMedia(
+            Long userId,
+            MultipartFile file,
+            MediaTypes mediaType,
+            GeneratePresignedUrlsRequest.ContentType contentType) throws ChallengeSphereException;
     
     /**
      * Get a single submission by ID.

@@ -19,6 +19,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.sql.Timestamp;
@@ -46,6 +47,7 @@ public class NotificationServiceImpl implements NotificationService {
     private static final String TYPE_GLORY = "GLORY";
     private static final String TYPE_COMMENT = "COMMENT";
     private static final String TYPE_CHALLENGE_INVITE = "CHALLENGE_INVITE";
+    private static final String TYPE_CHALLENGE_UPDATE = "CHALLENGE_UPDATE";
 
     private final NotificationRepository notificationRepository;
     private final UserRepository userRepository;
@@ -125,7 +127,7 @@ public class NotificationServiceImpl implements NotificationService {
     }
 
     @Override
-    @Transactional
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public int notifySubmission(Submission submission, Challenge challenge, Collection<Long> recipientUserIds) {
         if (submission == null || challenge == null || recipientUserIds == null || recipientUserIds.isEmpty()) {
             return 0;
@@ -234,6 +236,56 @@ public class NotificationServiceImpl implements NotificationService {
             logger.warn("Failed to create challenge invite notifications for challengeId={}: {}",
                     challenge == null ? null : challenge.getId(), e.getMessage());
         }
+    }
+
+    @Override
+    @Transactional
+    public int notifyChallengeJoined(Challenge challenge, Long joiningUserId, Collection<Long> recipientUserIds) {
+        if (challenge == null || joiningUserId == null || recipientUserIds == null || recipientUserIds.isEmpty()) {
+            return 0;
+        }
+
+        Set<Long> normalizedRecipients = recipientUserIds.stream()
+                .filter(Objects::nonNull)
+                .filter(userId -> userId > 0)
+                .filter(userId -> !Objects.equals(userId, joiningUserId))
+                .collect(Collectors.toSet());
+        if (normalizedRecipients.isEmpty()) {
+            return 0;
+        }
+
+        User joiner = userRepository.findById(joiningUserId).orElse(null);
+        if (joiner == null) {
+            logger.warn("Skipping challenge join notification; joining userId={} not found", joiningUserId);
+            return 0;
+        }
+
+        Map<Long, UserPreferences> prefsByUserId = preferencesRepository.findByUserIdIn(normalizedRecipients).stream()
+                .collect(Collectors.toMap(UserPreferences::getUserId, prefs -> prefs));
+        List<User> recipients = userRepository.findAllById(normalizedRecipients);
+        List<Notification> toSave = new ArrayList<>();
+
+        String challengeTitle = safe(challenge.getTitle());
+        String message = displayName(joiner) + " joined"
+                + (challengeTitle.isBlank() ? " your challenge" : " " + challengeTitle);
+
+        for (User recipient : recipients) {
+            if (userBlockRepository.existsActiveBlockBetween(recipient.getId(), joiningUserId)) {
+                continue;
+            }
+            UserPreferences prefs = prefsByUserId.get(recipient.getId());
+            String actionObject = toJson(baseChallengeJoinedPayload(joiner, recipient, challenge));
+            if (allowsInApp(recipient, prefs, TYPE_CHALLENGE_UPDATE)) {
+                toSave.add(buildNotification(recipient.getId(), TYPE_CHALLENGE_UPDATE, message, actionObject));
+            }
+            sendEmailIfAllowed(recipient, prefs, TYPE_CHALLENGE_UPDATE, message);
+        }
+
+        if (!toSave.isEmpty()) {
+            notificationRepository.saveAll(toSave);
+        }
+        logger.info("Created {} challenge join notification(s) for challengeId={}", toSave.size(), challenge.getId());
+        return toSave.size();
     }
 
     @Override
@@ -396,6 +448,19 @@ public class NotificationServiceImpl implements NotificationService {
         Map<String, Object> data = baseActorPayload(actor);
         data.put("actionType", TYPE_CHALLENGE_INVITE);
         data.put("status", "PENDING");
+        data.put("challengeId", challenge.getId());
+        data.put("challengeTitle", challenge.getTitle());
+        data.put("creatorUserId", challenge.getCreatorId());
+        data.put("targetUserId", recipient.getId());
+        data.put("targetUsername", recipient.getUsername());
+        data.put("targetProfilePicUrl", recipient.getProfilePicUrl());
+        data.put("isPrivate", challenge.getIsPrivate());
+        return data;
+    }
+
+    private Map<String, Object> baseChallengeJoinedPayload(User actor, User recipient, Challenge challenge) {
+        Map<String, Object> data = baseActorPayload(actor);
+        data.put("actionType", "JOINED");
         data.put("challengeId", challenge.getId());
         data.put("challengeTitle", challenge.getTitle());
         data.put("creatorUserId", challenge.getCreatorId());

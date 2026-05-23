@@ -30,6 +30,7 @@ public class PopularChallengesResponse {
         private Long creatorId;
         private Long currentOwnerId;
         private Integer numberOfDays;
+        private String challengeMode;
         private String coverPhotoUrls;
         private int participantCount;
 
@@ -47,6 +48,7 @@ public class PopularChallengesResponse {
             this.creatorId = challenge.getCreatorId();
             this.currentOwnerId = challenge.getCurrentOwnerId();
             this.numberOfDays = challenge.getNumberOfDays();
+            this.challengeMode = challenge.getChallengeMode();
             this.coverPhotoUrls = challenge.getCoverPhotoUrls();
             this.participantCount = participantCount;
         }

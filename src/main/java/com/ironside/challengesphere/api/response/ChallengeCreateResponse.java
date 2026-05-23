@@ -24,6 +24,7 @@ public class ChallengeCreateResponse {
     private Long creatorId;
     private Long currentOwnerId;
     private Integer numberOfDays;
+    private String challengeMode;
     private List<String> coverPhotoUrls;
     private String message;
 
@@ -31,7 +32,7 @@ public class ChallengeCreateResponse {
                                                   String hashtags, String categories, String benefits,
                                                   Boolean isPrivate, LocalDate startDate, Boolean active,
                                                   Timestamp createdAt, Long creatorId, Long currentOwnerId,
-                                                  Integer numberOfDays, String rawCoverPhotoUrls) {
+                                                  Integer numberOfDays, String challengeMode, String rawCoverPhotoUrls) {
         ChallengeCreateResponse r = new ChallengeCreateResponse();
         r.challengeId = challengeId;
         r.title = title;
@@ -46,6 +47,7 @@ public class ChallengeCreateResponse {
         r.creatorId = creatorId;
         r.currentOwnerId = currentOwnerId;
         r.numberOfDays = numberOfDays;
+        r.challengeMode = challengeMode;
         r.coverPhotoUrls = splitUrls(rawCoverPhotoUrls);
         r.message = "Challenge created successfully";
         return r;

@@ -21,10 +21,10 @@ public class Notification {
     @Column(name = "type", nullable = false, length = 500)
     private String type;
 
-    @Column(name = "message", nullable = false)
+    @Column(name = "message", nullable = false, columnDefinition = "TEXT")
     private String message;
 
-    @Column(name = "action_object")
+    @Column(name = "action_object", columnDefinition = "TEXT")
     private String actionObject;
 
     @Column(name = "sent_at", nullable = false, columnDefinition = "TIMESTAMP DEFAULT CURRENT_TIMESTAMP")

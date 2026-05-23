@@ -118,7 +118,7 @@ public class GetSignedUrlForGcs {
     public static void uploadObject(String bucketName, String objectName, byte[] content, String contentType) {
         BlobInfo blobInfo = BlobInfo.newBuilder(BlobId.of(bucketName, objectName))
                 .setContentType(contentType)
-                .setCacheControl("public, max-age=31536000, immutable")
+                .setCacheControl("private, max-age=3600")
                 .build();
         storage.create(blobInfo, content);
         logger.info("Uploaded object to GCS: {}", objectName);

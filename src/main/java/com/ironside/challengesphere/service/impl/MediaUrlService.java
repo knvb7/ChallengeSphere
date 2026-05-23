@@ -97,6 +97,34 @@ public class MediaUrlService {
         }
     }
 
+    public void uploadObject(String objectName, byte[] content, String contentType) {
+        GetSignedUrlForGcs.uploadObject(bucketName, objectName, content, contentType);
+    }
+
+    public List<String> toStoredMediaUrls(List<String> mediaUrls) {
+        if (mediaUrls == null || mediaUrls.isEmpty()) {
+            return List.of();
+        }
+
+        List<String> storedUrls = new ArrayList<>();
+        for (String mediaUrl : mediaUrls) {
+            if (mediaUrl == null || mediaUrl.isBlank()) {
+                continue;
+            }
+
+            String objectName = extractGcsObjectName(mediaUrl);
+            storedUrls.add(objectName == null || objectName.isBlank()
+                    ? stripQuery(mediaUrl.trim())
+                    : objectName);
+        }
+        return storedUrls;
+    }
+
+    public String toStoredMediaUrlsString(List<String> mediaUrls) {
+        List<String> storedUrls = toStoredMediaUrls(mediaUrls);
+        return storedUrls.isEmpty() ? null : String.join(",", storedUrls);
+    }
+
     public void deleteMediaObjects(List<String> mediaUrls) {
         if (mediaUrls == null || mediaUrls.isEmpty()) {
             return;

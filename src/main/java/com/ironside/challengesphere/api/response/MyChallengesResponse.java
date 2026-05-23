@@ -30,6 +30,7 @@ public class MyChallengesResponse {
         private Long creatorId;
         private Long currentOwnerId;
         private Integer numberOfDays;
+        private String challengeMode;
         private String coverPhotoUrls;
         private int daysCompleted;
         private int currentStreak;
@@ -52,6 +53,7 @@ public class MyChallengesResponse {
             summary.creatorId = challenge.getCreatorId();
             summary.currentOwnerId = challenge.getCurrentOwnerId();
             summary.numberOfDays = challenge.getNumberOfDays();
+            summary.challengeMode = challenge.getChallengeMode();
             summary.coverPhotoUrls = challenge.getCoverPhotoUrls();
             return summary;
         }
