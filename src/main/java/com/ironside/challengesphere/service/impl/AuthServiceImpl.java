@@ -40,6 +40,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
@@ -98,13 +99,20 @@ public class AuthServiceImpl implements AuthService {
         String name = profile.name();
         String pictureUrl = profile.pictureUrl();
 
-        User user = userRepository.findByGoogleId(googleId)
-                .orElseGet(() -> userRepository.findByEmailId(email)
-                        .map(existing -> linkGoogleId(existing, googleId, pictureUrl))
-                        .orElseGet(() -> createGoogleUser(email, googleId, name, pictureUrl)));
+        Optional<User> googleUser = userRepository.findByGoogleId(googleId);
+        Optional<User> emailUser = googleUser.isPresent()
+                ? Optional.empty()
+                : userRepository.findByEmailId(email);
+        boolean isNewUser = googleUser.isEmpty() && emailUser.isEmpty();
+
+        User user = googleUser.orElseGet(() -> emailUser
+                .map(existing -> linkGoogleId(existing, googleId, pictureUrl))
+                .orElseGet(() -> createGoogleUser(email, googleId, name, pictureUrl)));
 
         logger.info("Google sign-in success for userId={} email={}", user.getId(), email);
-        return buildAuthResponse(user);
+        AuthResponse response = buildAuthResponse(user);
+        response.setIsNewUser(isNewUser);
+        return response;
     }
 
     @Override

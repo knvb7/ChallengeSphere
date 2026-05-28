@@ -17,6 +17,13 @@ public interface ChallengeRepository extends JpaRepository<Challenge, Long> {
     @Query(value = "SELECT * FROM challengesphere.challenges WHERE creator_id = :creatorId", nativeQuery = true)
     List<Challenge> findByCreatorId(@Param("creatorId") Long creatorId);
 
+    @Query(value = """
+            SELECT * FROM challengesphere.challenges
+            WHERE creator_id = :creatorId AND private = false AND active = true
+            ORDER BY created_at DESC, id DESC
+            """, nativeQuery = true)
+    List<Challenge> findPublicActiveByCreatorId(@Param("creatorId") Long creatorId);
+
     @Query(value = "SELECT * FROM challengesphere.challenges WHERE current_owner_id = :ownerId", nativeQuery = true)
     List<Challenge> findByCurrentOwnerId(@Param("ownerId") Long ownerId);
 

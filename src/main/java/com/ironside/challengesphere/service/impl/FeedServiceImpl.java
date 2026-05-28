@@ -38,6 +38,10 @@ public class FeedServiceImpl implements FeedService {
 
     private static final Logger logger = LogManager.getLogger(FeedServiceImpl.class);
     private static final int TIMELINE_REBUILD_SIZE = 500;
+    private static final String TRENDING_FEED_CACHE_KEY = "TRENDING:READABLE_AVATARS_V2";
+    private static final String EXPLORE_FEED_CACHE_KEY = "EXPLORE:READABLE_AVATARS_V3";
+    private static final String CHALLENGE_FEED_CACHE_PREFIX = "CHALLENGE:READABLE_AVATARS_V2:";
+    private static final String USER_FEED_CACHE_PREFIX = "USER:READABLE_AVATARS_V2:";
 
     @Autowired
     private SubmissionRepository submissionRepository;
@@ -122,7 +126,7 @@ public class FeedServiceImpl implements FeedService {
                 return FeedResponse.empty(page, pageSize, "TRENDING");
             }
 
-            Optional<FeedResponse> cached = cacheService.getCachedFeed("TRENDING", currentUserId, page, pageSize, FeedResponse.class);
+            Optional<FeedResponse> cached = cacheService.getCachedFeed(TRENDING_FEED_CACHE_KEY, currentUserId, page, pageSize, FeedResponse.class);
             if (cached.isPresent()) {
                 return cached.get();
             }
@@ -142,7 +146,7 @@ public class FeedServiceImpl implements FeedService {
 
             FeedResponse response = FeedResponse.create(feedItems, page, pageSize,
                     submissionsPage.getTotalElements(), "TRENDING");
-            cacheService.cacheFeed("TRENDING", currentUserId, page, pageSize, response);
+            cacheService.cacheFeed(TRENDING_FEED_CACHE_KEY, currentUserId, page, pageSize, response);
 
             return response;
 
@@ -162,7 +166,7 @@ public class FeedServiceImpl implements FeedService {
                 return FeedResponse.empty(page, pageSize, "EXPLORE");
             }
 
-            Optional<FeedResponse> cached = cacheService.getCachedFeed("EXPLORE_MIXED_V2", currentUserId, page, pageSize, FeedResponse.class);
+            Optional<FeedResponse> cached = cacheService.getCachedFeed(EXPLORE_FEED_CACHE_KEY, currentUserId, page, pageSize, FeedResponse.class);
             if (cached.isPresent()) {
                 return cached.get();
             }
@@ -182,7 +186,7 @@ public class FeedServiceImpl implements FeedService {
 
             FeedResponse response = FeedResponse.create(feedItems, page, pageSize,
                     submissionsPage.getTotalElements(), "EXPLORE");
-            cacheService.cacheFeed("EXPLORE_MIXED_V2", currentUserId, page, pageSize, response);
+            cacheService.cacheFeed(EXPLORE_FEED_CACHE_KEY, currentUserId, page, pageSize, response);
 
             return response;
 
@@ -203,7 +207,7 @@ public class FeedServiceImpl implements FeedService {
         }
 
         try {
-            Optional<FeedResponse> cached = cacheService.getCachedFeed("CHALLENGE:" + challengeId, currentUserId, page, pageSize, FeedResponse.class);
+            Optional<FeedResponse> cached = cacheService.getCachedFeed(CHALLENGE_FEED_CACHE_PREFIX + challengeId, currentUserId, page, pageSize, FeedResponse.class);
             if (cached.isPresent()) {
                 return cached.get();
             }
@@ -235,7 +239,7 @@ public class FeedServiceImpl implements FeedService {
             List<FeedItemResponse> feedItems = enrichSubmissions(paginatedSubmissions, currentUserId);
 
             FeedResponse response = FeedResponse.create(feedItems, page, pageSize, totalItems, "CHALLENGE");
-            cacheService.cacheFeed("CHALLENGE:" + challengeId, currentUserId, page, pageSize, response);
+            cacheService.cacheFeed(CHALLENGE_FEED_CACHE_PREFIX + challengeId, currentUserId, page, pageSize, response);
 
             return response;
 
@@ -258,7 +262,7 @@ public class FeedServiceImpl implements FeedService {
         }
 
         try {
-            Optional<FeedResponse> cached = cacheService.getCachedFeed("USER:" + targetUserId, currentUserId, page, pageSize, FeedResponse.class);
+            Optional<FeedResponse> cached = cacheService.getCachedFeed(USER_FEED_CACHE_PREFIX + targetUserId, currentUserId, page, pageSize, FeedResponse.class);
             if (cached.isPresent()) {
                 return cached.get();
             }
@@ -311,7 +315,7 @@ public class FeedServiceImpl implements FeedService {
             List<FeedItemResponse> feedItems = enrichSubmissions(paginatedSubmissions, currentUserId);
 
             FeedResponse response = FeedResponse.create(feedItems, page, pageSize, totalItems, "USER");
-            cacheService.cacheFeed("USER:" + targetUserId, currentUserId, page, pageSize, response);
+            cacheService.cacheFeed(USER_FEED_CACHE_PREFIX + targetUserId, currentUserId, page, pageSize, response);
 
             return response;
 
@@ -385,7 +389,7 @@ public class FeedServiceImpl implements FeedService {
             FeedItemResponse item = FeedItemResponse.fromSubmission(
                     submission,
                     user.getUsername(),
-                    user.getProfilePicUrl(),
+                    mediaUrlService.toReadableMediaUrl(user.getProfilePicUrl()),
                     challenge.getTitle(),
                     isGloried,
                     isUngloried

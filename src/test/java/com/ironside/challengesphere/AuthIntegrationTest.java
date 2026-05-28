@@ -86,6 +86,7 @@ class AuthIntegrationTest {
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.accessToken").isNotEmpty())
                 .andExpect(jsonPath("$.refreshToken").isNotEmpty())
+                .andExpect(jsonPath("$.isNewUser").value(true))
                 .andReturn()
                 .getResponse()
                 .getContentAsString();

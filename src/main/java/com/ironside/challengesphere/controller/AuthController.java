@@ -116,6 +116,7 @@ public class AuthController {
         loginRequest.setUsername(request.getUsername());
         loginRequest.setPassword(request.getPassword());
         AuthResponse response = authService.login(loginRequest);
+        response.setIsNewUser(true);
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
 

@@ -86,6 +86,20 @@ public class ChallengeController {
         return ResponseEntity.ok(response);
     }
 
+    @GetMapping("/creator/{creatorId}/public")
+    public ResponseEntity<UserChallengesResponse> getPublicChallengesByCreator(
+            @AuthenticationPrincipal UserPrincipal principal,
+            @PathVariable Long creatorId,
+            @RequestParam(defaultValue = "1") Integer page,
+            @RequestParam(defaultValue = "10") Integer pageSize) throws ChallengeSphereException {
+        return ResponseEntity.ok(challengeService.getPublicChallengesByCreator(
+                creatorId,
+                page,
+                pageSize,
+                SecurityAccess.requireUserId(principal)
+        ));
+    }
+
     @PostMapping("/batch")
     public ResponseEntity<List<Challenge>> getChallengesByIds(
             @AuthenticationPrincipal UserPrincipal principal,

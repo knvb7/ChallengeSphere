@@ -77,7 +77,7 @@ class FeedServiceImplTest {
         Submission activeChallengePost = submission(100L, 2L, 10L, "active-proof.jpg");
         Submission deletedChallengePost = submission(101L, 3L, 11L, "deleted-proof.jpg");
 
-        when(cacheService.getCachedFeed(eq("EXPLORE_MIXED_V2"), eq(1L), eq(1), eq(20), eq(FeedResponse.class)))
+        when(cacheService.getCachedFeed(eq("EXPLORE:READABLE_AVATARS_V3"), eq(1L), eq(1), eq(20), eq(FeedResponse.class)))
                 .thenReturn(Optional.empty());
         when(submissionRepository.findPublicSubmissions(eq(1L), any(Pageable.class)))
                 .thenReturn(new PageImpl<>(
@@ -95,6 +95,27 @@ class FeedServiceImplTest {
         assertEquals(List.of(100L), response.getItems().stream()
                 .map(item -> item.getSubmissionId())
                 .toList());
+    }
+
+    @Test
+    void getExploreFeedReturnsReadableProfilePictureUrls() throws Exception {
+        String storedProfilePicUrl = "submissions/user_2/PROFILE_PHOTO/avatar.jpg";
+        String readableProfilePicUrl = "https://signed.example.com/avatar.jpg";
+        Submission post = submission(100L, 2L, 10L, "active-proof.jpg");
+        User author = user(2L, "active_user");
+        author.setProfilePicUrl(storedProfilePicUrl);
+
+        when(cacheService.getCachedFeed(eq("EXPLORE:READABLE_AVATARS_V3"), eq(1L), eq(1), eq(20), eq(FeedResponse.class)))
+                .thenReturn(Optional.empty());
+        when(submissionRepository.findPublicSubmissions(eq(1L), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of(post), PageRequest.of(0, 20), 1));
+        when(userRepository.findAllById(any())).thenReturn(List.of(author));
+        when(challengeRepository.findAllById(any())).thenReturn(List.of(challenge(10L, "Active Challenge", true)));
+        when(mediaUrlService.toReadableMediaUrl(storedProfilePicUrl)).thenReturn(readableProfilePicUrl);
+
+        FeedResponse response = feedService.getExploreFeed(1, 20, 1L);
+
+        assertEquals(readableProfilePicUrl, response.getItems().get(0).getUserProfilePicUrl());
     }
 
     private Submission submission(Long id, Long userId, Long challengeId, String mediaUrls) {

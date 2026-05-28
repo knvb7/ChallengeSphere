@@ -27,6 +27,7 @@ public class AuthResponse {
     private String email;
     private String userId;
     private User user;
+    private Boolean isNewUser;
     
     public AuthResponse(String accessToken) {
         this.accessToken = accessToken;

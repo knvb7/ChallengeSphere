@@ -32,6 +32,7 @@ import com.ironside.challengesphere.model.Challenge;
 @Service
 public interface ChallengeService {
     UserChallengesResponse getUserChallenges(GetUserChallengesRequest request) throws ChallengeSphereException;
+    UserChallengesResponse getPublicChallengesByCreator(Long creatorId, int page, int pageSize, Long currentUserId) throws ChallengeSphereException;
     ChallengeCreateResponse createChallenge(ChallengeCreateRequest request) throws ChallengeSphereException;
     Challenge updateChallenge(Long id, ChallengeUpdateRequest request, Long actorUserId, boolean admin) throws ChallengeSphereException;
     Optional<Challenge> getChallengeById(Long challengeId) throws ChallengeSphereException;

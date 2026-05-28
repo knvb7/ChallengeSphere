@@ -66,12 +66,23 @@ public class MediaUrlService {
                 return cached.url();
             }
 
-            String signedUrl = GetSignedUrlForGcs.generateV4GetObjectSignedUrl(bucketName, objectName, READ_SIGNED_URL_TTL_SECONDS);
-            readUrlCache.put(cacheKey, new CachedSignedUrl(
-                    signedUrl,
-                    now.plusSeconds(READ_SIGNED_URL_TTL_SECONDS - READ_SIGNED_URL_CACHE_SAFETY_SECONDS)
-            ));
-            return signedUrl;
+            CachedSignedUrl resolved = readUrlCache.compute(cacheKey, (key, localValue) -> {
+                Instant computeNow = Instant.now();
+                if (localValue != null && localValue.refreshAfter().isAfter(computeNow)) {
+                    return localValue;
+                }
+
+                String signedUrl = GetSignedUrlForGcs.generateV4GetObjectSignedUrl(
+                        bucketName,
+                        objectName,
+                        READ_SIGNED_URL_TTL_SECONDS
+                );
+                return new CachedSignedUrl(
+                        signedUrl,
+                        computeNow.plusSeconds(READ_SIGNED_URL_TTL_SECONDS - READ_SIGNED_URL_CACHE_SAFETY_SECONDS)
+                );
+            });
+            return resolved.url();
         } catch (Exception e) {
             logger.warn("Failed to sign readable media URL for object {}: {}", objectName, e.getMessage());
             return mediaUrl;

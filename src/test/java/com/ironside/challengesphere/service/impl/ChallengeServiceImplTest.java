@@ -278,6 +278,20 @@ class ChallengeServiceImplTest {
     }
 
     @Test
+    void getPublicChallengesByCreatorReturnsOfficialCatalogWithoutFollowAccess() throws Exception {
+        Challenge global = challenge(80L, 41L, 41L, true);
+
+        when(challengeRepository.findPublicActiveByCreatorId(41L)).thenReturn(List.of(global));
+
+        UserChallengesResponse response =
+                challengeService.getPublicChallengesByCreator(41L, 1, 20, 7L);
+
+        assertEquals(List.of(global), response.getChallenges());
+        assertEquals(1, response.getTotalCount());
+        verify(followRepository, never()).existsActiveMutualFollow(any(), any());
+    }
+
+    @Test
     void getChallengeByIdsReturnsReadableCoverPhotoUrlsWithoutMutatingEntity() throws Exception {
         String rawCoverUrl = "https://storage.googleapis.com/challenge-bucket/challenges/user_1/covers/detail.jpg";
         Challenge challenge = challenge(10L, 1L, 1L, true);

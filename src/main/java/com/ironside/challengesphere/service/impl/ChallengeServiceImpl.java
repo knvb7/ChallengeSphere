@@ -194,6 +194,42 @@ public class ChallengeServiceImpl implements ChallengeService {
     }
 
     @Override
+    @Transactional(readOnly = true)
+    public UserChallengesResponse getPublicChallengesByCreator(Long creatorId, int page, int pageSize, Long currentUserId)
+            throws ChallengeSphereException {
+        logger.info("Getting public challenges for creatorId: {}, page: {}, pageSize: {}, viewer: {}",
+                creatorId, page, pageSize, currentUserId);
+
+        try {
+            int normalizedPage = Math.max(page, 1);
+            int normalizedPageSize = Math.min(Math.max(pageSize, 1), 100);
+            List<Challenge> publicChallenges = challengeRepository.findPublicActiveByCreatorId(creatorId);
+            int totalCount = publicChallenges.size();
+            int offset = (normalizedPage - 1) * normalizedPageSize;
+            List<Challenge> paginatedChallenges = publicChallenges.stream()
+                    .skip(offset)
+                    .limit(normalizedPageSize)
+                    .map(this::withReadableCoverPhotoUrls)
+                    .toList();
+
+            return UserChallengesResponse.create(
+                    creatorId,
+                    paginatedChallenges,
+                    normalizedPage,
+                    normalizedPageSize,
+                    totalCount
+            );
+        } catch (Exception e) {
+            logger.error("Error getting public challenges for creatorId {}: {}", creatorId, e.getMessage(), e);
+            throw new ChallengeSphereException(
+                    "Failed to get public creator challenges",
+                    HttpStatus.INTERNAL_SERVER_ERROR,
+                    logger
+            );
+        }
+    }
+
+    @Override
     @Transactional
     public ChallengeCreateResponse createChallenge(ChallengeCreateRequest request) throws ChallengeSphereException {
         logger.info("Creating challenge with title: {} for creator userId: {}", request.getTitle(), request.getCreatorUserId());

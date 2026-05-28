@@ -10,6 +10,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
 import org.apache.logging.log4j.LogManager;
@@ -82,7 +83,9 @@ public class RedisCacheServiceImpl {
     private static final Duration GLORY_TTL = Duration.ofMinutes(15);
     private static final Duration FEED_TTL = Duration.ofMinutes(5);
     private static final Duration FEED_TIMELINE_TTL = Duration.ofHours(1);
+    private static final Duration REDIS_FAILURE_COOLDOWN = Duration.ofMinutes(1);
     private static final int FEED_TIMELINE_MAX_SIZE = 500;
+    private final AtomicLong redisRetryAfterMillis = new AtomicLong();
 
     // ==================== HEALTH CHECK ====================
 
@@ -92,9 +95,13 @@ public class RedisCacheServiceImpl {
     public boolean isHealthy() {
         try {
             String pong = redisTemplate.execute(RedisConnectionCommands::ping);
-            return "PONG".equals(pong);
+            boolean healthy = "PONG".equals(pong);
+            if (healthy) {
+                redisRetryAfterMillis.set(0);
+            }
+            return healthy;
         } catch (Exception e) {
-            logger.error("Redis health check failed", e);
+            markRedisUnavailable(e);
             return false;
         }
     }
@@ -113,6 +120,9 @@ public class RedisCacheServiceImpl {
             logger.warn("Cannot save null key or value to cache");
             return false;
         }
+        if (shouldBypassRedis()) {
+            return false;
+        }
         try {
             String jsonValue = objectMapper.writeValueAsString(value);
             redisTemplate.opsForValue().set(key, jsonValue, ttl);
@@ -122,7 +132,7 @@ public class RedisCacheServiceImpl {
             logger.error("Error serializing value for cache: key={}", key, e);
             return false;
         } catch (Exception e) {
-            logger.error("Error saving to cache: key={}", key, e);
+            markRedisUnavailable(e);
             return false;
         }
     }
@@ -144,6 +154,9 @@ public class RedisCacheServiceImpl {
         if (key == null) {
             return null;
         }
+        if (shouldBypassRedis()) {
+            return null;
+        }
         try {
             Object value = redisTemplate.opsForValue().get(key);
             if (value == null) {
@@ -161,7 +174,7 @@ public class RedisCacheServiceImpl {
             logger.error("Error deserializing value from cache: key={}", key, e);
             return null;
         } catch (Exception e) {
-            logger.error("Error getting from cache: key={}", key, e);
+            markRedisUnavailable(e);
             return null;
         }
     }
@@ -181,6 +194,9 @@ public class RedisCacheServiceImpl {
         if (key == null) {
             return false;
         }
+        if (shouldBypassRedis()) {
+            return false;
+        }
         try {
             boolean deleted = redisTemplate.delete(key);
             if (deleted) {
@@ -188,7 +204,7 @@ public class RedisCacheServiceImpl {
             }
             return deleted;
         } catch (Exception e) {
-            logger.error("Error deleting from cache: key={}", key, e);
+            markRedisUnavailable(e);
             return false;
         }
     }
@@ -200,11 +216,14 @@ public class RedisCacheServiceImpl {
         if (keys == null || keys.isEmpty()) {
             return;
         }
+        if (shouldBypassRedis()) {
+            return;
+        }
         try {
             Long deleted = redisTemplate.delete(keys);
             logger.debug("Batch deleted from cache: count={}", deleted);
         } catch (Exception e) {
-            logger.error("Error batch deleting from cache", e);
+            markRedisUnavailable(e);
         }
     }
 
@@ -215,6 +234,9 @@ public class RedisCacheServiceImpl {
         if (pattern == null) {
             return;
         }
+        if (shouldBypassRedis()) {
+            return;
+        }
         try {
             Set<String> keys = redisTemplate.keys(pattern);
             if (!keys.isEmpty()) {
@@ -222,7 +244,7 @@ public class RedisCacheServiceImpl {
                 logger.debug("Deleted keys matching pattern '{}': count={}", pattern, deleted);
             }
         } catch (Exception e) {
-            logger.error("Error deleting by pattern: pattern={}", pattern, e);
+            markRedisUnavailable(e);
         }
     }
 
@@ -233,10 +255,13 @@ public class RedisCacheServiceImpl {
         if (key == null) {
             return false;
         }
+        if (shouldBypassRedis()) {
+            return false;
+        }
         try {
             return redisTemplate.hasKey(key);
         } catch (Exception e) {
-            logger.error("Error checking cache key: key={}", key, e);
+            markRedisUnavailable(e);
             return false;
         }
     }
@@ -248,10 +273,13 @@ public class RedisCacheServiceImpl {
         if (key == null || ttl == null) {
             return false;
         }
+        if (shouldBypassRedis()) {
+            return false;
+        }
         try {
             return Boolean.TRUE.equals(redisTemplate.expire(key, ttl));
         } catch (Exception e) {
-            logger.error("Error setting expiration: key={}", key, e);
+            markRedisUnavailable(e);
             return false;
         }
     }
@@ -264,11 +292,28 @@ public class RedisCacheServiceImpl {
         if (key == null) {
             return -1;
         }
+        if (shouldBypassRedis()) {
+            return -1;
+        }
         try {
             return redisTemplate.getExpire(key, TimeUnit.SECONDS);
         } catch (Exception e) {
-            logger.error("Error getting TTL: key={}", key, e);
+            markRedisUnavailable(e);
             return -1;
+        }
+    }
+
+    private boolean shouldBypassRedis() {
+        return System.currentTimeMillis() < redisRetryAfterMillis.get();
+    }
+
+    private void markRedisUnavailable(Exception exception) {
+        long now = System.currentTimeMillis();
+        long retryAfter = now + REDIS_FAILURE_COOLDOWN.toMillis();
+        long previousRetryAfter = redisRetryAfterMillis.getAndUpdate(previous -> Math.max(previous, retryAfter));
+        if (previousRetryAfter <= now) {
+            logger.warn("Redis unavailable; bypassing cache for {} seconds: {}",
+                    REDIS_FAILURE_COOLDOWN.toSeconds(), exception.getMessage());
         }
     }
 
