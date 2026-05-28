@@ -14,6 +14,7 @@ import com.ironside.challengesphere.repository.UserBlockRepository;
 import com.ironside.challengesphere.repository.UserChallengeRepository;
 import com.ironside.challengesphere.repository.UserRepository;
 import com.ironside.challengesphere.service.GloryService;
+import com.ironside.challengesphere.service.NotificationService;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -54,6 +55,9 @@ public class GloryServiceImpl implements GloryService {
 
     @Autowired
     private RedisCacheServiceImpl cacheService;
+
+    @Autowired
+    private NotificationService notificationService;
 
     @Override
     @Transactional
@@ -107,6 +111,14 @@ public class GloryServiceImpl implements GloryService {
         logger.info("Updated glory count for submission: {} ({})", submissionId, isGiven ? "incremented" : "decremented");
 
         invalidateInteractionCaches(submission);
+        if (isGiven) {
+            try {
+                notificationService.notifyGlory(submission, userId);
+            } catch (Exception e) {
+                logger.warn("Failed to create glory notification for submissionId={}, userId={}: {}",
+                        submissionId, userId, e.getMessage());
+            }
+        }
 
         return isGiven;
     }

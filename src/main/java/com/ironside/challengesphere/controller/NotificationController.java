@@ -3,12 +3,15 @@ package com.ironside.challengesphere.controller;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ironside.challengesphere.api.request.JoinChallengeRequest;
+import com.ironside.challengesphere.api.request.RegisterPushTokenRequest;
 import com.ironside.challengesphere.api.response.JoinChallengeResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.model.Notification;
+import com.ironside.challengesphere.model.PushDeviceToken;
 import com.ironside.challengesphere.repository.NotificationRepository;
 import com.ironside.challengesphere.security.UserPrincipal;
 import com.ironside.challengesphere.service.ChallengeService;
+import com.ironside.challengesphere.service.PushNotificationService;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -34,6 +37,9 @@ public class NotificationController {
 
     @Autowired
     private ChallengeService challengeService;
+
+    @Autowired
+    private PushNotificationService pushNotificationService;
 
     /**
      * GET /api/v1/notifications/{userId}
@@ -145,6 +151,28 @@ public class NotificationController {
                 "handled", true,
                 "notificationId", notificationId
         ));
+    }
+
+    @PostMapping("/me/push-token")
+    public ResponseEntity<Map<String, Object>> registerPushToken(
+            @RequestBody RegisterPushTokenRequest request,
+            @AuthenticationPrincipal UserPrincipal principal) throws ChallengeSphereException {
+        Long userId = requireUserId(principal);
+        PushDeviceToken token = pushNotificationService.registerToken(userId, request);
+        return ResponseEntity.ok(Map.of(
+                "registered", true,
+                "tokenId", token.getId()
+        ));
+    }
+
+    @DeleteMapping("/me/push-token")
+    @Transactional
+    public ResponseEntity<Map<String, Object>> disablePushToken(
+            @RequestBody RegisterPushTokenRequest request,
+            @AuthenticationPrincipal UserPrincipal principal) throws ChallengeSphereException {
+        Long userId = requireUserId(principal);
+        pushNotificationService.disableToken(userId, request == null ? null : request.getExpoPushToken());
+        return ResponseEntity.ok(Map.of("disabled", true));
     }
 
     private int clampLimit(int limit) {

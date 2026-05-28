@@ -2,9 +2,12 @@ package com.ironside.challengesphere.api.request;
 
 import com.fasterxml.jackson.annotation.JsonAlias;
 import jakarta.validation.constraints.Email;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+import java.time.LocalDate;
 
 @Data
 @NoArgsConstructor
@@ -43,4 +46,10 @@ public class UpdateUserRequest {
 
     @Size(max = 500, message = "Bio should not exceed 500 characters")
     private String bio;
+
+    private LocalDate dateOfBirth;
+
+    @Min(value = 0, message = "Age should not be negative")
+    @Max(value = 130, message = "Age should not exceed 130")
+    private Integer age;
 }

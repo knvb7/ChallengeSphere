@@ -235,6 +235,23 @@ public interface SubmissionRepository extends JpaRepository<Submission, Long> {
     @Query(value = "SELECT EXISTS(SELECT 1 FROM challengesphere.submissions WHERE user_id = :userId AND challenge_id = :challengeId AND day_number = :dayNumber)", nativeQuery = true)
     boolean existsByUserChallengeAndDay(@Param("userId") Long userId, @Param("challengeId") Long challengeId, @Param("dayNumber") Integer dayNumber);
 
+    @Query(value = "SELECT EXISTS(" +
+            "SELECT 1 FROM challengesphere.user_challenges uc " +
+            "JOIN challengesphere.challenges c ON c.id = uc.challenge_id " +
+            "WHERE uc.user_id = :userId " +
+            "AND uc.active = true " +
+            "AND c.active = true " +
+            "AND UPPER(c.challenge_mode) = 'DAILY' " +
+            "AND :localDate BETWEEN c.start_date AND (c.start_date + (c.number_of_days - 1)) " +
+            "AND NOT EXISTS (" +
+            "  SELECT 1 FROM challengesphere.submissions s " +
+            "  WHERE s.user_id = uc.user_id " +
+            "  AND s.challenge_id = c.id " +
+            "  AND s.active = true " +
+            "  AND s.day_number = (:localDate - c.start_date + 1)" +
+            "))", nativeQuery = true)
+    boolean existsIncompleteDailyChallengeForUser(@Param("userId") Long userId, @Param("localDate") LocalDate localDate);
+
     // Find all submissions for a challenge by a specific user
     @Query(value = "SELECT * FROM challengesphere.submissions WHERE user_id = :userId AND challenge_id = :challengeId AND active = true ORDER BY day_number ASC", nativeQuery = true)
     List<Submission> findActiveByUserIdAndChallengeId(@Param("userId") Long userId, @Param("challengeId") Long challengeId);

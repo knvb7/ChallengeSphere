@@ -86,7 +86,7 @@ DECLARE
         'Daily Visualization', 'Run Half Marathon', 'Read History', 'Learn React',
         'No Alcohol Month', 'Learn Python'
     ];
-    categories TEXT[] := ARRAY['Fitness,Health', 'Mindfulness,Wellness', 'Education,Learning', 'Tech,Programming', 
+    categories TEXT[] := ARRAY['Fitness,Health', 'Mindfulness,Wellness', 'Education,Learning', 'Tech,Coding,Programming', 
                               'Lifestyle,Hobbies', 'Diet,Nutrition', 'Sports,Running', 'Arts,Creativity'];
     hashtags_arrays TEXT[] := ARRAY[
         '#fitness,#health,#workout', '#meditation,#mindfulness,#wellness', '#reading,#books,#education',

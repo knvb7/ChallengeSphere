@@ -22,8 +22,14 @@ CREATE TABLE IF NOT EXISTS challengesphere.users (
     profile_pic_url TEXT,
     premium_user INT DEFAULT 0,
     notifications INT DEFAULT 1,
-    bio TEXT
+    bio TEXT,
+    date_of_birth DATE,
+    age INT
 );
+
+ALTER TABLE challengesphere.users
+    ADD COLUMN IF NOT EXISTS date_of_birth DATE,
+    ADD COLUMN IF NOT EXISTS age INT;
 
 CREATE TABLE IF NOT EXISTS challengesphere.challenges (
     id BIGSERIAL PRIMARY KEY,
@@ -191,4 +197,3 @@ VALUES
 ON CONFLICT (installed_rank) DO NOTHING;
 
 SELECT 'Tables created successfully!' AS status;
-

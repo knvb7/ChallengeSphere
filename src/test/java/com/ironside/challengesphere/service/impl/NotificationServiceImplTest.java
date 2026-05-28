@@ -15,6 +15,7 @@ import com.ironside.challengesphere.repository.UserBlockRepository;
 import com.ironside.challengesphere.repository.UserPreferencesRepository;
 import com.ironside.challengesphere.repository.UserRepository;
 import com.ironside.challengesphere.service.EmailService;
+import com.ironside.challengesphere.service.PushNotificationService;
 import jakarta.persistence.Column;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -66,6 +67,9 @@ class NotificationServiceImplTest {
     @Mock
     private EmailService emailService;
 
+    @Mock
+    private PushNotificationService pushNotificationService;
+
     private ObjectMapper objectMapper;
     private NotificationServiceImpl notificationService;
 
@@ -80,6 +84,7 @@ class NotificationServiceImplTest {
                 userBlockRepository,
                 preferencesRepository,
                 emailService,
+                pushNotificationService,
                 objectMapper
         );
     }
@@ -100,6 +105,31 @@ class NotificationServiceImplTest {
         assertNull(result);
         verify(notificationRepository, never()).save(any(Notification.class));
         verify(emailService, never()).sendPlainEmail(any(), any(), any());
+    }
+
+    @Test
+    void notifyGloryCreatesInAppAndPushNotificationForSubmissionOwner() {
+        User recipient = user(1L, "owner");
+        User actor = user(2L, "liker");
+        UserPreferences prefs = prefs(1L);
+        Submission submission = new Submission();
+        submission.setId(99L);
+        submission.setUserId(1L);
+        submission.setChallengeId(10L);
+        submission.setDayNumber(3);
+        submission.setMediaUrls("https://cdn.example.com/photo.jpg");
+
+        when(userRepository.findById(1L)).thenReturn(Optional.of(recipient));
+        when(userRepository.findById(2L)).thenReturn(Optional.of(actor));
+        when(preferencesRepository.findByUserId(1L)).thenReturn(Optional.of(prefs));
+        when(notificationRepository.save(any(Notification.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        Notification result = notificationService.notifyGlory(submission, 2L);
+
+        assertNotNull(result);
+        assertEquals("GLORY", result.getType());
+        assertEquals("@liker liked your submission", result.getMessage());
+        verify(pushNotificationService).sendInteractionPush(1L, "GLORY", "@liker liked your submission", result.getActionObject());
     }
 
     @Test

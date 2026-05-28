@@ -9,6 +9,7 @@ import com.ironside.challengesphere.repository.SubmissionRepository;
 import com.ironside.challengesphere.repository.UserBlockRepository;
 import com.ironside.challengesphere.repository.UserChallengeRepository;
 import com.ironside.challengesphere.repository.UserRepository;
+import com.ironside.challengesphere.service.NotificationService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -49,6 +50,9 @@ class GloryServiceImplTest {
     @Mock
     private RedisCacheServiceImpl cacheService;
 
+    @Mock
+    private NotificationService notificationService;
+
     private GloryServiceImpl gloryService;
 
     @BeforeEach
@@ -61,6 +65,7 @@ class GloryServiceImplTest {
         ReflectionTestUtils.setField(gloryService, "userBlockRepository", userBlockRepository);
         ReflectionTestUtils.setField(gloryService, "userRepository", userRepository);
         ReflectionTestUtils.setField(gloryService, "cacheService", cacheService);
+        ReflectionTestUtils.setField(gloryService, "notificationService", notificationService);
     }
 
     @Test
@@ -79,6 +84,7 @@ class GloryServiceImplTest {
         verify(submissionRepository).incrementGloryCount(100L);
         verify(cacheService).invalidateGloryCaches(100L);
         verify(cacheService).invalidateAllFeeds();
+        verify(notificationService).notifyGlory(submission, 1L);
     }
 
     @Test

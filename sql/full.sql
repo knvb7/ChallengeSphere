@@ -189,6 +189,8 @@ CREATE TABLE challengesphere.users (
                                        premium_user int4 DEFAULT 0 NULL,
                                        notifications int4 DEFAULT 1 NULL,
                                        bio text NULL,
+                                       date_of_birth date NULL,
+                                       age int4 NULL,
                                        google_id varchar(255) NULL,
                                        banned_at timestamptz NULL,
                                        ban_reason varchar(512) NULL,

@@ -299,6 +299,14 @@ public class UserServiceImpl implements UserService {
                 user.setBio(updateUserRequest.getBio());
                 logger.debug("Updated bio for user {}", userId);
             }
+            if (updateUserRequest.getDateOfBirth() != null) {
+                user.setDateOfBirth(updateUserRequest.getDateOfBirth());
+                logger.debug("Updated dateOfBirth for user {}", userId);
+            }
+            if (updateUserRequest.getAge() != null) {
+                user.setAge(updateUserRequest.getAge());
+                logger.debug("Updated age for user {}", userId);
+            }
 
             User updatedUser = userRepository.save(user);
             safeCacheUser(updatedUser);

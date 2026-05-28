@@ -7,6 +7,7 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 import java.sql.Timestamp;
+import java.time.LocalDate;
 
 @Entity
 @Table(name = "users")
@@ -72,6 +73,13 @@ public class User {
 
     @Column(name = "bio")
     private String bio;
+
+    @Column(name = "date_of_birth")
+    private LocalDate dateOfBirth;
+
+    @Column(name = "age")
+    private Integer age;
+
     @Column(name = "last_login_at")
     private Timestamp lastLoginAt;
 

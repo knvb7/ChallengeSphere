@@ -150,7 +150,7 @@ DECLARE
     ];
     categories TEXT[] := ARRAY[
         'Fitness,Health', 'Mindfulness,Wellness', 'Education,Learning',
-        'Tech,Programming', 'Lifestyle,Hobbies', 'Diet,Nutrition',
+        'Tech,Coding,Programming', 'Lifestyle,Hobbies', 'Diet,Nutrition',
         'Sports,Running', 'Arts,Creativity'
     ];
     hashtag_sets TEXT[] := ARRAY[

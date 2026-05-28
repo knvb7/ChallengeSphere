@@ -194,6 +194,8 @@ CREATE TABLE users (
 	premium_user int4 DEFAULT 0 NULL,
 	notifications int4 DEFAULT 1 NULL,
 	bio text NULL,
+	date_of_birth date NULL,
+	age int4 NULL,
 	genuineness_score int4 DEFAULT 100 NULL,
 	CONSTRAINT users_email_id_key UNIQUE (email_id),
 	CONSTRAINT users_phone_key UNIQUE (phone),

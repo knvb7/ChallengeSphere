@@ -15,6 +15,7 @@ import com.ironside.challengesphere.repository.UserPreferencesRepository;
 import com.ironside.challengesphere.repository.UserRepository;
 import com.ironside.challengesphere.service.EmailService;
 import com.ironside.challengesphere.service.NotificationService;
+import com.ironside.challengesphere.service.PushNotificationService;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.scheduling.annotation.Async;
@@ -56,6 +57,7 @@ public class NotificationServiceImpl implements NotificationService {
     private final UserBlockRepository userBlockRepository;
     private final UserPreferencesRepository preferencesRepository;
     private final EmailService emailService;
+    private final PushNotificationService pushNotificationService;
     private final ObjectMapper objectMapper;
 
     public NotificationServiceImpl(NotificationRepository notificationRepository,
@@ -65,6 +67,7 @@ public class NotificationServiceImpl implements NotificationService {
                                    UserBlockRepository userBlockRepository,
                                    UserPreferencesRepository preferencesRepository,
                                    EmailService emailService,
+                                   PushNotificationService pushNotificationService,
                                    ObjectMapper objectMapper) {
         this.notificationRepository = notificationRepository;
         this.userRepository = userRepository;
@@ -73,6 +76,7 @@ public class NotificationServiceImpl implements NotificationService {
         this.userBlockRepository = userBlockRepository;
         this.preferencesRepository = preferencesRepository;
         this.emailService = emailService;
+        this.pushNotificationService = pushNotificationService;
         this.objectMapper = objectMapper;
     }
 
@@ -291,9 +295,10 @@ public class NotificationServiceImpl implements NotificationService {
     @Override
     @Transactional
     public Notification notifyGlory(Submission submission, Long actorUserId) {
-        logger.debug("Glory notification suppressed for submissionId={} actorUserId={}",
-                submission == null ? null : submission.getId(), actorUserId);
-        return null;
+        if (submission == null || Objects.equals(submission.getUserId(), actorUserId)) {
+            return null;
+        }
+        return notifySubmissionOwner(submission, actorUserId, null, TYPE_GLORY, "liked your submission");
     }
 
     @Override
@@ -363,6 +368,7 @@ public class NotificationServiceImpl implements NotificationService {
         if (allowsInApp(recipient, prefs, type)) {
             saved = notificationRepository.save(buildNotification(recipient.getId(), type, message, actionObject));
             logger.info("Created notification id={} for userId={} type={}", saved.getId(), recipient.getId(), type);
+            pushNotificationService.sendInteractionPush(recipient.getId(), type, message, actionObject);
         } else {
             logger.debug("In-app notification suppressed by preferences for userId={} type={}", recipient.getId(), type);
         }
