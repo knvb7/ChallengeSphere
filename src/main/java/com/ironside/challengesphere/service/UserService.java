@@ -20,18 +20,36 @@ import java.util.List;
 @Service
 public interface UserService {
     UserRegistrationResponse registerUser(UserRegistrationRequest request) throws ChallengeSphereException;
+
     User getUser(GetUserPayload getUserPayload) throws ChallengeSphereException;
+
     UserSearchResponse searchUsers(String query, Long currentUserId, Integer page, Integer pageSize) throws ChallengeSphereException;
+
+    UserSearchResponse getSuggestedUsers(Long currentUserId, Integer page, Integer pageSize) throws ChallengeSphereException;
+
     User updateUserDetails(UpdateUserRequest updateUserRequest) throws ChallengeSphereException;
+
     FollowActionResponse follow(Long followerId, Long followingId) throws ChallengeSphereException;
+
     FollowActionResponse unfollow(Long followerId, Long followingId) throws ChallengeSphereException;
+
     FollowRelationshipResponse getFollowRelationship(Long viewerUserId, Long targetUserId) throws ChallengeSphereException;
+
     FollowersFollowingResponse getFollowers(GetFollowersFollowingRequest request) throws ChallengeSphereException;
+
     FollowersFollowingResponse getFollowing(GetFollowersFollowingRequest request) throws ChallengeSphereException;
+
     ToggleUserActivationResponse toggleUserActivation(ToggleActivateUserRequest request) throws ChallengeSphereException;
+
     void blockUser(Long blockerUserId, Long blockedUserId) throws ChallengeSphereException;
+
     void unblockUser(Long blockerUserId, Long blockedUserId) throws ChallengeSphereException;
+
     List<User> getBlockedUsers(Long blockerUserId) throws ChallengeSphereException;
+
     void reportUser(Long reporterUserId, Long reportedUserId, String reason, String details) throws ChallengeSphereException;
+
     boolean isBlockedEitherDirection(Long firstUserId, Long secondUserId);
+
+    User getUserDetails(Long userId, String emailId, String username) throws ChallengeSphereException;
 }

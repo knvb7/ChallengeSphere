@@ -1,7 +1,9 @@
 package com.ironside.challengesphere.service.impl;
 
 import java.sql.Timestamp;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.stream.Collectors;
 
@@ -70,6 +72,9 @@ public class UserServiceImpl implements UserService {
     @Autowired
     private MediaUrlService mediaUrlService;
 
+    @Autowired
+    private RedisCacheServiceImpl redisCacheServiceImpl;
+
     @Override
     public User getUser(GetUserPayload getUserPayload) throws ChallengeSphereException {
         Long userId = getUserPayload.getUserId();
@@ -84,7 +89,7 @@ public class UserServiceImpl implements UserService {
             // 1. Fetch by userId — cache first, DB on miss or cache failure
             if (userId != null) {
                 try {
-                    Optional<User> cached = cacheService.getCachedUserProfile(userId, User.class);
+                    Optional<User> cached = cacheService.getCachedUserProfile(userId, null, null, User.class);
                     if (cached.isPresent()) {
                         logger.info("Cache hit for userId: {}", userId);
                         stampLastLogin(cached.get());
@@ -197,6 +202,61 @@ public class UserServiceImpl implements UserService {
         }
     }
 
+    @Override
+    public UserSearchResponse getSuggestedUsers(Long currentUserId, Integer page, Integer pageSize)
+            throws ChallengeSphereException {
+        int safePage = Math.max(1, page == null ? 1 : page);
+        int safePageSize = Math.min(20, Math.max(1, pageSize == null ? 10 : pageSize));
+
+        try {
+            User viewer = userRepository.findById(currentUserId)
+                    .orElseThrow(() -> new ChallengeSphereException(
+                            "User not found with id: " + currentUserId,
+                            HttpStatus.NOT_FOUND,
+                            logger
+            ));
+            String interestCsv = normalizeInterestsForQuery(viewer.getInterests());
+            if (interestCsv.isBlank()) {
+                return loadFallbackSuggestedUsers(currentUserId, safePage, safePageSize);
+            }
+
+            Page<User> results = userRepository.findSuggestedUsers(
+                    currentUserId,
+                    interestCsv,
+                    PageRequest.of(safePage - 1, safePageSize)
+            );
+            if (results.isEmpty()) {
+                return loadFallbackSuggestedUsers(currentUserId, safePage, safePageSize);
+            }
+            List<User> visibleUsers = new ArrayList<>();
+            for (User user : results.getContent()) {
+                visibleUsers.add(restrictedProfile(user));
+            }
+            return UserSearchResponse.of("suggested", visibleUsers, safePage, safePageSize, results.getTotalElements());
+        } catch (ChallengeSphereException e) {
+            throw e;
+        } catch (Exception e) {
+            logger.error("Error getting suggested users for userId {}: {}", currentUserId, e.getMessage(), e);
+            throw new ChallengeSphereException(
+                    "Failed to load suggested users",
+                    HttpStatus.INTERNAL_SERVER_ERROR,
+                    logger
+            );
+        }
+    }
+
+    private UserSearchResponse loadFallbackSuggestedUsers(Long currentUserId, int safePage, int safePageSize) {
+        Page<User> results = userRepository.findFallbackSuggestedUsers(
+                currentUserId,
+                PageRequest.of(safePage - 1, safePageSize)
+        );
+        List<User> visibleUsers = new ArrayList<>();
+        for (User user : results.getContent()) {
+            visibleUsers.add(restrictedProfile(user));
+        }
+        return UserSearchResponse.of("suggested", visibleUsers, safePage, safePageSize, results.getTotalElements());
+    }
+
     /**
      * Stamp last_login_at for the user.
      * Strategy: cache-first, DB updated in hourly batch.
@@ -220,7 +280,7 @@ public class UserServiceImpl implements UserService {
     private void safeCacheUser(User user) {
         if (user == null || user.getId() == null) return;
         try {
-            cacheService.cacheUserProfile(user.getId(), user);
+            cacheService.cacheUserProfile(user);
         } catch (Exception e) {
             logger.warn("Failed to cache user profile for userId={}: {}", user.getId(), e.getMessage());
         }
@@ -307,6 +367,10 @@ public class UserServiceImpl implements UserService {
                 user.setAge(updateUserRequest.getAge());
                 logger.debug("Updated age for user {}", userId);
             }
+            if (updateUserRequest.getInterests() != null) {
+                user.setInterests(updateUserRequest.getInterests());
+                logger.debug("Updated interests for user {}", userId);
+            }
 
             User updatedUser = userRepository.save(user);
             safeCacheUser(updatedUser);
@@ -323,6 +387,19 @@ public class UserServiceImpl implements UserService {
                     logger
             );
         }
+    }
+
+    private String normalizeInterestsForQuery(List<String> interests) {
+        if (interests == null) {
+            return "";
+        }
+        return interests.stream()
+                .map(interest -> interest == null
+                        ? ""
+                        : interest.trim().toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9_-]", "-"))
+                .filter(interest -> !interest.isBlank())
+                .distinct()
+                .collect(Collectors.joining(","));
     }
 
     @Override
@@ -913,5 +990,49 @@ public class UserServiceImpl implements UserService {
         if (userId == null || !userRepository.existsById(userId)) {
             throw new ChallengeSphereException(label + " not found with id: " + userId, HttpStatus.NOT_FOUND, logger);
         }
+    }
+
+    @Override
+    public User getUserDetails(Long userId, String emailId, String username) throws ChallengeSphereException {
+        Optional<User> optionalUser =
+                redisCacheServiceImpl.getCachedUserProfile(
+                        userId,
+                        emailId,
+                        username,
+                        User.class
+                );
+
+        if (optionalUser.isPresent()) {
+            return optionalUser.get();
+        }
+
+        if (userId != null) {
+            return userRepository.findById(userId)
+                    .orElseThrow(() ->
+                            new ChallengeSphereException(
+                                    "User not found",
+                                    HttpStatus.UNAUTHORIZED,
+                                    logger));
+        }
+
+        if (emailId != null && !emailId.isBlank()) {
+            return userRepository.findByEmailId(emailId).orElseThrow(() ->
+                            new ChallengeSphereException(
+                                    "User not found",
+                                    HttpStatus.UNAUTHORIZED,
+                                    logger));
+        }
+
+        if (username != null && !username.isBlank()) {
+            return userRepository.findByUsername(username)
+                    .orElseThrow(() ->
+                            new ChallengeSphereException(
+                                    "User not found",
+                                    HttpStatus.UNAUTHORIZED,
+                                    logger));
+        }
+
+        throw new IllegalArgumentException(
+                "At least one of userId, emailId, or username must be provided");
     }
 }

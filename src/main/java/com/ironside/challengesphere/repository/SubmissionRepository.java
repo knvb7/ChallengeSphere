@@ -100,13 +100,13 @@ public interface SubmissionRepository extends JpaRepository<Submission, Long> {
     @Query(value = "SELECT * FROM challengesphere.submissions WHERE user_id = :userId AND challenge_id = :challengeId AND day_number = :dayNumber", nativeQuery = true)
     List<Submission> findByUserChallengeAndDay(@Param("userId") Long userId, @Param("challengeId") Long challengeId, @Param("dayNumber") Integer dayNumber);
 
-    // Find all submissions by user and challenge
-    @Query(value = "SELECT * FROM challengesphere.submissions WHERE user_id = :userId AND challenge_id = :challengeId ORDER BY day_number ASC", nativeQuery = true)
+    // Find all active submissions by user and challenge
+    @Query(value = "SELECT * FROM challengesphere.submissions WHERE user_id = :userId AND challenge_id = :challengeId AND active = true ORDER BY day_number ASC", nativeQuery = true)
     List<Submission> findByUserIdAndChallengeId(@Param("userId") Long userId, @Param("challengeId") Long challengeId);
 
-    // Paginated: all submissions by user and challenge
-    @Query(value = "SELECT * FROM challengesphere.submissions WHERE user_id = :userId AND challenge_id = :challengeId",
-            countQuery = "SELECT COUNT(*) FROM challengesphere.submissions WHERE user_id = :userId AND challenge_id = :challengeId",
+    // Paginated: active submissions by user and challenge
+    @Query(value = "SELECT * FROM challengesphere.submissions WHERE user_id = :userId AND challenge_id = :challengeId AND active = true",
+            countQuery = "SELECT COUNT(*) FROM challengesphere.submissions WHERE user_id = :userId AND challenge_id = :challengeId AND active = true",
             nativeQuery = true)
     Page<Submission> findByUserIdAndChallengeId(@Param("userId") Long userId, @Param("challengeId") Long challengeId, Pageable pageable);
 

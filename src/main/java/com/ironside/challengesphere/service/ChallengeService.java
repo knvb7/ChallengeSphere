@@ -44,28 +44,10 @@ public interface ChallengeService {
     ChallengeParticipantsResponse getChallengeParticipants(GetChallengeParticipantsRequest request) throws ChallengeSphereException;
     ChallengesByHashtagResponse getChallengesByHashtag(GetChallengesByHashtagRequest request) throws ChallengeSphereException;
     PopularChallengesResponse getPopularChallenges(GetPopularChallengesRequest request) throws ChallengeSphereException;
-    
-    /**
-     * Get recent challenges with caching
-     * @param page Page number (1-based)
-     * @param pageSize Number of items per page
-     * @return Recent challenges response
-     */
     RecentChallengesResponse getRecentChallenges(int page, int pageSize, Long currentUserId) throws ChallengeSphereException;
-    
-    /**
-     * Get trending challenges based on engagement
-     * @param limit Number of challenges to return
-     * @return List of trending challenge IDs
-     */
     List<Long> getTrendingChallengeIds(int limit);
-
     ChallengeDetailResponse getChallengeDetail(Long challengeId, Long currentUserId) throws ChallengeSphereException;
-
     ChallengeProgressResponse getChallengeProgress(Long challengeId, Long userId) throws ChallengeSphereException;
-
     MyChallengesResponse getMyChallenges(Long userId, Long currentUserId, String status, int page, int pageSize) throws ChallengeSphereException;
-
     PresignedUrlsResponse generateChallengePresignedUrls(GeneratePresignedUrlsRequest request) throws ChallengeSphereException;
-
 }

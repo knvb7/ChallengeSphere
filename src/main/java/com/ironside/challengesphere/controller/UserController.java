@@ -88,6 +88,16 @@ public class UserController {
         return ResponseEntity.ok(response);
     }
 
+    @GetMapping("/suggestions")
+    public ResponseEntity<UserSearchResponse> getSuggestedUsers(
+            @AuthenticationPrincipal UserPrincipal principal,
+            @RequestParam(defaultValue = "1") Integer page,
+            @RequestParam(defaultValue = "10") Integer pageSize) throws ChallengeSphereException {
+        Long actorUserId = SecurityAccess.requireUserId(principal);
+        UserSearchResponse response = userService.getSuggestedUsers(actorUserId, page, pageSize);
+        return ResponseEntity.ok(response);
+    }
+
     @PutMapping
     public ResponseEntity<User> updateUserDetails(
             @AuthenticationPrincipal UserPrincipal principal,

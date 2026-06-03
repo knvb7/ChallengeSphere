@@ -8,6 +8,7 @@ import jakarta.validation.constraints.Size;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 import java.time.LocalDate;
+import java.util.List;
 
 @Data
 @NoArgsConstructor
@@ -52,4 +53,6 @@ public class UpdateUserRequest {
     @Min(value = 0, message = "Age should not be negative")
     @Max(value = 130, message = "Age should not exceed 130")
     private Integer age;
+
+    private List<String> interests;
 }

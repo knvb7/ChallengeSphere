@@ -33,7 +33,7 @@ import java.util.Set;
 public class PushNotificationServiceImpl implements PushNotificationService {
 
     private static final Logger logger = LogManager.getLogger(PushNotificationServiceImpl.class);
-    private static final Set<String> PUSH_TYPES = Set.of("FOLLOW", "GLORY", "COMMENT");
+    private static final Set<String> PUSH_TYPES = Set.of("FOLLOW", "GLORY", "COMMENT", "SUBMISSION", "CHALLENGE_INVITE", "CHALLENGE_UPDATE");
     private static final LocalTime REMINDER_START = LocalTime.of(19, 0);
     private static final LocalTime REMINDER_END = LocalTime.of(20, 0);
 
@@ -113,6 +113,9 @@ public class PushNotificationServiceImpl implements PushNotificationService {
             case "FOLLOW" -> "New follower";
             case "GLORY" -> "New like";
             case "COMMENT" -> "New comment";
+            case "SUBMISSION" -> "New submission";
+            case "CHALLENGE_INVITE" -> "Challenge invite";
+            case "CHALLENGE_UPDATE" -> "Challenge update";
             default -> "ChallengeSphere";
         };
 

@@ -18,6 +18,7 @@ import com.ironside.challengesphere.service.AuthService;
 import com.ironside.challengesphere.service.EmailService;
 import com.ironside.challengesphere.service.SmsService;
 import com.ironside.challengesphere.service.UserService;
+import com.ironside.challengesphere.service.impl.RedisCacheServiceImpl;
 import jakarta.validation.Valid;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -34,6 +35,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.Map;
+import java.util.Optional;
 
 @RestController
 @RequestMapping("/api/v1/auth")
@@ -46,17 +48,20 @@ public class AuthController {
     private final UserService userService;
     private final UserRepository userRepository;
     private final AuthService authService;
+    private final RedisCacheServiceImpl redisCacheServiceImpl;
 
     public AuthController(SmsService smsService,
                           EmailService emailService,
                           UserService userService,
                           UserRepository userRepository,
-                          AuthService authService) {
+                          AuthService authService,
+                          RedisCacheServiceImpl redisCacheServiceImpl) {
         this.smsService = smsService;
         this.emailService = emailService;
         this.userService = userService;
         this.userRepository = userRepository;
         this.authService = authService;
+        this.redisCacheServiceImpl = redisCacheServiceImpl;
     }
 
     @PostMapping("/otp/send")
@@ -110,8 +115,6 @@ public class AuthController {
 
         userService.registerUser(request);
 
-        userRepository.findByEmailId(request.getEmailId()).ifPresent(this::safelySendWelcome);
-
         LoginRequest loginRequest = new LoginRequest();
         loginRequest.setUsername(request.getUsername());
         loginRequest.setPassword(request.getPassword());
@@ -143,8 +146,7 @@ public class AuthController {
     public ResponseEntity<User> me(@AuthenticationPrincipal UserPrincipal principal)
             throws ChallengeSphereException {
         Long userId = SecurityAccess.requireUserId(principal);
-        User user = userRepository.findById(userId)
-                .orElseThrow(() -> new ChallengeSphereException("User not found", HttpStatus.UNAUTHORIZED, logger));
+        User user = userService.getUserDetails(userId, null, null);
         return ResponseEntity.ok(user);
     }
 

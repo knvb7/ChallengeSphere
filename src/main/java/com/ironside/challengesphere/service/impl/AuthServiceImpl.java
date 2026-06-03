@@ -16,6 +16,7 @@ import com.ironside.challengesphere.repository.UserRepository;
 import com.ironside.challengesphere.security.AuthTokenStore;
 import com.ironside.challengesphere.security.JwtService;
 import com.ironside.challengesphere.service.AuthService;
+import com.ironside.challengesphere.service.UserService;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Value;
@@ -59,6 +60,8 @@ public class AuthServiceImpl implements AuthService {
     private final JwtService jwtService;
     private final AuthTokenStore authTokenStore;
     private final PasswordEncoder passwordEncoder;
+    private final RedisCacheServiceImpl redisCacheServiceImpl;
+    private final UserService userService;
 
     @Value("${google.client.id:}")
     private String googleClientId;
@@ -72,11 +75,13 @@ public class AuthServiceImpl implements AuthService {
     public AuthServiceImpl(UserRepository userRepository,
                            JwtService jwtService,
                            AuthTokenStore authTokenStore,
-                           PasswordEncoder passwordEncoder) {
+                           PasswordEncoder passwordEncoder, RedisCacheServiceImpl redisCacheServiceImpl, UserService userService) {
         this.userRepository = userRepository;
         this.jwtService = jwtService;
         this.authTokenStore = authTokenStore;
         this.passwordEncoder = passwordEncoder;
+        this.redisCacheServiceImpl = redisCacheServiceImpl;
+        this.userService = userService;
     }
 
     @Override
@@ -123,10 +128,7 @@ public class AuthServiceImpl implements AuthService {
 
     @Override
     public AuthResponse login(LoginRequest request) throws ChallengeSphereException {
-        User user = userRepository.findByUsername(request.getUsername())
-                .or(() -> userRepository.findByEmailId(request.getUsername()))
-                .orElseThrow(() -> new ChallengeSphereException("Invalid username or password",
-                        HttpStatus.UNAUTHORIZED, logger));
+        User user = userService.getUserDetails(null, null, request.getUsername());
 
         if (!Boolean.TRUE.equals(user.getActive())) {
             throw new ChallengeSphereException("User account is disabled",
@@ -153,9 +155,7 @@ public class AuthServiceImpl implements AuthService {
             throw new ChallengeSphereException("Invalid or expired refresh token",
                     HttpStatus.UNAUTHORIZED, logger);
         }
-        User user = userRepository.findById(userId)
-                .orElseThrow(() -> new ChallengeSphereException("User not found",
-                        HttpStatus.UNAUTHORIZED, logger));
+        User user = userService.getUserDetails(userId, null, null);
         authTokenStore.revoke(refreshToken, "refresh");
         return buildAuthResponse(user);
     }
@@ -216,6 +216,7 @@ public class AuthServiceImpl implements AuthService {
         user.setHashedPassword(passwordEncoder.encode(newPassword));
         userRepository.save(user);
         authTokenStore.revokeAllForUser(userId);
+        redisCacheServiceImpl.invalidateUserProfile(userId);
         logger.info("Password changed and sessions revoked for userId={}", userId);
     }
 

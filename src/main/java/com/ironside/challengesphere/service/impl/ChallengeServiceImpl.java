@@ -59,6 +59,7 @@ import com.ironside.challengesphere.service.NotificationService;
 public class ChallengeServiceImpl implements ChallengeService {
     private static final Logger logger = LogManager.getLogger(ChallengeServiceImpl.class);
     private static final int MAX_CHALLENGE_COVER_PHOTOS = 5;
+    private static final int MAX_CHALLENGES_CREATED_PER_DAY = 5;
 
     @Autowired
     private ChallengeRepository challengeRepository;
@@ -83,6 +84,9 @@ public class ChallengeServiceImpl implements ChallengeService {
 
     @Autowired
     private MediaUrlService mediaUrlService;
+
+    @Autowired
+    private RedisCacheServiceImpl redisCacheServiceImpl;
 
     @Value("${gcs.bucket.name}")
     private String bucketName;
@@ -129,12 +133,12 @@ public class ChallengeServiceImpl implements ChallengeService {
             ensureFollowAccess(userId, currentUserId, "challenges");
 
             // Try cache first
-//            Optional<UserChallengesResponse> cached = cacheService.getCachedUserChallenges(userId, page, pageSize, activeFilter, UserChallengesResponse.class);
-//            if (cached.isPresent()) {
-//                logger.info("Cache hit for user challenges: userId={}, page={}", userId, page);
-//                return cached.get();
-//            }
-//            logger.debug("Cache miss for user challenges: userId={}, fetching from DB", userId);
+            Optional<UserChallengesResponse> cached = cacheService.getCachedUserChallenges(userId, page, pageSize, activeFilter, UserChallengesResponse.class);
+            if (cached.isPresent()) {
+                logger.info("Cache hit for user challenges: userId={}, page={}", userId, page);
+                return cached.get();
+            }
+            logger.debug("Cache miss for user challenges: userId={}, fetching from DB", userId);
 
             List<Challenge> createdChallenges = challengeRepository.findByCreatorId(userId);
             List<Challenge> ownedChallenges = challengeRepository.findByCurrentOwnerId(userId);
@@ -177,7 +181,7 @@ public class ChallengeServiceImpl implements ChallengeService {
             );
 
             // Cache the response asynchronously
-//            cacheService.cacheUserChallenges(userId, page, pageSize, activeFilter, response);
+            cacheService.cacheUserChallenges(userId, page, pageSize, activeFilter, response);
 
             return response;
 
@@ -236,13 +240,17 @@ public class ChallengeServiceImpl implements ChallengeService {
 
         try {
             // Validate that the creator user exists
-            if (!userRepository.existsById(request.getCreatorUserId())) {
-                throw new ChallengeSphereException(
-                        "Creator user not found with id: " + request.getCreatorUserId(),
-                        HttpStatus.NOT_FOUND,
-                        logger
-                );
+            if(redisCacheServiceImpl.getCachedUserProfile(request.getCreatorUserId(), null, null, User.class).isEmpty()) {
+                if (!userRepository.existsById(request.getCreatorUserId())) {
+                    throw new ChallengeSphereException(
+                            "Creator user not found with id: " + request.getCreatorUserId(),
+                            HttpStatus.NOT_FOUND,
+                            logger
+                    );
+                }
             }
+
+            enforceDailyChallengeCreationLimit(request.getCreatorUserId());
 
             Challenge challenge = new Challenge();
             challenge.setTitle(request.getTitle());
@@ -260,9 +268,8 @@ public class ChallengeServiceImpl implements ChallengeService {
             challenge.setChallengeMode(challengeMode);
             challenge.setNumberOfDays(resolveChallengeDuration(request.getNumberOfDays(), challengeMode));
             List<String> requestedCoverPhotoUrls = getRequestedCoverPhotoUrls(request);
-            if (requestedCoverPhotoUrls != null) {
+            if (requestedCoverPhotoUrls != null)
                 challenge.setCoverPhotoUrls(serializeCoverPhotoUrls(requestedCoverPhotoUrls));
-            }
 
             Challenge savedChallenge = challengeRepository.save(challenge);
             UserChallenge creatorParticipant = new UserChallenge();
@@ -275,21 +282,15 @@ public class ChallengeServiceImpl implements ChallengeService {
 
             logger.info("Successfully created challenge with id: {} for user: {}", savedChallenge.getId(), request.getCreatorUserId());
             cacheService.cacheChallenge(savedChallenge.getId(), savedChallenge);
-            cacheService.invalidateAllFeeds();
-
-            // Cache the newly created challenge
-            // cacheService.cacheChallenge(savedChallenge.getId(), savedChallenge);
-
-            // Invalidate recent/trending challenges cache since we have new content
-            // cacheService.invalidateRecentChallenges();
-            // cacheService.invalidateTrendingChallenges();
-
-            // Invalidate user challenges cache since user created a new challenge
-            // cacheService.invalidateUserChallenges(request.getCreatorUserId());
-
-            // Invalidate hashtag challenges cache since new challenge may match hashtag searches
-            // cacheService.invalidateHashtagChallenges();
-
+            cacheService.prependCreatedChallengeToUserChallenges(
+                    request.getCreatorUserId(),
+                    10,
+                    withReadableCoverPhotoUrls(savedChallenge)
+            );
+            cacheService.invalidateRecentAndTrendingChallenges();
+            if (savedChallenge.getHashtags() != null && !savedChallenge.getHashtags().isBlank()) {
+                cacheService.invalidateHashtagChallenges();
+            }
             // Update user's challengesCreated count asynchronously
             updateChallengesCreatedCountAsync(request.getCreatorUserId());
             notificationService.notifyChallengeInvitesAsync(
@@ -329,6 +330,25 @@ public class ChallengeServiceImpl implements ChallengeService {
         }
     }
 
+    private void enforceDailyChallengeCreationLimit(Long creatorUserId) throws ChallengeSphereException {
+        LocalDate today = LocalDate.now();
+        Timestamp startOfDay = Timestamp.valueOf(today.atStartOfDay());
+        Timestamp startOfNextDay = Timestamp.valueOf(today.plusDays(1).atStartOfDay());
+        long createdToday = challengeRepository.countCreatedByCreatorIdBetween(
+                creatorUserId,
+                startOfDay,
+                startOfNextDay
+        );
+
+        if (createdToday >= MAX_CHALLENGES_CREATED_PER_DAY) {
+            throw new ChallengeSphereException(
+                    "You can create only 5 challenges per day. Please try again tomorrow.",
+                    HttpStatus.TOO_MANY_REQUESTS,
+                    logger
+            );
+        }
+    }
+
     /**
      * Asynchronously update the challengesCreated count for a user
      */
@@ -337,13 +357,8 @@ public class ChallengeServiceImpl implements ChallengeService {
     protected void updateChallengesCreatedCountAsync(Long userId) {
         try {
             logger.info("Async update challengesCreated count for user: {}", userId);
-            User user = userRepository.findById(userId).orElse(null);
-            if (user != null) {
-                Integer currentCount = user.getChallengesCreated() != null ? user.getChallengesCreated() : 0;
-                user.setChallengesCreated(currentCount + 1);
-                userRepository.save(user);
-                logger.info("Updated challengesCreated count to {} for user: {}", currentCount + 1, userId);
-            }
+            userRepository.increaseChallengeCreatedCountForAUser(userId);
+            logger.info("Updated challengesCreated count for userId: {}", userId);
         } catch (Exception e) {
             logger.error("Error updating challengesCreated count for user {}: {}", userId, e.getMessage(), e);
         }
@@ -354,14 +369,8 @@ public class ChallengeServiceImpl implements ChallengeService {
     protected void updateChallengesAcceptedCountAsync(Long userId, boolean increment) {
         try {
             logger.info("Async update challengesAccepted count for user: {}, increment: {}", userId, increment);
-            User user = userRepository.findById(userId).orElse(null);
-            if (user != null) {
-                Integer currentCount = user.getChallengesAccepted() != null ? user.getChallengesAccepted() : 0;
-                int newCount = increment ? currentCount + 1 : Math.max(0, currentCount - 1);
-                user.setChallengesAccepted(newCount);
-                userRepository.save(user);
-                logger.info("Updated challengesAccepted count to {} for user: {}", newCount, userId);
-            }
+            userRepository.increaseChallengeAcceptedCountForAUser(userId);
+            logger.info("Updated challengesAccepted count for userId: {}", userId);
         } catch (Exception e) {
             logger.error("Error updating challengesAccepted count for user {}: {}", userId, e.getMessage(), e);
         }

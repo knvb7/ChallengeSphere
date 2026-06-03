@@ -58,7 +58,7 @@ public class NotificationServiceImpl implements NotificationService {
     private final UserPreferencesRepository preferencesRepository;
     private final EmailService emailService;
     private final PushNotificationService pushNotificationService;
-    private final ObjectMapper objectMapper;
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     public NotificationServiceImpl(NotificationRepository notificationRepository,
                                    UserRepository userRepository,
@@ -67,8 +67,7 @@ public class NotificationServiceImpl implements NotificationService {
                                    UserBlockRepository userBlockRepository,
                                    UserPreferencesRepository preferencesRepository,
                                    EmailService emailService,
-                                   PushNotificationService pushNotificationService,
-                                   ObjectMapper objectMapper) {
+                                   PushNotificationService pushNotificationService) {
         this.notificationRepository = notificationRepository;
         this.userRepository = userRepository;
         this.challengeRepository = challengeRepository;
@@ -77,7 +76,6 @@ public class NotificationServiceImpl implements NotificationService {
         this.preferencesRepository = preferencesRepository;
         this.emailService = emailService;
         this.pushNotificationService = pushNotificationService;
-        this.objectMapper = objectMapper;
     }
 
     @Override
@@ -172,6 +170,7 @@ public class NotificationServiceImpl implements NotificationService {
             UserPreferences prefs = prefsByUserId.get(recipient.getId());
             if (allowsInApp(recipient, prefs, TYPE_SUBMISSION)) {
                 toSave.add(buildNotification(recipient.getId(), TYPE_SUBMISSION, message, actionObject));
+                pushNotificationService.sendInteractionPush(recipient.getId(), TYPE_SUBMISSION, message, actionObject);
             }
             sendEmailIfAllowed(recipient, prefs, TYPE_SUBMISSION, message);
         }
@@ -188,9 +187,8 @@ public class NotificationServiceImpl implements NotificationService {
     @Transactional
     public void notifyChallengeInvitesAsync(Challenge challenge, Long actorUserId, Collection<Long> requestedRecipientUserIds) {
         try {
-            if (challenge == null || actorUserId == null || requestedRecipientUserIds == null || requestedRecipientUserIds.isEmpty()) {
+            if (challenge == null || actorUserId == null || requestedRecipientUserIds == null || requestedRecipientUserIds.isEmpty())
                 return;
-            }
 
             User actor = userRepository.findById(actorUserId).orElse(null);
             if (actor == null) {
@@ -217,19 +215,16 @@ public class NotificationServiceImpl implements NotificationService {
                     + (challengeTitle.isBlank() ? " a challenge" : " " + challengeTitle);
 
             for (User recipient : recipients) {
-                if (userBlockRepository.existsActiveBlockBetween(recipient.getId(), actorUserId)) {
-                    continue;
-                }
                 UserPreferences prefs = prefsByUserId.get(recipient.getId());
-                if (!allowsChallengeInvites(prefs)) {
+                if (!allowsChallengeInvites(prefs))
                     continue;
-                }
 
                 String actionObject = toJson(baseChallengeInvitePayload(actor, recipient, challenge));
                 if (allowsInApp(recipient, prefs, TYPE_CHALLENGE_INVITE)) {
                     toSave.add(buildNotification(recipient.getId(), TYPE_CHALLENGE_INVITE, message, actionObject));
+                    pushNotificationService.sendInteractionPush(recipient.getId(), TYPE_CHALLENGE_INVITE, message, actionObject);
                 }
-                sendEmailIfAllowed(recipient, prefs, TYPE_CHALLENGE_INVITE, message);
+//                sendEmailIfAllowed(recipient, prefs, TYPE_CHALLENGE_INVITE, message);
             }
 
             if (!toSave.isEmpty()) {
@@ -281,6 +276,7 @@ public class NotificationServiceImpl implements NotificationService {
             String actionObject = toJson(baseChallengeJoinedPayload(joiner, recipient, challenge));
             if (allowsInApp(recipient, prefs, TYPE_CHALLENGE_UPDATE)) {
                 toSave.add(buildNotification(recipient.getId(), TYPE_CHALLENGE_UPDATE, message, actionObject));
+                pushNotificationService.sendInteractionPush(recipient.getId(), TYPE_CHALLENGE_UPDATE, message, actionObject);
             }
             sendEmailIfAllowed(recipient, prefs, TYPE_CHALLENGE_UPDATE, message);
         }

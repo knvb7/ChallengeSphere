@@ -2,6 +2,7 @@ package com.ironside.challengesphere.controller;
 
 import com.ironside.challengesphere.api.request.CreateSubmissionRequest;
 import com.ironside.challengesphere.api.request.GeneratePresignedUrlsRequest;
+import com.ironside.challengesphere.api.response.DeleteSubmissionResponse;
 import com.ironside.challengesphere.api.response.PresignedUrlsResponse;
 import com.ironside.challengesphere.api.response.SubmissionResponse;
 import com.ironside.challengesphere.api.response.SubmissionsResponse;
@@ -73,14 +74,14 @@ public class SubmissionController {
      * DELETE /api/v1/submissions/{submissionId}
      */
     @DeleteMapping("/{submissionId}")
-    public ResponseEntity<Void> deleteSubmission(
+    public ResponseEntity<DeleteSubmissionResponse> deleteSubmission(
             @AuthenticationPrincipal UserPrincipal principal,
             @PathVariable Long submissionId) throws ChallengeSphereException {
         Long userId = SecurityAccess.requireUserId(principal);
         logger.info("Received delete request for submission: {}, user: {}", submissionId, userId);
 
         submissionService.deleteSubmission(submissionId, userId);
-        return ResponseEntity.noContent().build();
+        return ResponseEntity.ok(new DeleteSubmissionResponse(true, "Submission deleted successfully", submissionId));
     }
 
     /**

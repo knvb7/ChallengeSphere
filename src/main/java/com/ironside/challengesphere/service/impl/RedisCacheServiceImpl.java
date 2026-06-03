@@ -13,6 +13,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
+import com.ironside.challengesphere.model.User;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -24,19 +25,9 @@ import org.springframework.stereotype.Service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.ironside.challengesphere.api.response.UserChallengesResponse;
+import com.ironside.challengesphere.model.Challenge;
 
-/**
- * Redis Cache Service Implementation
- * Provides centralized caching operations for ChallengeSphere application
- *
- * Features:
- * - Type-safe caching with JSON serialization
- * - Rate limiting with sliding window
- * - Leaderboard management
- * - Session management
- * - Batch operations for performance
- * - Async operations to not block main flow
- */
 @Service
 public class RedisCacheServiceImpl {
 
@@ -70,10 +61,11 @@ public class RedisCacheServiceImpl {
     private static final String FEED_PREFIX = "feed:";
     private static final String FEED_TIMELINE_PREFIX = "feed:timeline:";
     private static final String DIRTY_LOGIN_SET_KEY = "dirty:last_login";
-    private static final Duration DEFAULT_CHALLENGE_TTL = Duration.ofHours(1);
+    private static final Duration DEFAULT_CHALLENGE_TTL = Duration.ofDays(7);
     private static final Duration DEFAULT_SESSION_TTL = Duration.ofHours(24);
     private static final Duration DEFAULT_SUBMISSION_TTL = Duration.ofMinutes(30);
-    private static final Duration DEFAULT_USER_PROFILE_TTL = Duration.ofMinutes(30);
+    private static final Duration DEFAULT_USER_PROFILE_TTL = Duration.ofHours(24);
+    private static final Duration DEFAULT_USER_EMAILANDUSERNAME_PROFILE_TTL = Duration.ofDays(7);
     private static final Duration DEFAULT_LEADERBOARD_TTL = Duration.ofDays(7);
     private static final Duration DEFAULT_VERIFICATION_TTL = Duration.ofMinutes(10);
     private static final Duration USER_CHALLENGES_TTL = Duration.ofMinutes(15);
@@ -406,148 +398,6 @@ public class RedisCacheServiceImpl {
         });
     }
 
-    // ==================== USE CASE 2: USER SESSION MANAGEMENT ====================
-
-    /**
-     * Store user session data (ASYNC - non-blocking)
-     * Use Case: Fast session lookup without DB hits
-     */
-    public <T> void createSession(String sessionId, T sessionData) {
-        if (sessionId == null || sessionData == null) {
-            return;
-        }
-        executeAsync(() -> {
-            String key = SESSION_PREFIX + sessionId;
-            if (save(key, sessionData, DEFAULT_SESSION_TTL)) {
-                logger.debug("Created session: sessionId={}", sessionId);
-            }
-        });
-    }
-
-    /**
-     * Get session data (SYNC - needs result)
-     */
-    public <T> Optional<T> getSession(String sessionId, Class<T> type) {
-        if (sessionId == null) {
-            return Optional.empty();
-        }
-        String key = SESSION_PREFIX + sessionId;
-        return getOptional(key, type);
-    }
-
-    /**
-     * Extend session timeout (ASYNC - non-blocking)
-     */
-    public void extendSession(String sessionId) {
-        if (sessionId == null) {
-            return;
-        }
-        executeAsync(() -> {
-            String key = SESSION_PREFIX + sessionId;
-            if (expire(key, DEFAULT_SESSION_TTL)) {
-                logger.debug("Extended session: sessionId={}", sessionId);
-            }
-        });
-    }
-
-    /**
-     * Invalidate session (ASYNC - non-blocking)
-     */
-    public void invalidateSession(String sessionId) {
-        if (sessionId == null) {
-            return;
-        }
-        executeAsync(() -> {
-            String key = SESSION_PREFIX + sessionId;
-            delete(key);
-            logger.debug("Invalidated session: sessionId={}", sessionId);
-        });
-    }
-
-    // ==================== USE CASE 3: RATE LIMITING ====================
-
-    /**
-     * Rate limit result containing limit status and metadata
-     */
-    public record RateLimitResult(boolean limited, long currentCount, long maxRequests, long windowSeconds) {
-        public long remainingRequests() {
-            return Math.max(0, maxRequests - currentCount);
-        }
-    }
-
-    /**
-     * Check if user exceeded rate limit using sliding window
-     * Use Case: Prevent spam, protect APIs
-     * @return RateLimitResult with detailed rate limit information
-     */
-    public RateLimitResult checkRateLimit(String identifier, int maxRequests, Duration window) {
-        if (identifier == null) {
-            return new RateLimitResult(false, 0, maxRequests, window.getSeconds());
-        }
-
-        String key = RATE_LIMIT_PREFIX + identifier;
-        try {
-            Long count = redisTemplate.opsForValue().increment(key);
-            if (count == null) {
-                return new RateLimitResult(false, 0, maxRequests, window.getSeconds());
-            }
-
-            if (count == 1) {
-                // First request in window, set expiration
-                redisTemplate.expire(key, window);
-            }
-
-            boolean limited = count > maxRequests;
-            if (limited) {
-                logger.warn("Rate limit exceeded: identifier={}, count={}, max={}",
-                        identifier, count, maxRequests);
-            }
-            return new RateLimitResult(limited, count, maxRequests, window.getSeconds());
-
-        } catch (Exception e) {
-            logger.error("Error checking rate limit: identifier={}", identifier, e);
-            return new RateLimitResult(false, 0, maxRequests, window.getSeconds()); // Fail open
-        }
-    }
-
-    /**
-     * Legacy method for backward compatibility
-     */
-    public boolean isRateLimited(String userId, int maxRequests, int windowMinutes) {
-        return checkRateLimit(userId, maxRequests, Duration.ofMinutes(windowMinutes)).limited();
-    }
-
-    /**
-     * Get current request count for user
-     */
-    public long getRateLimitCount(String userId) {
-        if (userId == null) {
-            return 0;
-        }
-        String key = RATE_LIMIT_PREFIX + userId;
-        try {
-            Object value = redisTemplate.opsForValue().get(key);
-            return value != null ? Long.parseLong(value.toString()) : 0;
-        } catch (Exception e) {
-            logger.error("Error getting rate limit count: userId={}", userId, e);
-            return 0;
-        }
-    }
-
-    /**
-     * Reset rate limit for a user (admin function)
-     */
-    public void resetRateLimit(String userId) {
-        if (userId == null) {
-            return;
-        }
-        executeAsync(() -> {
-            String key = RATE_LIMIT_PREFIX + userId;
-            delete(key);
-            logger.debug("Reset rate limit: userId={}", userId);
-        });
-    }
-
     // ==================== USE CASE 4: LEADERBOARD ====================
 
     /**
@@ -801,13 +651,11 @@ public class RedisCacheServiceImpl {
 
     // Cache key patterns for paginated recent/trending
     private static final String RECENT_CHALLENGES_PAGE_PREFIX = "recent:challenges:page:";
-    private static final String TRENDING_CHALLENGES_PAGE_PREFIX = "trending:challenges:page:";
     private static final String CHALLENGE_VIEWS_KEY = "challenge:views";
     private static final String CHALLENGE_ENGAGEMENT_KEY = "challenge:engagement";
     
     // TTL values for recent/trending
     private static final Duration RECENT_CHALLENGES_TTL = Duration.ofMinutes(5);
-    private static final Duration TRENDING_CHALLENGES_TTL = Duration.ofMinutes(10);
     private static final Duration ENGAGEMENT_TTL = Duration.ofDays(7);
 
     /**
@@ -870,64 +718,6 @@ public class RedisCacheServiceImpl {
     }
 
     /**
-     * Cache trending challenges (ASYNC - non-blocking)
-     */
-    public <T> void cacheTrendingChallenges(T challenges) {
-        if (challenges == null) {
-            return;
-        }
-        executeAsync(() -> {
-            if (save(TRENDING_CHALLENGES_KEY, challenges, TRENDING_CHALLENGES_TTL)) {
-                logger.debug("Cached trending challenges");
-            }
-        });
-    }
-
-    /**
-     * Cache paginated trending challenges (ASYNC - non-blocking)
-     */
-    public <T> void cacheTrendingChallengesPaginated(int page, int pageSize, T challenges) {
-        if (challenges == null || page < 1) {
-            return;
-        }
-        executeAsync(() -> {
-            String key = TRENDING_CHALLENGES_PAGE_PREFIX + page + ":" + pageSize;
-            if (save(key, challenges, TRENDING_CHALLENGES_TTL)) {
-                logger.debug("Cached trending challenges page {} (size={})", page, pageSize);
-            }
-        });
-    }
-
-    /**
-     * Get trending challenges (SYNC - needs result)
-     */
-    public <T> Optional<T> getTrendingChallenges(Class<T> type) {
-        return getOptional(TRENDING_CHALLENGES_KEY, type);
-    }
-
-    /**
-     * Get paginated trending challenges from cache (SYNC - needs result)
-     */
-    public <T> Optional<T> getTrendingChallengesPaginated(int page, int pageSize, Class<T> type) {
-        if (page < 1) {
-            return Optional.empty();
-        }
-        String key = TRENDING_CHALLENGES_PAGE_PREFIX + page + ":" + pageSize;
-        return getOptional(key, type);
-    }
-
-    /**
-     * Invalidate trending challenges cache (ASYNC - non-blocking)
-     */
-    public void invalidateTrendingChallenges() {
-        executeAsync(() -> {
-            delete(TRENDING_CHALLENGES_KEY);
-            deleteByPattern(TRENDING_CHALLENGES_PAGE_PREFIX + "*");
-            logger.debug("Invalidated trending challenges cache (all pages)");
-        });
-    }
-
-    /**
      * Invalidate both recent and trending caches (ASYNC - non-blocking)
      * Use this when a challenge is created/updated/deleted
      */
@@ -935,8 +725,6 @@ public class RedisCacheServiceImpl {
         executeAsync(() -> {
             delete(RECENT_CHALLENGES_KEY);
             deleteByPattern(RECENT_CHALLENGES_PAGE_PREFIX + "*");
-            delete(TRENDING_CHALLENGES_KEY);
-            deleteByPattern(TRENDING_CHALLENGES_PAGE_PREFIX + "*");
             logger.debug("Invalidated both recent and trending challenges caches");
         });
     }
@@ -1088,14 +876,25 @@ public class RedisCacheServiceImpl {
      * Cache user profile (ASYNC - non-blocking)
      * Use Case: Reduce DB queries for user data
      */
-    public <T> void cacheUserProfile(Long userId, T userProfile) {
-        if (userId == null || userProfile == null) {
+    public <T> void cacheUserProfile(T userProfile) {
+        if (userProfile == null)
             return;
-        }
         executeAsync(() -> {
-            String key = USER_PREFIX + "profile:" + userId;
-            if (save(key, userProfile, DEFAULT_USER_PROFILE_TTL)) {
+            String emailId = ((User)userProfile).getEmailId();
+            String username = ((User)userProfile).getUsername();
+            Long userId = ((User)userProfile).getId();
+
+            String keyUserId = USER_PREFIX + "profile:" + userId;
+            if (save(keyUserId, userProfile, DEFAULT_USER_PROFILE_TTL)) {
                 logger.debug("Cached user profile: userId={}", userId);
+            }
+            String keyEmailId = USER_PREFIX + "emailId:" + emailId;
+            if (save(keyEmailId, userId, DEFAULT_USER_EMAILANDUSERNAME_PROFILE_TTL)) {
+                logger.debug("Cached user profile: emailId={}", emailId);
+            }
+            String keyUsername = USER_PREFIX + "username:" + username;
+            if (save(keyUsername, userId, DEFAULT_USER_EMAILANDUSERNAME_PROFILE_TTL)) {
+                logger.debug("Cached user profile: username={}", username);
             }
         });
     }
@@ -1103,14 +902,39 @@ public class RedisCacheServiceImpl {
     /**
      * Get cached user profile (SYNC - needs result)
      */
-    public <T> Optional<T> getCachedUserProfile(Long userId, Class<T> type) {
-        if (userId == null) {
-            return Optional.empty();
-        }
-        String key = USER_PREFIX + "profile:" + userId;
-        return getOptional(key, type);
-    }
+    public <T> Optional<T> getCachedUserProfile(Long userId, String email, String username, Class<T> type) {
 
+        int provided = 0;
+        if (userId != null) provided++;
+        if (email != null && !email.isBlank()) provided++;
+        if (username != null && !username.isBlank()) provided++;
+
+        if (provided == 0)
+            throw new IllegalArgumentException("At least one of userId, email, or username must be provided");
+
+        Long resolvedUserId = userId;
+        if (resolvedUserId == null && email != null && !email.isBlank()) {
+            String emailKey = USER_PREFIX + "emailId:" + email.toLowerCase();
+            Optional<Long> userIdOptional =
+                    getOptional(emailKey, Long.class);
+
+            if (userIdOptional.isEmpty())
+                return Optional.empty();
+            resolvedUserId = userIdOptional.get();
+        }
+
+        if (resolvedUserId == null && username != null && !username.isBlank()) {
+            String usernameKey = USER_PREFIX + "username:" + username.toLowerCase();
+            Optional<Long> userIdOptional =
+                    getOptional(usernameKey, Long.class);
+
+            if (userIdOptional.isEmpty())
+                return Optional.empty();
+            resolvedUserId = userIdOptional.get();
+        }
+        String profileKey = USER_PREFIX + "profile:" + resolvedUserId;
+        return getOptional(profileKey, type);
+    }
     /**
      * Invalidate user profile cache (ASYNC - non-blocking)
      */
@@ -1320,7 +1144,8 @@ public class RedisCacheServiceImpl {
         if (userProfiles == null || userProfiles.isEmpty()) {
             return;
         }
-        userProfiles.forEach(this::cacheUserProfile);
+        for(Map.Entry<Long, T> userProfile : userProfiles.entrySet())
+            cacheUserProfile(userProfile.getValue());
         logger.debug("Batch cached {} user profiles", userProfiles.size());
     }
 
@@ -1335,7 +1160,7 @@ public class RedisCacheServiceImpl {
         
         Map<Long, T> result = new HashMap<>();
         for (Long userId : userIds) {
-            getCachedUserProfile(userId, type).ifPresent(profile -> result.put(userId, profile));
+            getCachedUserProfile(userId, null, null, type).ifPresent(profile -> result.put(userId, profile));
         }
         logger.debug("Batch retrieved {} of {} user profiles from cache", result.size(), userIds.size());
         return result;
@@ -1672,6 +1497,68 @@ public class RedisCacheServiceImpl {
         executeAsync(() -> {
             deleteByPattern(USER_CHALLENGES_PREFIX + userId + ":*");
             logger.debug("Invalidated user challenges cache: userId={}", userId);
+        });
+    }
+
+    /**
+     * Prepend a newly created challenge to any cached first page of a user's challenge list.
+     * Later pages are cleared because prepending shifts pagination boundaries.
+     */
+    public void prependCreatedChallengeToUserChallenges(Long userId, int defaultPageSize, Challenge challenge) {
+        if (userId == null || challenge == null || challenge.getId() == null) {
+            return;
+        }
+        executeAsync(() -> {
+            Set<String> userChallengeKeys = redisTemplate.keys(USER_CHALLENGES_PREFIX + userId + ":page:*");
+            if (userChallengeKeys != null && !userChallengeKeys.isEmpty()) {
+                List<String> laterPageKeys = userChallengeKeys.stream()
+                        .filter(key -> !key.contains(":page:1:size:"))
+                        .toList();
+                if (!laterPageKeys.isEmpty()) {
+                    redisTemplate.delete(laterPageKeys);
+                }
+            }
+
+            String pattern = USER_CHALLENGES_PREFIX + userId + ":page:1:size:*:active:*";
+            Set<String> keys = redisTemplate.keys(pattern);
+            if (keys == null || keys.isEmpty()) {
+                logger.debug("No cached first-page user challenges to patch: userId={}", userId);
+                return;
+            }
+
+            for (String key : keys) {
+                UserChallengesResponse cached = get(key, UserChallengesResponse.class);
+                if (cached == null || cached.getChallenges() == null) {
+                    continue;
+                }
+                String activeToken = key.substring(key.lastIndexOf(":active:") + ":active:".length());
+                if ("true".equals(activeToken) && !Boolean.TRUE.equals(challenge.getActive())) {
+                    continue;
+                }
+                if ("false".equals(activeToken) && Boolean.TRUE.equals(challenge.getActive())) {
+                    continue;
+                }
+
+                int pageSize = cached.getPageSize() != null ? cached.getPageSize() : defaultPageSize;
+                List<Challenge> updatedChallenges = new ArrayList<>();
+                updatedChallenges.add(challenge);
+                cached.getChallenges().stream()
+                        .filter(existing -> existing != null && !challenge.getId().equals(existing.getId()))
+                        .limit(Math.max(pageSize - 1, 0))
+                        .forEach(updatedChallenges::add);
+
+                int totalCount = cached.getTotalCount() != null ? cached.getTotalCount() + 1 : updatedChallenges.size();
+                UserChallengesResponse updated = UserChallengesResponse.create(
+                        cached.getUserId(),
+                        updatedChallenges,
+                        cached.getCurrentPage() != null ? cached.getCurrentPage() : 1,
+                        pageSize,
+                        totalCount
+                );
+                save(key, updated, USER_CHALLENGES_TTL);
+            }
+            logger.debug("Prepended created challenge {} to cached user challenges for userId={}",
+                    challenge.getId(), userId);
         });
     }
 

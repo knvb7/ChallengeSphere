@@ -76,6 +76,85 @@ public interface UserRepository extends JpaRepository<User, Long> {
                                    @Param("currentUserId") Long currentUserId,
                                    Pageable pageable);
 
+    @Query(
+            value = "SELECT u.* FROM challengesphere.users u " +
+                    "WHERE u.active = true " +
+                    "AND u.id <> :currentUserId " +
+                    "AND COALESCE(u.interests, '') <> '' " +
+                    "AND EXISTS (" +
+                    "  SELECT 1 FROM regexp_split_to_table(:interestCsv, ',') AS interest(value) " +
+                    "  WHERE interest.value <> '' " +
+                    "  AND POSITION(',' || interest.value || ',' IN ',' || COALESCE(u.interests, '') || ',') > 0" +
+                    ") " +
+                    "AND NOT EXISTS (SELECT 1 FROM challengesphere.follows f " +
+                    "  WHERE f.active = true AND f.follower_id = :currentUserId AND f.following_id = u.id" +
+                    ") " +
+                    "AND NOT EXISTS (" +
+                    "  SELECT 1 FROM challengesphere.user_blocks b " +
+                    "  WHERE b.active = true " +
+                    "  AND ((b.blocker_user_id = :currentUserId AND b.blocked_user_id = u.id) " +
+                    "    OR (b.blocker_user_id = u.id AND b.blocked_user_id = :currentUserId))" +
+                    ") " +
+                    "ORDER BY (" +
+                    "  SELECT COUNT(*) FROM regexp_split_to_table(:interestCsv, ',') AS interest(value) " +
+                    "  WHERE interest.value <> '' " +
+                    "  AND POSITION(',' || interest.value || ',' IN ',' || COALESCE(u.interests, '') || ',') > 0" +
+                    ") DESC, u.followers DESC, COALESCE(u.last_login_at, u.created_at) DESC, u.username ASC",
+            countQuery = "SELECT COUNT(*) FROM challengesphere.users u " +
+                    "WHERE u.active = true " +
+                    "AND u.id <> :currentUserId " +
+                    "AND COALESCE(u.interests, '') <> '' " +
+                    "AND EXISTS (" +
+                    "  SELECT 1 FROM regexp_split_to_table(:interestCsv, ',') AS interest(value) " +
+                    "  WHERE interest.value <> '' " +
+                    "  AND POSITION(',' || interest.value || ',' IN ',' || COALESCE(u.interests, '') || ',') > 0" +
+                    ") " +
+                    "AND NOT EXISTS (SELECT 1 FROM challengesphere.follows f " +
+                    "  WHERE f.active = true AND f.follower_id = :currentUserId AND f.following_id = u.id" +
+                    ") " +
+                    "AND NOT EXISTS (" +
+                    "  SELECT 1 FROM challengesphere.user_blocks b " +
+                    "  WHERE b.active = true " +
+                    "  AND ((b.blocker_user_id = :currentUserId AND b.blocked_user_id = u.id) " +
+                    "    OR (b.blocker_user_id = u.id AND b.blocked_user_id = :currentUserId))" +
+                    ")",
+            nativeQuery = true
+    )
+    Page<User> findSuggestedUsers(@Param("currentUserId") Long currentUserId,
+                                  @Param("interestCsv") String interestCsv,
+                                  Pageable pageable);
+
+    @Query(
+            value = "SELECT u.* FROM challengesphere.users u " +
+                    "WHERE u.active = true " +
+                    "AND u.id <> :currentUserId " +
+                    "AND NOT EXISTS (SELECT 1 FROM challengesphere.follows f " +
+                    "  WHERE f.active = true AND f.follower_id = :currentUserId AND f.following_id = u.id" +
+                    ") " +
+                    "AND NOT EXISTS (" +
+                    "  SELECT 1 FROM challengesphere.user_blocks b " +
+                    "  WHERE b.active = true " +
+                    "  AND ((b.blocker_user_id = :currentUserId AND b.blocked_user_id = u.id) " +
+                    "    OR (b.blocker_user_id = u.id AND b.blocked_user_id = :currentUserId))" +
+                    ") " +
+                    "ORDER BY u.followers DESC, COALESCE(u.last_login_at, u.created_at) DESC, u.username ASC",
+            countQuery = "SELECT COUNT(*) FROM challengesphere.users u " +
+                    "WHERE u.active = true " +
+                    "AND u.id <> :currentUserId " +
+                    "AND NOT EXISTS (SELECT 1 FROM challengesphere.follows f " +
+                    "  WHERE f.active = true AND f.follower_id = :currentUserId AND f.following_id = u.id" +
+                    ") " +
+                    "AND NOT EXISTS (" +
+                    "  SELECT 1 FROM challengesphere.user_blocks b " +
+                    "  WHERE b.active = true " +
+                    "  AND ((b.blocker_user_id = :currentUserId AND b.blocked_user_id = u.id) " +
+                    "    OR (b.blocker_user_id = u.id AND b.blocked_user_id = :currentUserId))" +
+                    ")",
+            nativeQuery = true
+    )
+    Page<User> findFallbackSuggestedUsers(@Param("currentUserId") Long currentUserId,
+                                          Pageable pageable);
+
     @Modifying
     @Query(value = "UPDATE challengesphere.users SET active = :active WHERE id = :id", nativeQuery = true)
     void updateUserActiveStatus(@Param("id") Long id, @Param("active") Boolean active);
@@ -103,4 +182,17 @@ public interface UserRepository extends JpaRepository<User, Long> {
 
     @Query(value = "SELECT * FROM challengesphere.users WHERE last_login_at >= NOW() - CAST(:days || ' days' AS INTERVAL) AND active = true", nativeQuery = true)
     List<User> findRecentlyActiveUsers(@Param("days") int days);
+
+    @Transactional
+    @Modifying
+    @Query(value = "UPDATE challengesphere.users SET challenges_created = challenges_created + 1 WHERE id = :userId", nativeQuery = true)
+    int increaseChallengeCreatedCountForAUser(@Param("userId") Long userId);
+
+    @Transactional
+    @Modifying
+    @Query(value = "UPDATE challengesphere.users SET challenges_accepted = challenges_accepted + 1 WHERE id = :userId", nativeQuery = true)
+    int increaseChallengeAcceptedCountForAUser(@Param("userId") Long userId);
+
+    @Query(value = "SELECT * FROM challengesphere.users WHERE LOWER(email_id) = LOWER(:emailId) AND active = true", nativeQuery = true)
+    Optional<User> findByEmailIdIgnoreCase(@Param("emailId") String emailId);
 }

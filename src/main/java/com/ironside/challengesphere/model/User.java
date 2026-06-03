@@ -8,6 +8,7 @@ import lombok.NoArgsConstructor;
 import lombok.Setter;
 import java.sql.Timestamp;
 import java.time.LocalDate;
+import java.util.List;
 
 @Entity
 @Table(name = "users")
@@ -79,6 +80,10 @@ public class User {
 
     @Column(name = "age")
     private Integer age;
+
+    @Convert(converter = StringListConverter.class)
+    @Column(name = "interests")
+    private List<String> interests;
 
     @Column(name = "last_login_at")
     private Timestamp lastLoginAt;

@@ -163,12 +163,6 @@ public class CacheAdminController {
         return accepted("recent-challenges", "all");
     }
 
-    @PostMapping("/challenges/trending/invalidate")
-    public ResponseEntity<Map<String, Object>> invalidateTrendingChallenges() {
-        cacheService.invalidateTrendingChallenges();
-        return accepted("trending-challenges", "all");
-    }
-
     @PostMapping("/challenges/recent-trending/invalidate")
     public ResponseEntity<Map<String, Object>> invalidateRecentAndTrendingChallenges() {
         cacheService.invalidateRecentAndTrendingChallenges();
