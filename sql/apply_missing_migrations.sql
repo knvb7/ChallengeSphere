@@ -30,7 +30,7 @@ CREATE INDEX IF NOT EXISTS idx_moderation_flags_pending
 CREATE INDEX IF NOT EXISTS idx_moderation_flags_user
     ON challengesphere.moderation_flags (user_id);
 
--- V15: support multi-photo submission payloads from GCS.
+-- V15: support multi-photo submission payloads from object storage.
 ALTER TABLE IF EXISTS challengesphere.submissions
     ALTER COLUMN media_urls TYPE TEXT,
     ALTER COLUMN description TYPE TEXT;

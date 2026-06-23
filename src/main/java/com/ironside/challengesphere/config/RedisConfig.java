@@ -23,7 +23,7 @@ import java.time.Duration;
 
 /**
  * Redis Configuration using Jedis client
- * Configures connection to Google Cloud Memorystore Redis
+ * Configures connection to Redis or an ElastiCache-compatible endpoint.
  */
 @Configuration
 public class RedisConfig {
@@ -183,4 +183,3 @@ public class RedisConfig {
                 .build();
     }
 }
-

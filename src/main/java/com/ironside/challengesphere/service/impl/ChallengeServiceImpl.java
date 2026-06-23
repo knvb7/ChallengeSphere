@@ -54,6 +54,7 @@ import com.ironside.challengesphere.repository.UserChallengeRepository;
 import com.ironside.challengesphere.repository.UserRepository;
 import com.ironside.challengesphere.service.ChallengeService;
 import com.ironside.challengesphere.service.NotificationService;
+import com.ironside.challengesphere.util.GetSignedUrlForS3;
 
 @Service
 public class ChallengeServiceImpl implements ChallengeService {
@@ -88,7 +89,7 @@ public class ChallengeServiceImpl implements ChallengeService {
     @Autowired
     private RedisCacheServiceImpl redisCacheServiceImpl;
 
-    @Value("${gcs.bucket.name}")
+    @Value("${aws.s3.bucket.name}")
     private String bucketName;
 
     @Override
@@ -1283,7 +1284,7 @@ public class ChallengeServiceImpl implements ChallengeService {
                         file.getFileName(),
                         file.getMediaType().name(),
                         file.getContentType().getMimeType(),
-                        com.ironside.challengesphere.util.GetSignedUrlForGcs.generatePutObjectSignedUrl(
+                        GetSignedUrlForS3.generatePutObjectSignedUrl(
                                 bucketName,
                                 key, expiry, file.getContentType()),
                         key, expiry));
@@ -1438,18 +1439,16 @@ public class ChallengeServiceImpl implements ChallengeService {
         }
 
         String trimmed = url.trim();
-        if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
-            return trimmed;
-        }
-        if (trimmed.startsWith("gs://")) {
-            return "https://storage.googleapis.com/" + trimmed.substring("gs://".length());
+        if (mediaUrlService != null) {
+            List<String> storedUrls = mediaUrlService.toStoredMediaUrls(List.of(trimmed));
+            if (!storedUrls.isEmpty()) {
+                return storedUrls.get(0);
+            }
         }
 
         String objectKey = trimmed.replaceFirst("^/+", "");
-        if (objectKey.startsWith(bucketName + "/")) {
-            return "https://storage.googleapis.com/" + objectKey;
-        }
-        return "https://storage.googleapis.com/" + bucketName + "/" + objectKey;
+        String bucketPrefix = bucketName + "/";
+        return objectKey.startsWith(bucketPrefix) ? objectKey.substring(bucketPrefix.length()) : objectKey;
     }
 
     private int computeCurrentStreak(List<Integer> days) {

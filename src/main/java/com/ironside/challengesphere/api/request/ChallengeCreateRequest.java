@@ -34,7 +34,7 @@ public class ChallengeCreateRequest {
     private String reminderTime; // e.g. "08:00 AM"
 
     @Size(max = 5, message = "A challenge can have at most 5 cover photos")
-    private List<String> coverPhotoUrls; // GCS URLs after upload via presigned URL flow
+    private List<String> coverPhotoUrls; // S3 object keys or URLs after upload via presigned URL flow
 
     @Size(max = 5, message = "A challenge can have at most 5 cover photos")
     private List<String> mediaUrls; // Backward-compatible alias for challenge cover photos

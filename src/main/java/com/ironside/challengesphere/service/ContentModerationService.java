@@ -14,9 +14,8 @@ public interface ContentModerationService {
     }
 
     /**
-     * One finding from a single image. Severity is the raw Vision SafeSearch
-     * Likelihood name (POSSIBLE / LIKELY / VERY_LIKELY — we ignore UNKNOWN,
-     * VERY_UNLIKELY, UNLIKELY upstream).
+     * One finding from a single image. Severity is the provider confidence bucket
+     * that maps into the app's review and ban thresholds.
      */
     record Finding(String mediaUrl, String category, String severity) {}
 
@@ -34,7 +33,7 @@ public interface ContentModerationService {
 
     /**
      * Strict scan for asynchronous post-upload moderation.
-     * Unlike scan(), Vision client/API/object-read failures must surface to the
+     * Unlike scan(), provider client/API/object-read failures must surface to the
      * caller so it can remove optimistically published media.
      */
     Result scanStrict(List<String> mediaUrls);

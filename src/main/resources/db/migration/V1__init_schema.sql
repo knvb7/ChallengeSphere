@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS challengesphere.submissions (
     day_number INT NOT NULL CHECK (day_number > 0),
     description VARCHAR(2000) NOT NULL,
     media_urls TEXT,
+    proof_payload TEXT,
     is_private BOOLEAN NOT NULL DEFAULT FALSE,
     submission_time TIMESTAMP WITH TIME ZONE NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,

@@ -1,6 +1,6 @@
 package com.ironside.challengesphere.service.impl;
 
-import com.ironside.challengesphere.util.GetSignedUrlForGcs;
+import com.ironside.challengesphere.util.GetSignedUrlForS3;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Value;
@@ -23,7 +23,7 @@ public class MediaUrlService {
     private static final long READ_SIGNED_URL_CACHE_SAFETY_SECONDS = 5 * 60;
     private static final String PRIVATE_IMAGE_CACHE_CONTROL = "private, max-age=3600";
 
-    @Value("${gcs.bucket.name}")
+    @Value("${aws.s3.bucket.name}")
     private String bucketName;
 
     private final Map<String, CachedSignedUrl> readUrlCache = new ConcurrentHashMap<>();
@@ -53,7 +53,7 @@ public class MediaUrlService {
     }
 
     public String toReadableMediaUrl(String mediaUrl) {
-        String objectName = extractGcsObjectName(mediaUrl);
+        String objectName = extractS3ObjectName(mediaUrl);
         if (objectName == null || objectName.isBlank()) {
             return mediaUrl;
         }
@@ -72,7 +72,7 @@ public class MediaUrlService {
                     return localValue;
                 }
 
-                String signedUrl = GetSignedUrlForGcs.generateV4GetObjectSignedUrl(
+                String signedUrl = GetSignedUrlForS3.generateV4GetObjectSignedUrl(
                         bucketName,
                         objectName,
                         READ_SIGNED_URL_TTL_SECONDS
@@ -95,21 +95,21 @@ public class MediaUrlService {
         }
 
         for (String mediaUrl : mediaUrls) {
-            String objectName = extractGcsObjectName(mediaUrl);
+            String objectName = extractS3ObjectName(mediaUrl);
             if (objectName == null || objectName.isBlank()) {
                 continue;
             }
 
             try {
-                GetSignedUrlForGcs.updateObjectCacheControl(bucketName, objectName, PRIVATE_IMAGE_CACHE_CONTROL);
+                GetSignedUrlForS3.updateObjectCacheControl(bucketName, objectName, PRIVATE_IMAGE_CACHE_CONTROL);
             } catch (Exception e) {
-                logger.warn("Failed to set cache headers for GCS object {}: {}", objectName, e.getMessage());
+                logger.warn("Failed to set cache headers for S3 object {}: {}", objectName, e.getMessage());
             }
         }
     }
 
     public void uploadObject(String objectName, byte[] content, String contentType) {
-        GetSignedUrlForGcs.uploadObject(bucketName, objectName, content, contentType);
+        GetSignedUrlForS3.uploadObject(bucketName, objectName, content, contentType);
     }
 
     public List<String> toStoredMediaUrls(List<String> mediaUrls) {
@@ -123,7 +123,7 @@ public class MediaUrlService {
                 continue;
             }
 
-            String objectName = extractGcsObjectName(mediaUrl);
+            String objectName = extractS3ObjectName(mediaUrl);
             storedUrls.add(objectName == null || objectName.isBlank()
                     ? stripQuery(mediaUrl.trim())
                     : objectName);
@@ -141,23 +141,23 @@ public class MediaUrlService {
             return;
         }
 
-        for (String objectName : toGcsObjectNames(mediaUrls)) {
+        for (String objectName : toS3ObjectNames(mediaUrls)) {
             try {
-                GetSignedUrlForGcs.deleteObject(bucketName, objectName);
+                GetSignedUrlForS3.deleteObject(bucketName, objectName);
             } catch (Exception e) {
-                logger.warn("Failed to delete GCS object {}: {}", objectName, e.getMessage());
+                logger.warn("Failed to delete S3 object {}: {}", objectName, e.getMessage());
             }
         }
     }
 
-    List<String> toGcsObjectNames(List<String> mediaUrls) {
+    List<String> toS3ObjectNames(List<String> mediaUrls) {
         if (mediaUrls == null || mediaUrls.isEmpty()) {
             return List.of();
         }
 
         List<String> objectNames = new ArrayList<>();
         for (String mediaUrl : mediaUrls) {
-            String objectName = extractGcsObjectName(mediaUrl);
+            String objectName = extractS3ObjectName(mediaUrl);
             if (objectName != null && !objectName.isBlank()) {
                 objectNames.add(objectName);
             }
@@ -165,22 +165,23 @@ public class MediaUrlService {
         return objectNames;
     }
 
-    private String extractGcsObjectName(String mediaUrl) {
+    private String extractS3ObjectName(String mediaUrl) {
         if (mediaUrl == null || mediaUrl.isBlank()) {
             return null;
         }
 
-        String gcsPrefix = "gs://" + bucketName + "/";
-        if (mediaUrl.startsWith(gcsPrefix)) {
-            return stripQuery(mediaUrl.substring(gcsPrefix.length()));
+        String trimmed = mediaUrl.trim();
+        String s3Prefix = "s3://" + bucketName + "/";
+        if (trimmed.startsWith(s3Prefix)) {
+            return stripQuery(trimmed.substring(s3Prefix.length()));
         }
 
-        if (!mediaUrl.startsWith("http://") && !mediaUrl.startsWith("https://")) {
-            return stripQuery(mediaUrl);
+        if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://")) {
+            return stripQuery(trimmed).replaceFirst("^/+", "");
         }
 
         try {
-            URI uri = URI.create(mediaUrl);
+            URI uri = URI.create(trimmed);
             String host = uri.getHost();
             if (host == null) {
                 return null;
@@ -192,20 +193,38 @@ public class MediaUrlService {
             }
 
             String objectPath = null;
-            if ("storage.googleapis.com".equals(host)) {
+            if (isPathStyleS3Host(host)) {
                 String bucketPrefix = "/" + bucketName + "/";
                 if (path.startsWith(bucketPrefix)) {
                     objectPath = path.substring(bucketPrefix.length());
                 }
-            } else if (host.equals(bucketName + ".storage.googleapis.com")) {
+            } else if (isVirtualHostedS3Host(host)) {
                 objectPath = path.startsWith("/") ? path.substring(1) : path;
             }
 
             return objectPath == null ? null : URLDecoder.decode(objectPath, StandardCharsets.UTF_8);
         } catch (Exception e) {
-            logger.debug("Could not parse media URL as GCS object: {}", mediaUrl);
+            logger.debug("Could not parse media URL as S3 object: {}", mediaUrl);
             return null;
         }
+    }
+
+    private boolean isPathStyleS3Host(String host) {
+        return "s3.amazonaws.com".equals(host)
+                || (host.startsWith("s3.") && host.endsWith(".amazonaws.com"))
+                || (host.startsWith("s3-") && host.endsWith(".amazonaws.com"));
+    }
+
+    private boolean isVirtualHostedS3Host(String host) {
+        String prefix = bucketName + ".";
+        if (!host.startsWith(prefix) || !host.endsWith(".amazonaws.com")) {
+            return false;
+        }
+
+        String serviceHost = host.substring(prefix.length());
+        return "s3.amazonaws.com".equals(serviceHost)
+                || serviceHost.startsWith("s3.")
+                || serviceHost.startsWith("s3-");
     }
 
     private String stripQuery(String value) {

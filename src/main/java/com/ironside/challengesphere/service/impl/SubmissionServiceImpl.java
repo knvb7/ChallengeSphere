@@ -10,7 +10,10 @@ import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 
-import com.ironside.challengesphere.util.GetSignedUrlForGcs;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.ironside.challengesphere.util.GetSignedUrlForS3;
 import com.ironside.challengesphere.util.MediaTypes;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -88,14 +91,11 @@ public class SubmissionServiceImpl implements SubmissionService {
     @Autowired
     private SubmissionModerationJob submissionModerationJob;
 
-    @Value("${gcs.bucket.name}")
+    @Autowired
+    private ObjectMapper objectMapper;
+
+    @Value("${aws.s3.bucket.name}")
     private String bucketName;
-
-    @Value("${gcs.bucket.region}")
-    private String bucketRegion;
-
-    @Value("${gcs.projectId}")
-    private String projectId;
 
     @Override
     @Transactional
@@ -222,6 +222,7 @@ public class SubmissionServiceImpl implements SubmissionService {
 
             // Convert media URLs list to comma-separated string
             submission.setMediaUrls(mediaUrlService.toStoredMediaUrlsString(request.getMediaUrls()));
+            submission.setProofPayload(toProofPayloadJson(request.getProofPayload()));
 
             boolean challengeIsPrivate = Boolean.TRUE.equals(challenge.getIsPrivate());
             if (challengeIsPrivate) {
@@ -425,6 +426,7 @@ public class SubmissionServiceImpl implements SubmissionService {
             mediaUrlService.applyPrivateImageCacheHeaders(request.getMediaUrls());
             submission.setDescription(request.getDescription());
             submission.setMediaUrls(mediaUrlService.toStoredMediaUrlsString(request.getMediaUrls()));
+            submission.setProofPayload(toProofPayloadJson(request.getProofPayload()));
             if (request.getIsPrivate() != null) {
                 submission.setIsPrivate(request.getIsPrivate());
             }
@@ -590,7 +592,7 @@ public class SubmissionServiceImpl implements SubmissionService {
                             uniqueId,
                             fileExtension);
 
-                    // Generate presigned URL using Google Cloud Storage
+                    // Generate presigned URL using S3
                     PresignedUrlsResponse.PresignedUrlInfo urlInfo = getPresignedUrlInfo(mediaFile, fileKey, expirationTimeInSeconds);
 
                     presignedUrls.add(urlInfo);
@@ -626,7 +628,7 @@ public class SubmissionServiceImpl implements SubmissionService {
                 mediaFile.getFileName(),
                 mediaFile.getMediaType().name(),
                 mediaFile.getContentType().getMimeType(),
-                GetSignedUrlForGcs.generatePutObjectSignedUrl(
+                GetSignedUrlForS3.generatePutObjectSignedUrl(
                         bucketName,
                         fileKey,
                         expirationTimeInSeconds,
@@ -929,6 +931,17 @@ public class SubmissionServiceImpl implements SubmissionService {
         }
         if (result.findings().size() > n) sb.append(", +").append(result.findings().size() - n).append(" more");
         return sb.toString();
+    }
+
+    private String toProofPayloadJson(JsonNode proofPayload) throws ChallengeSphereException {
+        if (proofPayload == null || proofPayload.isNull()) {
+            return null;
+        }
+        try {
+            return objectMapper.writeValueAsString(proofPayload);
+        } catch (JsonProcessingException e) {
+            throw new ChallengeSphereException("Invalid proof payload", HttpStatus.BAD_REQUEST, logger, e);
+        }
     }
 
     // Derive a stable 64-bit key from (userId, challengeId, dayNumber) for the advisory lock.

@@ -58,7 +58,7 @@ public class Challenge {
     private String challengeMode = MODE_DAILY;
 
     @Column(name = "cover_photo_urls", columnDefinition = "TEXT")
-    private String coverPhotoUrls; // Comma-separated GCS URLs, up to 5
+    private String coverPhotoUrls; // Comma-separated S3 object keys or URLs, up to 5
 
     public static boolean isOneOffMode(String challengeMode) {
         return MODE_ONE_OFF.equalsIgnoreCase(challengeMode);

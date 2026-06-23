@@ -27,6 +27,8 @@ public interface UserService {
 
     UserSearchResponse getSuggestedUsers(Long currentUserId, Integer page, Integer pageSize) throws ChallengeSphereException;
 
+    long getTotalUserCount();
+
     User updateUserDetails(UpdateUserRequest updateUserRequest) throws ChallengeSphereException;
 
     FollowActionResponse follow(Long followerId, Long followingId) throws ChallengeSphereException;

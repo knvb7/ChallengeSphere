@@ -101,7 +101,7 @@ public class SubmissionController {
     }
 
     /**
-     * Upload media through the backend when the device cannot sustain a direct GCS PUT.
+     * Upload media through the backend when the device cannot sustain a direct S3 PUT.
      * POST /api/v1/submissions/upload-fallback
      */
     @PostMapping(value = "/upload-fallback", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)

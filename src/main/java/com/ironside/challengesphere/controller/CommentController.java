@@ -52,14 +52,14 @@ public class CommentController {
      * POST /api/v1/comments
      */
     @PostMapping("")
-    public ResponseEntity<Comment> createComment(
+    public ResponseEntity<CommentResponse> createComment(
             @AuthenticationPrincipal UserPrincipal principal,
             @RequestParam Long submissionId,
             @RequestParam(required = false) Long userId,
             @RequestParam @NotBlank @Size(max = 2000) String content) throws ChallengeSphereException {
         Long actorUserId = SecurityAccess.requireUserId(principal);
         logger.info("Create comment for submission: {} by user: {}", submissionId, actorUserId);
-        Comment comment = commentService.createComment(submissionId, actorUserId, content);
+        CommentResponse comment = commentService.createComment(submissionId, actorUserId, content);
         return ResponseEntity.ok(comment);
     }
 

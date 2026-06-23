@@ -98,6 +98,12 @@ public class UserController {
         return ResponseEntity.ok(response);
     }
 
+    @GetMapping("/count")
+    public ResponseEntity<Map<String, Long>> getTotalUserCount() {
+        long totalUsers = userService.getTotalUserCount();
+        return ResponseEntity.ok(Map.of("totalUsers", totalUsers));
+    }
+
     @PutMapping
     public ResponseEntity<User> updateUserDetails(
             @AuthenticationPrincipal UserPrincipal principal,

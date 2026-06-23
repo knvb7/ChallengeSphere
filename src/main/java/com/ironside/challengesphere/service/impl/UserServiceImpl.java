@@ -76,6 +76,11 @@ public class UserServiceImpl implements UserService {
     private RedisCacheServiceImpl redisCacheServiceImpl;
 
     @Override
+    public long getTotalUserCount() {
+        return userRepository.count();
+    }
+
+    @Override
     public User getUser(GetUserPayload getUserPayload) throws ChallengeSphereException {
         Long userId = getUserPayload.getUserId();
         Long currentUserId = getUserPayload.getCurrentUserId();

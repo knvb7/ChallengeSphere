@@ -59,6 +59,17 @@ public class CommentServiceImpl implements CommentService {
     @Autowired
     private UserBlockRepository userBlockRepository;
 
+    @Autowired
+    private MediaUrlService mediaUrlService;
+
+    private CommentResponse toCommentResponse(Comment comment, User user) {
+        CommentResponse response = CommentResponse.from(comment, user);
+        if (response.getProfilePicUrl() != null && !response.getProfilePicUrl().isBlank()) {
+            response.setProfilePicUrl(mediaUrlService.toReadableMediaUrl(response.getProfilePicUrl()));
+        }
+        return response;
+    }
+
     @Override
     public Page<CommentResponse> getCommentsForSubmission(Long submissionId, Long callerId, Pageable pageable) throws ChallengeSphereException {
         logger.info("Getting comments for submission: {}, page: {}, size: {}",
@@ -89,7 +100,7 @@ public class CommentServiceImpl implements CommentService {
                 .collect(Collectors.toMap(User::getId, u -> u));
 
         List<CommentResponse> enriched = comments.getContent().stream()
-                .map(c -> CommentResponse.from(c, userMap.get(c.getUserId())))
+                .map(c -> toCommentResponse(c, userMap.get(c.getUserId())))
                 .collect(Collectors.toList());
 
         return new PageImpl<>(enriched, pageable, comments.getTotalElements());
@@ -97,7 +108,7 @@ public class CommentServiceImpl implements CommentService {
 
     @Override
     @Transactional
-    public Comment createComment(Long submissionId, Long userId, String content) throws ChallengeSphereException {
+    public CommentResponse createComment(Long submissionId, Long userId, String content) throws ChallengeSphereException {
         logger.info("Creating comment for submission: {} by user: {}", submissionId, userId);
 
         Submission submission = submissionRepository.findById(submissionId)
@@ -138,7 +149,8 @@ public class CommentServiceImpl implements CommentService {
 
         notifyCommentAfterCommit(submission, userId, savedComment.getId());
 
-        return savedComment;
+        User author = userRepository.findById(userId).orElse(null);
+        return toCommentResponse(savedComment, author);
     }
 
     @Override

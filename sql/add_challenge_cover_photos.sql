@@ -18,8 +18,8 @@ ALTER TABLE challengesphere.challenges
 
 -- ── STEP 2: Seed cover photos for the 5 example challenges ────────────────
 -- Each challenge gets 2-5 thematic Unsplash images (comma-separated).
--- In production these will be GCS URLs following the pattern:
---   https://storage.googleapis.com/challengesphere-submissions/challenges/user_{id}/covers/{filename}
+-- In production these will be S3 object keys following the pattern:
+--   challenges/user_{id}/covers/{filename}
 
 -- Challenge 1 · 100 Pushups Challenge  (Fitness)
 UPDATE challengesphere.challenges

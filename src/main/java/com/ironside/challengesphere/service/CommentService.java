@@ -12,7 +12,7 @@ public interface CommentService {
     Page<CommentResponse> getCommentsForSubmission(Long submissionId, Long callerId, Pageable pageable) throws ChallengeSphereException;
 
     /** Create a new comment on a submission */
-    Comment createComment(Long submissionId, Long userId, String content) throws ChallengeSphereException;
+    CommentResponse createComment(Long submissionId, Long userId, String content) throws ChallengeSphereException;
 
     /** Edit an existing comment */
     Comment updateComment(Long commentId, Long userId, String content) throws ChallengeSphereException;
