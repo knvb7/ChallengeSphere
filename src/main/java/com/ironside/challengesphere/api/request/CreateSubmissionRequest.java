@@ -1,6 +1,5 @@
 package com.ironside.challengesphere.api.request;
 
-import com.fasterxml.jackson.databind.JsonNode;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
@@ -30,6 +29,4 @@ public class CreateSubmissionRequest {
     private Boolean isPrivate = false; // Default to public submission
 
     private Timestamp submissionDate; // Defaults to today if not provided
-
-    private JsonNode proofPayload; // Coding integration proof JSON for this submission day
 }

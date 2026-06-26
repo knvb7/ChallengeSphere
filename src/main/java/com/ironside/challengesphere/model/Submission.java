@@ -28,9 +28,6 @@ public class Submission {
     @Column(name = "media_urls", columnDefinition = "TEXT")
     private String mediaUrls; // Comma-separated URLs
 
-    @Column(name = "proof_payload", columnDefinition = "TEXT")
-    private String proofPayload;
-
     @Column(name = "is_private", nullable = false)
     private Boolean isPrivate = false;
 

@@ -8,6 +8,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.util.StringUtils;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -25,6 +26,7 @@ import java.util.Map;
 @Validated
 @RestController
 @RequestMapping("/api/v1/admin/cache")
+@PreAuthorize("hasRole('ADMIN')")
 public class CacheAdminController {
 
     private static final Logger logger = LogManager.getLogger(CacheAdminController.class);

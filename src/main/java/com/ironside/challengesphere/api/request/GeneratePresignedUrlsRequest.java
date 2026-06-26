@@ -1,8 +1,11 @@
 package com.ironside.challengesphere.api.request;
 
 import com.ironside.challengesphere.util.MediaTypes;
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotEmpty;
+import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
 import lombok.Data;
 import lombok.Getter;
 
@@ -14,11 +17,13 @@ public class GeneratePresignedUrlsRequest {
     private Long userId;
 
     @NotEmpty(message = "At least one media file is required")
+    @Size(max = 5, message = "A request can include at most 5 media files")
+    @Valid
     private List<MediaFileInfo> mediaFiles;
 
     @Data
     public static class MediaFileInfo {
-        @NotNull(message = "File name is required")
+        @NotBlank(message = "File name is required")
         private String fileName;
 
         @NotNull(message = "File type is required")

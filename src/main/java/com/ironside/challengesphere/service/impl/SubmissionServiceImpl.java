@@ -10,9 +10,6 @@ import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ironside.challengesphere.util.GetSignedUrlForS3;
 import com.ironside.challengesphere.util.MediaTypes;
 import org.apache.logging.log4j.LogManager;
@@ -54,6 +51,8 @@ import com.ironside.challengesphere.service.SubmissionService;
 public class SubmissionServiceImpl implements SubmissionService {
     private static final Logger logger = LogManager.getLogger(SubmissionServiceImpl.class);
     private static final int SUBMISSION_GRACE_DAYS = 2;
+    private static final int MAX_SUBMISSION_MEDIA_FILES = 5;
+    private static final long MAX_BACKEND_UPLOAD_BYTES = 8L * 1024L * 1024L;
 
     @Autowired
     private SubmissionRepository submissionRepository;
@@ -90,9 +89,6 @@ public class SubmissionServiceImpl implements SubmissionService {
 
     @Autowired
     private SubmissionModerationJob submissionModerationJob;
-
-    @Autowired
-    private ObjectMapper objectMapper;
 
     @Value("${aws.s3.bucket.name}")
     private String bucketName;
@@ -222,7 +218,6 @@ public class SubmissionServiceImpl implements SubmissionService {
 
             // Convert media URLs list to comma-separated string
             submission.setMediaUrls(mediaUrlService.toStoredMediaUrlsString(request.getMediaUrls()));
-            submission.setProofPayload(toProofPayloadJson(request.getProofPayload()));
 
             boolean challengeIsPrivate = Boolean.TRUE.equals(challenge.getIsPrivate());
             if (challengeIsPrivate) {
@@ -426,7 +421,6 @@ public class SubmissionServiceImpl implements SubmissionService {
             mediaUrlService.applyPrivateImageCacheHeaders(request.getMediaUrls());
             submission.setDescription(request.getDescription());
             submission.setMediaUrls(mediaUrlService.toStoredMediaUrlsString(request.getMediaUrls()));
-            submission.setProofPayload(toProofPayloadJson(request.getProofPayload()));
             if (request.getIsPrivate() != null) {
                 submission.setIsPrivate(request.getIsPrivate());
             }
@@ -563,6 +557,7 @@ public class SubmissionServiceImpl implements SubmissionService {
         Long userId = request.getUserId();
         List<GeneratePresignedUrlsRequest.MediaFileInfo> mediaFiles = request.getMediaFiles();
 
+        validateSubmissionPresignRequest(mediaFiles);
         logger.info("Generating presigned URLs for user: {} with {} media files", userId, mediaFiles.size());
 
         try {
@@ -647,11 +642,20 @@ public class SubmissionServiceImpl implements SubmissionService {
         if (file == null || file.isEmpty()) {
             throw new ChallengeSphereException("Upload file is required", HttpStatus.BAD_REQUEST, logger);
         }
-        if (mediaType != MediaTypes.SUBMISSION_PHOTO && mediaType != MediaTypes.SUBMISSION_VIDEO) {
-            throw new ChallengeSphereException("Unsupported submission media type", HttpStatus.BAD_REQUEST, logger);
-        }
         if (contentType == null) {
             throw new ChallengeSphereException("Content type is required", HttpStatus.BAD_REQUEST, logger);
+        }
+        validateSubmissionMedia(mediaType, contentType);
+        if (file.getSize() > MAX_BACKEND_UPLOAD_BYTES) {
+            throw new ChallengeSphereException(
+                    "Upload file exceeds the 8 MB backend fallback limit",
+                    HttpStatus.BAD_REQUEST,
+                    logger
+            );
+        }
+        if (file.getContentType() != null && !file.getContentType().isBlank()
+                && !contentType.getMimeType().equals(file.getContentType())) {
+            throw new ChallengeSphereException("Uploaded file content type does not match requested content type", HttpStatus.BAD_REQUEST, logger);
         }
         if (!userRepository.existsById(userId)) {
             throw new ChallengeSphereException("User not found with id: " + userId, HttpStatus.NOT_FOUND, logger);
@@ -672,6 +676,41 @@ public class SubmissionServiceImpl implements SubmissionService {
         } catch (Exception e) {
             logger.error("Backend media upload failed for user: {}, key: {}", userId, fileKey, e);
             throw new ChallengeSphereException("Failed to upload submission media", HttpStatus.INTERNAL_SERVER_ERROR, logger, e);
+        }
+    }
+
+    private void validateSubmissionPresignRequest(List<GeneratePresignedUrlsRequest.MediaFileInfo> mediaFiles) throws ChallengeSphereException {
+        if (mediaFiles == null || mediaFiles.isEmpty()) {
+            throw new ChallengeSphereException("At least one media file is required", HttpStatus.BAD_REQUEST, logger);
+        }
+        if (mediaFiles.size() > MAX_SUBMISSION_MEDIA_FILES) {
+            throw new ChallengeSphereException("A submission can include at most 5 media files", HttpStatus.BAD_REQUEST, logger);
+        }
+        for (GeneratePresignedUrlsRequest.MediaFileInfo mediaFile : mediaFiles) {
+            if (mediaFile == null) {
+                throw new ChallengeSphereException("Media file details are required", HttpStatus.BAD_REQUEST, logger);
+            }
+            if (mediaFile.getFileName() == null || mediaFile.getFileName().isBlank()) {
+                throw new ChallengeSphereException("File name is required", HttpStatus.BAD_REQUEST, logger);
+            }
+            if (mediaFile.getContentType() == null) {
+                throw new ChallengeSphereException("Content type is required", HttpStatus.BAD_REQUEST, logger);
+            }
+            validateSubmissionMedia(mediaFile.getMediaType(), mediaFile.getContentType());
+        }
+    }
+
+    private void validateSubmissionMedia(
+            MediaTypes mediaType,
+            GeneratePresignedUrlsRequest.ContentType contentType) throws ChallengeSphereException {
+        if (mediaType != MediaTypes.SUBMISSION_PHOTO && mediaType != MediaTypes.SUBMISSION_VIDEO) {
+            throw new ChallengeSphereException("Unsupported submission media type", HttpStatus.BAD_REQUEST, logger);
+        }
+        if (mediaType == MediaTypes.SUBMISSION_PHOTO && contentType == GeneratePresignedUrlsRequest.ContentType.VIDEO_MP4) {
+            throw new ChallengeSphereException("Content type does not match submission photo media type", HttpStatus.BAD_REQUEST, logger);
+        }
+        if (mediaType == MediaTypes.SUBMISSION_VIDEO && contentType != GeneratePresignedUrlsRequest.ContentType.VIDEO_MP4) {
+            throw new ChallengeSphereException("Content type does not match submission video media type", HttpStatus.BAD_REQUEST, logger);
         }
     }
 
@@ -931,17 +970,6 @@ public class SubmissionServiceImpl implements SubmissionService {
         }
         if (result.findings().size() > n) sb.append(", +").append(result.findings().size() - n).append(" more");
         return sb.toString();
-    }
-
-    private String toProofPayloadJson(JsonNode proofPayload) throws ChallengeSphereException {
-        if (proofPayload == null || proofPayload.isNull()) {
-            return null;
-        }
-        try {
-            return objectMapper.writeValueAsString(proofPayload);
-        } catch (JsonProcessingException e) {
-            throw new ChallengeSphereException("Invalid proof payload", HttpStatus.BAD_REQUEST, logger, e);
-        }
     }
 
     // Derive a stable 64-bit key from (userId, challengeId, dayNumber) for the advisory lock.

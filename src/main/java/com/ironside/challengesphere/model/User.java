@@ -2,6 +2,7 @@ package com.ironside.challengesphere.model;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.ironside.challengesphere.util.UserRole;
 import jakarta.persistence.*;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -68,6 +69,10 @@ public class User {
 
     @Column(name = "premium_user", columnDefinition = "INT DEFAULT 0")
     private Integer premiumUser = 0;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "role", nullable = false, length = 32)
+    private UserRole role = UserRole.USER;
 
     @Column(name = "notifications", columnDefinition = "INT DEFAULT 1")
     private Integer notifications = 1;

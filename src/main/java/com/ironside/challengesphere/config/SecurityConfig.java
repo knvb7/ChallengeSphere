@@ -2,11 +2,13 @@ package com.ironside.challengesphere.config;
 
 import com.ironside.challengesphere.security.JwtAuthenticationFilter;
 import com.ironside.challengesphere.security.RateLimitingFilter;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
+import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.web.SecurityFilterChain;
@@ -17,15 +19,19 @@ import java.io.IOException;
 import org.springframework.http.MediaType;
 
 @Configuration
+@EnableMethodSecurity
 public class SecurityConfig {
 
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
     private final RateLimitingFilter rateLimitingFilter;
+    private final boolean publicDocsEnabled;
 
     public SecurityConfig(JwtAuthenticationFilter jwtAuthenticationFilter,
-                          RateLimitingFilter rateLimitingFilter) {
+                          RateLimitingFilter rateLimitingFilter,
+                          @Value("${app.security.public-docs-enabled:false}") boolean publicDocsEnabled) {
         this.jwtAuthenticationFilter = jwtAuthenticationFilter;
         this.rateLimitingFilter = rateLimitingFilter;
+        this.publicDocsEnabled = publicDocsEnabled;
     }
 
     @Bean
@@ -36,18 +42,23 @@ public class SecurityConfig {
                 .formLogin(AbstractHttpConfigurer::disable)
                 .cors(Customizer.withDefaults())
                 .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
-                .authorizeHttpRequests(auth -> auth
-                        .requestMatchers("/api/v1/auth/change-password").authenticated()
-                        .requestMatchers(
-                                "/api/v1/auth/**",
-                                "/actuator/health",
+                .authorizeHttpRequests(auth -> {
+                    auth.requestMatchers("/api/v1/auth/change-password").authenticated();
+                    auth.requestMatchers(
+                            "/api/v1/auth/**",
+                            "/actuator/health"
+                    ).permitAll();
+                    if (publicDocsEnabled) {
+                        auth.requestMatchers(
                                 "/v3/api-docs/**",
                                 "/swagger-ui/**",
                                 "/swagger-ui.html"
-                        ).permitAll()
-                        .requestMatchers(org.springframework.http.HttpMethod.OPTIONS, "/**").permitAll()
-                        .anyRequest().authenticated()
-                )
+                        ).permitAll();
+                    }
+                    auth.requestMatchers(org.springframework.http.HttpMethod.OPTIONS, "/**").permitAll();
+                    auth.requestMatchers("/api/v1/admin/cache/**").hasRole("ADMIN");
+                    auth.anyRequest().authenticated();
+                })
                 .exceptionHandling(ex -> ex
                         .authenticationEntryPoint(this::writeUnauthorized)
                         .accessDeniedHandler((request, response, accessDeniedException) ->

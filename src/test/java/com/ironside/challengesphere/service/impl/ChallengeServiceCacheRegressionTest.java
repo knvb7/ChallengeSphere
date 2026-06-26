@@ -1,6 +1,7 @@
 package com.ironside.challengesphere.service.impl;
 
 import com.ironside.challengesphere.api.request.ChallengeCreateRequest;
+import com.ironside.challengesphere.api.request.ChallengeUpdateRequest;
 import com.ironside.challengesphere.api.request.GetUserChallengesRequest;
 import com.ironside.challengesphere.api.response.UserChallengesResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
@@ -19,6 +20,7 @@ import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
@@ -117,6 +119,30 @@ class ChallengeServiceCacheRegressionTest {
         verify(cacheService).prependCreatedChallengeToUserChallenges(eq(10L), eq(10), any(Challenge.class));
         verify(cacheService, never()).invalidateUserChallenges(10L);
         verify(cacheService, never()).invalidateAllFeeds();
+    }
+
+    @Test
+    void updateChallengeSendsInviteNotificationsForRequestedUsers() throws Exception {
+        ChallengeServiceImpl service = serviceWithMocks();
+        ChallengeRepository challengeRepository = mock(ChallengeRepository.class);
+        RedisCacheServiceImpl cacheService = mock(RedisCacheServiceImpl.class);
+        NotificationService notificationService = mock(NotificationService.class);
+        ReflectionTestUtils.setField(service, "challengeRepository", challengeRepository);
+        ReflectionTestUtils.setField(service, "cacheService", cacheService);
+        ReflectionTestUtils.setField(service, "notificationService", notificationService);
+
+        Challenge existing = challenge(100L, 10L);
+        ChallengeUpdateRequest request = new ChallengeUpdateRequest();
+        request.setTitle("Updated Daily Steps");
+        request.setInvitedUserIds(List.of(20L, 30L));
+
+        when(challengeRepository.findById(100L)).thenReturn(Optional.of(existing));
+        when(challengeRepository.save(any(Challenge.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        Challenge updated = service.updateChallenge(100L, request, 10L, false);
+
+        assertEquals("Updated Daily Steps", updated.getTitle());
+        verify(notificationService).notifyChallengeInvitesAsync(existing, 10L, List.of(20L, 30L));
     }
 
     private ChallengeServiceImpl serviceWithMocks() {

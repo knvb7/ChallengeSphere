@@ -1,10 +1,12 @@
 package com.ironside.challengesphere.security;
 
 import com.ironside.challengesphere.model.User;
+import com.ironside.challengesphere.util.UserRole;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.userdetails.UserDetails;
 
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 
@@ -14,12 +16,14 @@ public class UserPrincipal implements UserDetails {
     private final String username;
     private final String password;
     private final boolean active;
+    private final UserRole role;
 
-    public UserPrincipal(Long id, String username, String password, boolean active) {
+    public UserPrincipal(Long id, String username, String password, boolean active, UserRole role) {
         this.id = id;
         this.username = username;
         this.password = password;
         this.active = active;
+        this.role = role == null ? UserRole.USER : role;
     }
 
     public static UserPrincipal from(User user) {
@@ -27,7 +31,8 @@ public class UserPrincipal implements UserDetails {
                 user.getId(),
                 user.getUsername(),
                 user.getHashedPassword(),
-                Boolean.TRUE.equals(user.getActive())
+                Boolean.TRUE.equals(user.getActive()),
+                user.getRole()
         );
     }
 
@@ -37,7 +42,12 @@ public class UserPrincipal implements UserDetails {
 
     @Override
     public Collection<? extends GrantedAuthority> getAuthorities() {
-        return List.of(new SimpleGrantedAuthority("ROLE_USER"));
+        List<GrantedAuthority> authorities = new ArrayList<>();
+        authorities.add(new SimpleGrantedAuthority("ROLE_USER"));
+        if (role == UserRole.ADMIN) {
+            authorities.add(new SimpleGrantedAuthority("ROLE_ADMIN"));
+        }
+        return authorities;
     }
 
     @Override

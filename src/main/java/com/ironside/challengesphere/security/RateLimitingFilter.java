@@ -4,13 +4,19 @@ import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
+import java.math.BigInteger;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -18,6 +24,24 @@ import java.util.concurrent.ConcurrentHashMap;
 public class RateLimitingFilter extends OncePerRequestFilter {
 
     private final Map<String, Window> windows = new ConcurrentHashMap<>();
+    private volatile List<IpRange> trustedProxyRanges = List.of();
+
+    @Value("${app.security.trusted-proxy-cidrs:}")
+    void setTrustedProxyCidrs(String trustedProxyCidrs) {
+        if (trustedProxyCidrs == null || trustedProxyCidrs.isBlank()) {
+            this.trustedProxyRanges = List.of();
+            return;
+        }
+
+        List<IpRange> parsedRanges = new ArrayList<>();
+        for (String cidr : trustedProxyCidrs.split(",")) {
+            String trimmed = cidr.trim();
+            if (!trimmed.isEmpty()) {
+                parsedRanges.add(IpRange.parse(trimmed));
+            }
+        }
+        this.trustedProxyRanges = List.copyOf(parsedRanges);
+    }
 
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
@@ -87,16 +111,90 @@ public class RateLimitingFilter extends OncePerRequestFilter {
     }
 
     private String clientKey(HttpServletRequest request) {
-        String forwardedFor = request.getHeader("X-Forwarded-For");
-        if (forwardedFor != null && !forwardedFor.isBlank()) {
-            return forwardedFor.split(",")[0].trim();
+        String remoteAddr = request.getRemoteAddr();
+        if (!isTrustedProxy(remoteAddr)) {
+            return remoteAddr;
         }
-        return request.getRemoteAddr();
+
+        String forwardedFor = request.getHeader("X-Forwarded-For");
+        if (forwardedFor == null || forwardedFor.isBlank()) {
+            return remoteAddr;
+        }
+
+        List<String> chain = new ArrayList<>();
+        for (String entry : forwardedFor.split(",")) {
+            String ip = entry.trim();
+            if (!ip.isEmpty()) {
+                chain.add(ip);
+            }
+        }
+        chain.add(remoteAddr);
+
+        for (int i = chain.size() - 1; i >= 0; i--) {
+            String candidate = chain.get(i);
+            if (!isTrustedProxy(candidate)) {
+                return candidate;
+            }
+        }
+        return remoteAddr;
+    }
+
+    private boolean isTrustedProxy(String ipAddress) {
+        return trustedProxyRanges.stream().anyMatch(range -> range.contains(ipAddress));
     }
 
     private record Limit(String name, int maxRequests, Duration window) {
     }
 
     private record Window(int count, Instant expiresAt) {
+    }
+
+    private record IpRange(BigInteger network, int prefixLength, int totalBits) {
+
+        static IpRange parse(String cidr) {
+            String[] parts = cidr.split("/", -1);
+            if (parts.length > 2 || parts[0].isBlank()) {
+                throw new IllegalStateException("Invalid trusted proxy CIDR: " + cidr);
+            }
+
+            byte[] address = toAddressBytes(parts[0]);
+            int totalBits = address.length * 8;
+            int prefixLength = parts.length == 2 ? parsePrefix(parts[1], totalBits) : totalBits;
+            BigInteger network = new BigInteger(1, address).shiftRight(totalBits - prefixLength);
+            return new IpRange(network, prefixLength, totalBits);
+        }
+
+        boolean contains(String ipAddress) {
+            try {
+                byte[] address = InetAddress.getByName(ipAddress).getAddress();
+                if (address.length * 8 != totalBits) {
+                    return false;
+                }
+                BigInteger candidateNetwork = new BigInteger(1, address).shiftRight(totalBits - prefixLength);
+                return network.equals(candidateNetwork);
+            } catch (UnknownHostException ex) {
+                return false;
+            }
+        }
+
+        private static byte[] toAddressBytes(String ipAddress) {
+            try {
+                return InetAddress.getByName(ipAddress).getAddress();
+            } catch (UnknownHostException ex) {
+                throw new IllegalStateException("Invalid trusted proxy IP address: " + ipAddress, ex);
+            }
+        }
+
+        private static int parsePrefix(String prefix, int totalBits) {
+            try {
+                int value = Integer.parseInt(prefix);
+                if (value < 0 || value > totalBits) {
+                    throw new IllegalStateException("Invalid trusted proxy CIDR prefix: " + prefix);
+                }
+                return value;
+            } catch (NumberFormatException ex) {
+                throw new IllegalStateException("Invalid trusted proxy CIDR prefix: " + prefix, ex);
+            }
+        }
     }
 }

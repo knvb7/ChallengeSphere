@@ -14,6 +14,11 @@ import org.springframework.context.annotation.Primary;
 @ConditionalOnProperty(prefix = "app.datasource.iam-auth", name = "enabled", havingValue = "true")
 class RdsIamDataSourceConfig {
 
+    static final long RDS_IAM_TOKEN_TTL_MS = 15 * 60 * 1000L;
+    static final long RDS_IAM_SAFE_MAX_LIFETIME_MS = 13 * 60 * 1000L;
+    static final long RDS_IAM_SAFE_KEEPALIVE_MS = 5 * 60 * 1000L;
+    private static final long HIKARI_MIN_MAX_LIFETIME_MS = 30 * 1000L;
+
     @Bean
     @Primary
     DataSource dataSource(
@@ -49,10 +54,25 @@ class RdsIamDataSourceConfig {
         hikariConfig.setConnectionTimeout(connectionTimeout);
         hikariConfig.setValidationTimeout(validationTimeout);
         hikariConfig.setIdleTimeout(idleTimeout);
-        hikariConfig.setMaxLifetime(maxLifetime);
-        hikariConfig.setKeepaliveTime(keepaliveTime);
+        hikariConfig.setMaxLifetime(resolveIamSafeMaxLifetime(maxLifetime));
+        hikariConfig.setKeepaliveTime(resolveIamSafeKeepaliveTime(keepaliveTime));
         hikariConfig.setDataSource(iamAuthDataSource);
 
         return new HikariDataSource(hikariConfig);
+    }
+
+    static long resolveIamSafeMaxLifetime(long configuredMaxLifetime) {
+        long requestedMaxLifetime = configuredMaxLifetime > 0
+                ? configuredMaxLifetime
+                : RDS_IAM_SAFE_MAX_LIFETIME_MS;
+        long cappedMaxLifetime = Math.min(requestedMaxLifetime, RDS_IAM_SAFE_MAX_LIFETIME_MS);
+        return Math.max(cappedMaxLifetime, HIKARI_MIN_MAX_LIFETIME_MS);
+    }
+
+    static long resolveIamSafeKeepaliveTime(long configuredKeepaliveTime) {
+        if (configuredKeepaliveTime <= 0) {
+            return RDS_IAM_SAFE_KEEPALIVE_MS;
+        }
+        return Math.min(configuredKeepaliveTime, RDS_IAM_SAFE_KEEPALIVE_MS);
     }
 }

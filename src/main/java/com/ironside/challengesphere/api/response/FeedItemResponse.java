@@ -29,7 +29,6 @@ public class FeedItemResponse {
     private Integer dayNumber;
     private String description;
     private List<String> mediaUrls;
-    private String proofPayload;
     private Long gloriesCount;
     private Long commentsCount;
     private Timestamp createdAt;
@@ -62,7 +61,6 @@ public class FeedItemResponse {
                 .dayNumber(submission.getDayNumber())
                 .description(submission.getDescription())
                 .mediaUrls(mediaUrlsList)
-                .proofPayload(submission.getProofPayload())
                 .gloriesCount(submission.getGloriesCount())
                 .commentsCount(submission.getCommentsCount())
                 .createdAt(submission.getCreatedAt())

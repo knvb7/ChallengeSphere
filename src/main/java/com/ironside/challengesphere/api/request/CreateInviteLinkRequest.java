@@ -9,7 +9,6 @@ public class CreateInviteLinkRequest {
     @NotNull(message = "Challenge ID is required")
     private Long challengeId;
 
-    @NotNull(message = "User ID is required")
     private Long userId;
 
     /**
@@ -22,4 +21,3 @@ public class CreateInviteLinkRequest {
      */
     private Integer expiresInHours;
 }
-

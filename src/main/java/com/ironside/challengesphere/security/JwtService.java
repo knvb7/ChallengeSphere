@@ -5,8 +5,13 @@ import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.SignatureAlgorithm;
 import io.jsonwebtoken.io.Decoders;
 import io.jsonwebtoken.security.Keys;
+import jakarta.annotation.PostConstruct;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.env.Environment;
+import org.springframework.core.env.Profiles;
 import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
 
 import java.nio.charset.StandardCharsets;
 import java.security.Key;
@@ -14,6 +19,10 @@ import java.util.Date;
 
 @Service
 public class JwtService {
+
+    private static final String LOCAL_DEV_FALLBACK_SECRET =
+            "challengesphere-local-dev-secret-change-me-please-256-bits-long";
+    private static final int MIN_HMAC_KEY_BYTES = 32;
 
     @Value("${jwt.secret}")
     private String jwtSecret;
@@ -23,6 +32,23 @@ public class JwtService {
 
     @Value("${jwt.refresh-token.expiration:604800000}")
     private long refreshTokenExpiryMs;
+
+    private final Environment environment;
+    private Key signingKey;
+
+    @Autowired
+    public JwtService(Environment environment) {
+        this.environment = environment;
+    }
+
+    public JwtService() {
+        this.environment = null;
+    }
+
+    @PostConstruct
+    void validateSigningSecret() {
+        signingKey = createSigningKey();
+    }
 
     public String generateAccessToken(Long userId, String username) {
         return generateToken(userId, username, "access", accessTokenExpiryMs);
@@ -101,6 +127,20 @@ public class JwtService {
     }
 
     private Key getSigningKey() {
+        if (signingKey == null) {
+            signingKey = createSigningKey();
+        }
+        return signingKey;
+    }
+
+    private Key createSigningKey() {
+        if (!StringUtils.hasText(jwtSecret)) {
+            throw new IllegalStateException("jwt.secret must be configured");
+        }
+        if (isProdProfile() && LOCAL_DEV_FALLBACK_SECRET.equals(jwtSecret)) {
+            throw new IllegalStateException("Production jwt.secret must not use the local development fallback");
+        }
+
         byte[] keyBytes;
         try {
             keyBytes = Decoders.BASE64.decode(jwtSecret);
@@ -109,10 +149,13 @@ public class JwtService {
         }
 
         if (keyBytes.length < 32) {
-            byte[] padded = new byte[32];
-            System.arraycopy(keyBytes, 0, padded, 0, Math.min(keyBytes.length, 32));
-            keyBytes = padded;
+            throw new IllegalStateException("jwt.secret must be at least "
+                    + MIN_HMAC_KEY_BYTES + " bytes for HS256");
         }
         return Keys.hmacShaKeyFor(keyBytes);
+    }
+
+    private boolean isProdProfile() {
+        return environment != null && environment.acceptsProfiles(Profiles.of("prod"));
     }
 }

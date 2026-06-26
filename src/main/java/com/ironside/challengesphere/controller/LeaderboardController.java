@@ -5,6 +5,7 @@ import java.util.Map;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -89,6 +90,7 @@ public class LeaderboardController {
      * Update a user's leaderboard score (admin/internal use)
      */
     @PostMapping("/score")
+    @PreAuthorize("hasRole('ADMIN')")
     @Operation(summary = "Update user's leaderboard score", 
                description = "Manually update a user's score in the leaderboard (admin use)")
     public ResponseEntity<Map<String, String>> updateScore(
@@ -105,6 +107,7 @@ public class LeaderboardController {
      * Rebuild leaderboard from database (admin use)
      */
     @PostMapping("/challenge/{challengeId}/rebuild")
+    @PreAuthorize("hasRole('ADMIN')")
     @Operation(summary = "Rebuild leaderboard from database", 
                description = "Recalculates all scores from database (admin use)")
     public ResponseEntity<Map<String, String>> rebuildLeaderboard(
@@ -120,6 +123,7 @@ public class LeaderboardController {
      * Remove user from leaderboard (admin use)
      */
     @DeleteMapping("/challenge/{challengeId}/user/{userId}")
+    @PreAuthorize("hasRole('ADMIN')")
     @Operation(summary = "Remove user from leaderboard", 
                description = "Removes a user from the challenge leaderboard (admin use)")
     public ResponseEntity<Map<String, String>> removeFromLeaderboard(

@@ -187,7 +187,7 @@ public class UserServiceImpl implements UserService {
 
             List<User> visibleUsers = new java.util.ArrayList<>();
             for (User user : results.getContent()) {
-                visibleUsers.add(restrictedProfile(user));
+                visibleUsers.add(withReadableProfilePicUrl(restrictedProfile(user)));
             }
 
             return UserSearchResponse.of(
@@ -235,7 +235,7 @@ public class UserServiceImpl implements UserService {
             }
             List<User> visibleUsers = new ArrayList<>();
             for (User user : results.getContent()) {
-                visibleUsers.add(restrictedProfile(user));
+                visibleUsers.add(withReadableProfilePicUrl(restrictedProfile(user)));
             }
             return UserSearchResponse.of("suggested", visibleUsers, safePage, safePageSize, results.getTotalElements());
         } catch (ChallengeSphereException e) {
@@ -257,7 +257,7 @@ public class UserServiceImpl implements UserService {
         );
         List<User> visibleUsers = new ArrayList<>();
         for (User user : results.getContent()) {
-            visibleUsers.add(restrictedProfile(user));
+            visibleUsers.add(withReadableProfilePicUrl(restrictedProfile(user)));
         }
         return UserSearchResponse.of("suggested", visibleUsers, safePage, safePageSize, results.getTotalElements());
     }
@@ -595,7 +595,7 @@ public class UserServiceImpl implements UserService {
             logger.info("Found {} followers for userId: {} (page {})",
                     followers.size(), userId, page);
 
-            return FollowersFollowingResponse.followers(userId, followers, page, pageSize, totalCount);
+            return FollowersFollowingResponse.followers(userId, withReadableProfilePicUrls(followers), page, pageSize, totalCount);
 
         } catch (ChallengeSphereException e) {
             throw e;
@@ -633,7 +633,7 @@ public class UserServiceImpl implements UserService {
             logger.info("Found {} following for userId: {} (page {})",
                     following.size(), userId, page);
 
-            return FollowersFollowingResponse.following(userId, following, page, pageSize, totalCount);
+            return FollowersFollowingResponse.following(userId, withReadableProfilePicUrls(following), page, pageSize, totalCount);
 
         } catch (ChallengeSphereException e) {
             throw e;
@@ -939,6 +939,15 @@ public class UserServiceImpl implements UserService {
             logger.warn("Failed to prepare readable profile photo URL for userId={}: {}", user.getId(), e.getMessage());
         }
         return user;
+    }
+
+    private List<User> withReadableProfilePicUrls(List<User> users) {
+        if (users == null || users.isEmpty()) {
+            return List.of();
+        }
+        return users.stream()
+                .map(this::withReadableProfilePicUrl)
+                .toList();
     }
 
     private String normalizeUserSearchQuery(String query) {

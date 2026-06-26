@@ -1099,6 +1099,11 @@ public class ChallengeServiceImpl implements ChallengeService {
         Challenge updated = challengeRepository.save(challenge);
         cacheService.invalidateChallenge(id);
         cacheService.invalidateAllFeeds();
+        notificationService.notifyChallengeInvitesAsync(
+                updated,
+                actorUserId,
+                request.getInvitedUserIds()
+        );
         logger.info("Challenge {} updated successfully", id);
         return withReadableCoverPhotoUrls(updated);
     }

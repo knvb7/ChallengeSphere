@@ -16,7 +16,6 @@ public class SubmissionResponse {
     private Integer dayNumber;
     private String description;
     private List<String> mediaUrls;
-    private String proofPayload;
     private Boolean isPrivate;
     private Timestamp submissionTime;
     private Long gloriesCount;
@@ -34,7 +33,6 @@ public class SubmissionResponse {
         response.setDayNumber(submission.getDayNumber());
         response.setDescription(submission.getDescription());
         response.setMediaUrls(mediaUrls);
-        response.setProofPayload(submission.getProofPayload());
         response.setIsPrivate(submission.getIsPrivate());
         response.setSubmissionTime(submission.getSubmissionTime());
         response.setGloriesCount(submission.getGloriesCount());

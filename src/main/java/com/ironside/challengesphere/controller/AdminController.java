@@ -12,20 +12,23 @@ import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
+import com.ironside.challengesphere.security.SecurityAccess;
+import com.ironside.challengesphere.security.UserPrincipal;
 
 import java.sql.Timestamp;
 import java.util.List;
 import java.util.Map;
 
 /**
- * Admin endpoints for moderation workflow. These are exposed without in-code
- * authz today because SecurityConfig is still being re-enabled (see P0 plan).
- * Once auth is back, gate this controller with a moderator role.
+ * Admin endpoints for moderation workflow.
  */
 @RestController
 @RequestMapping("/api/v1/admin")
+@PreAuthorize("hasRole('ADMIN')")
 public class AdminController {
 
     private static final Logger logger = LogManager.getLogger(AdminController.class);
@@ -74,9 +77,10 @@ public class AdminController {
     @PostMapping("/moderation/flags/{flagId}/resolve")
     @Transactional
     public ResponseEntity<Map<String, Object>> resolveFlag(
+            @AuthenticationPrincipal UserPrincipal principal,
             @PathVariable Long flagId,
-            @RequestParam String resolution,
-            @RequestParam Long reviewerId) throws ChallengeSphereException {
+            @RequestParam String resolution) throws ChallengeSphereException {
+        Long reviewerId = SecurityAccess.requireUserId(principal);
         ModerationFlag flag = moderationFlagRepository.findById(flagId)
                 .orElseThrow(() -> new ChallengeSphereException("Flag not found", HttpStatus.NOT_FOUND, logger));
         if (flag.getReviewedAt() != null) {
