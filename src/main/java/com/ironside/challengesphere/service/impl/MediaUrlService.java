@@ -1,5 +1,6 @@
 package com.ironside.challengesphere.service.impl;
 
+import com.ironside.challengesphere.api.request.GeneratePresignedUrlsRequest;
 import com.ironside.challengesphere.util.GetSignedUrlForS3;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -87,6 +88,18 @@ public class MediaUrlService {
             logger.warn("Failed to sign readable media URL for object {}: {}", objectName, e.getMessage());
             return mediaUrl;
         }
+    }
+
+    public String createUploadUrl(
+            String objectName,
+            long expiresInSeconds,
+            GeneratePresignedUrlsRequest.ContentType contentType) {
+        return GetSignedUrlForS3.generatePutObjectSignedUrl(
+                bucketName,
+                objectName,
+                expiresInSeconds,
+                contentType
+        );
     }
 
     public void applyPrivateImageCacheHeaders(List<String> mediaUrls) {

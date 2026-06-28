@@ -2,8 +2,10 @@ package com.ironside.challengesphere.controller;
 
 import com.ironside.challengesphere.api.request.GoogleAuthRequest;
 import com.ironside.challengesphere.api.request.ChangePasswordRequest;
+import com.ironside.challengesphere.api.request.ForgotPasswordRequest;
 import com.ironside.challengesphere.api.request.LoginRequest;
 import com.ironside.challengesphere.api.request.RefreshTokenRequest;
+import com.ironside.challengesphere.api.request.ResetPasswordRequest;
 import com.ironside.challengesphere.api.request.SendOtpRequest;
 import com.ironside.challengesphere.api.request.UserRegistrationRequest;
 import com.ironside.challengesphere.api.request.VerifyOtpRequest;
@@ -140,6 +142,26 @@ public class AuthController {
             throws ChallengeSphereException {
         AuthResponse response = authService.loginWithGoogle(request);
         return ResponseEntity.ok(response);
+    }
+
+    @PostMapping("/forgot-password")
+    public ResponseEntity<MessageResponse> forgotPassword(
+            @Valid @RequestBody ForgotPasswordRequest request) {
+        authService.requestPasswordReset(request.getEmail());
+        return ResponseEntity.ok(new MessageResponse(
+                "If an account exists for that email, a password reset link has been sent."
+        ));
+    }
+
+    @PostMapping("/reset-password")
+    public ResponseEntity<MessageResponse> resetPassword(
+            @Valid @RequestBody ResetPasswordRequest request) throws ChallengeSphereException {
+        authService.resetPassword(
+                request.getToken(),
+                request.getNewPassword(),
+                request.getConfirmPassword()
+        );
+        return ResponseEntity.ok(new MessageResponse("Password reset successfully. Please sign in."));
     }
 
     @GetMapping("/me")

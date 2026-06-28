@@ -16,9 +16,11 @@ import com.ironside.challengesphere.repository.UserRepository;
 import com.ironside.challengesphere.security.AuthTokenStore;
 import com.ironside.challengesphere.security.JwtService;
 import com.ironside.challengesphere.service.AuthService;
+import com.ironside.challengesphere.service.EmailService;
 import com.ironside.challengesphere.service.UserService;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -55,6 +57,8 @@ public class AuthServiceImpl implements AuthService {
             .connectTimeout(Duration.ofSeconds(6))
             .build();
     private static final URI GOOGLE_USERINFO_URI = URI.create("https://www.googleapis.com/oauth2/v3/userinfo");
+    private static final String PASSWORD_RESET_TOKEN_TYPE = "password_reset";
+    private static final Duration PASSWORD_RESET_TOKEN_TTL = Duration.ofMinutes(30);
 
     private final UserRepository userRepository;
     private final JwtService jwtService;
@@ -62,6 +66,8 @@ public class AuthServiceImpl implements AuthService {
     private final PasswordEncoder passwordEncoder;
     private final RedisCacheServiceImpl redisCacheServiceImpl;
     private final UserService userService;
+    private final EmailService emailService;
+    private final MediaUrlService mediaUrlService;
 
     @Value("${google.client.id:}")
     private String googleClientId;
@@ -75,13 +81,19 @@ public class AuthServiceImpl implements AuthService {
     public AuthServiceImpl(UserRepository userRepository,
                            JwtService jwtService,
                            AuthTokenStore authTokenStore,
-                           PasswordEncoder passwordEncoder, RedisCacheServiceImpl redisCacheServiceImpl, UserService userService) {
+                           PasswordEncoder passwordEncoder,
+                           RedisCacheServiceImpl redisCacheServiceImpl,
+                           UserService userService,
+                           EmailService emailService,
+                           MediaUrlService mediaUrlService) {
         this.userRepository = userRepository;
         this.jwtService = jwtService;
         this.authTokenStore = authTokenStore;
         this.passwordEncoder = passwordEncoder;
         this.redisCacheServiceImpl = redisCacheServiceImpl;
         this.userService = userService;
+        this.emailService = emailService;
+        this.mediaUrlService = mediaUrlService;
     }
 
     @Override
@@ -128,7 +140,15 @@ public class AuthServiceImpl implements AuthService {
 
     @Override
     public AuthResponse login(LoginRequest request) throws ChallengeSphereException {
-        User user = userService.getUserDetails(null, null, request.getUsername());
+        String identifier = request.getUsername().trim();
+        Optional<User> userLookup = identifier.contains("@")
+                ? userRepository.findByEmailIdIgnoreCase(identifier)
+                : userRepository.findByUsername(identifier);
+        User user = userLookup.orElseThrow(() -> new ChallengeSphereException(
+                "Invalid username or password",
+                HttpStatus.UNAUTHORIZED,
+                logger
+        ));
 
         if (!Boolean.TRUE.equals(user.getActive())) {
             throw new ChallengeSphereException("User account is disabled",
@@ -177,9 +197,10 @@ public class AuthServiceImpl implements AuthService {
             throw new ChallengeSphereException("Invalid or expired access token",
                     HttpStatus.UNAUTHORIZED, logger);
         }
-        return userRepository.findById(userId)
+        User user = userRepository.findById(userId)
                 .orElseThrow(() -> new ChallengeSphereException("User not found",
                         HttpStatus.UNAUTHORIZED, logger));
+        return toReadableAuthUser(user);
     }
 
     @Override
@@ -218,6 +239,52 @@ public class AuthServiceImpl implements AuthService {
         authTokenStore.revokeAllForUser(userId);
         redisCacheServiceImpl.invalidateUserProfile(userId);
         logger.info("Password changed and sessions revoked for userId={}", userId);
+    }
+
+    @Override
+    public void requestPasswordReset(String email) {
+        if (!StringUtils.hasText(email)) {
+            return;
+        }
+
+        userRepository.findByEmailIdIgnoreCase(email.trim()).ifPresent(user -> {
+            String token = UUID.randomUUID().toString().replace("-", "");
+            authTokenStore.store(token, PASSWORD_RESET_TOKEN_TYPE, user.getId(), PASSWORD_RESET_TOKEN_TTL);
+            emailService.sendPasswordResetEmail(user, token);
+        });
+    }
+
+    @Override
+    @Transactional
+    public void resetPassword(String token, String newPassword, String confirmPassword)
+            throws ChallengeSphereException {
+        if (!StringUtils.hasText(token)) {
+            throw new ChallengeSphereException("Password reset link is invalid or expired",
+                    HttpStatus.BAD_REQUEST, logger);
+        }
+        if (newPassword == null || !newPassword.equals(confirmPassword)) {
+            throw new ChallengeSphereException("New passwords do not match", HttpStatus.BAD_REQUEST, logger);
+        }
+        validatePasswordPolicy(newPassword);
+
+        Long userId = authTokenStore.findUserId(token, PASSWORD_RESET_TOKEN_TYPE)
+                .orElseThrow(() -> new ChallengeSphereException(
+                        "Password reset link is invalid or expired",
+                        HttpStatus.BAD_REQUEST,
+                        logger
+                ));
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new ChallengeSphereException(
+                        "Password reset link is invalid or expired",
+                        HttpStatus.BAD_REQUEST,
+                        logger
+                ));
+
+        user.setHashedPassword(passwordEncoder.encode(newPassword));
+        userRepository.save(user);
+        authTokenStore.revokeAllForUser(userId);
+        redisCacheServiceImpl.invalidateUserProfile(userId);
+        logger.info("Password reset completed and sessions revoked for userId={}", userId);
     }
 
     // --- helpers ---
@@ -269,6 +336,10 @@ public class AuthServiceImpl implements AuthService {
                     (String) payload.get("name"),
                     (String) payload.get("picture")
             );
+        } catch (IllegalArgumentException e) {
+            logger.warn("Rejected malformed Google ID token");
+            throw new ChallengeSphereException("Invalid Google ID token",
+                    HttpStatus.UNAUTHORIZED, logger);
         } catch (GeneralSecurityException | IOException e) {
             logger.error("Google token verification failed: {}", e.getMessage());
             throw new ChallengeSphereException("Google token verification failed",
@@ -430,8 +501,15 @@ public class AuthServiceImpl implements AuthService {
                 .expiresIn(accessTokenExpiryMs)
                 .issuedAt(issuedAt)
                 .expiresAt(issuedAt.plusMillis(accessTokenExpiryMs))
-                .user(user)
+                .user(toReadableAuthUser(user))
                 .build();
+    }
+
+    private User toReadableAuthUser(User user) {
+        User readableUser = new User();
+        BeanUtils.copyProperties(user, readableUser);
+        readableUser.setProfilePicUrl(mediaUrlService.toReadableMediaUrl(user.getProfilePicUrl()));
+        return readableUser;
     }
 
     private boolean passwordMatches(String rawPassword, String storedPassword) {

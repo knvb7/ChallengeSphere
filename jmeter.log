@@ -1,0 +1,64 @@
+2026-06-03 23:54:38,878 INFO o.a.j.u.JMeterUtils: Setting Locale to en_EN
+2026-06-03 23:54:38,904 INFO o.a.j.JMeter: Loading user properties from: /opt/homebrew/Cellar/jmeter/5.6.3/libexec/bin/user.properties
+2026-06-03 23:54:38,905 INFO o.a.j.JMeter: Loading system properties from: /opt/homebrew/Cellar/jmeter/5.6.3/libexec/bin/system.properties
+2026-06-03 23:54:38,905 INFO o.a.j.JMeter: Setting JMeter property: DAU=1
+2026-06-03 23:54:38,905 INFO o.a.j.JMeter: Setting JMeter property: TEST_DURATION_SECONDS=1
+2026-06-03 23:54:38,905 INFO o.a.j.JMeter: Setting JMeter property: RAMP_SECONDS=1
+2026-06-03 23:54:38,910 INFO o.a.j.JMeter: Copyright (c) 1998-2024 The Apache Software Foundation
+2026-06-03 23:54:38,910 INFO o.a.j.JMeter: Version 5.6.3
+2026-06-03 23:54:38,910 INFO o.a.j.JMeter: java.version=21.0.11
+2026-06-03 23:54:38,910 INFO o.a.j.JMeter: java.vm.name=OpenJDK 64-Bit Server VM
+2026-06-03 23:54:38,910 INFO o.a.j.JMeter: os.name=Mac OS X
+2026-06-03 23:54:38,910 INFO o.a.j.JMeter: os.arch=aarch64
+2026-06-03 23:54:38,910 INFO o.a.j.JMeter: os.version=26.4.1
+2026-06-03 23:54:38,910 INFO o.a.j.JMeter: file.encoding=UTF-8
+2026-06-03 23:54:38,910 INFO o.a.j.JMeter: java.awt.headless=true
+2026-06-03 23:54:38,910 INFO o.a.j.JMeter: Max memory     =1073741824
+2026-06-03 23:54:38,910 INFO o.a.j.JMeter: Available Processors =8
+2026-06-03 23:54:38,920 INFO o.a.j.JMeter: Default Locale=English (EN)
+2026-06-03 23:54:38,921 INFO o.a.j.JMeter: JMeter  Locale=English (EN)
+2026-06-03 23:54:38,921 INFO o.a.j.JMeter: JMeterHome=/opt/homebrew/Cellar/jmeter/5.6.3/libexec
+2026-06-03 23:54:38,921 INFO o.a.j.JMeter: user.dir  =/Users/mihirdalal/Documents/Startup/challengesphere
+2026-06-03 23:54:38,921 INFO o.a.j.JMeter: PWD       =/Users/mihirdalal/Documents/Startup/challengesphere
+2026-06-03 23:54:38,922 INFO o.a.j.JMeter: IP: 192.168.0.2 Name: Mihirs-MacBook-Air.local FullName: 192.168.0.2
+2026-06-03 23:54:38,939 INFO o.a.j.s.FileServer: Default base='/Users/mihirdalal/Documents/Startup/challengesphere'
+2026-06-03 23:54:38,941 INFO o.a.j.s.FileServer: Set new base='/Users/mihirdalal/Documents/Startup/challengesphere/docs/load-testing'
+2026-06-03 23:54:39,180 INFO o.a.j.s.SaveService: Testplan (JMX) version: 2.2. Testlog (JTL) version: 2.2
+2026-06-03 23:54:39,217 INFO o.a.j.s.SaveService: Using SaveService properties version 5.0
+2026-06-03 23:54:39,221 INFO o.a.j.s.SaveService: Using SaveService properties file encoding UTF-8
+2026-06-03 23:54:39,223 INFO o.a.j.s.SaveService: Loading file: docs/load-testing/challengesphere-1000-dau.jmx
+2026-06-03 23:54:39,260 INFO o.a.j.p.h.c.CookieManager: Settings: Delete null: true Check: true Allow variable: true Save: false Prefix: COOKIE_
+2026-06-03 23:54:39,264 INFO o.a.j.p.h.c.CacheManager: Will only cache the following methods: [GET]
+2026-06-03 23:54:39,299 INFO o.a.j.p.h.s.HTTPSamplerBase: Parser for text/html is org.apache.jmeter.protocol.http.parser.LagartoBasedHtmlParser
+2026-06-03 23:54:39,299 INFO o.a.j.p.h.s.HTTPSamplerBase: Parser for application/xhtml+xml is org.apache.jmeter.protocol.http.parser.LagartoBasedHtmlParser
+2026-06-03 23:54:39,299 INFO o.a.j.p.h.s.HTTPSamplerBase: Parser for application/xml is org.apache.jmeter.protocol.http.parser.LagartoBasedHtmlParser
+2026-06-03 23:54:39,299 INFO o.a.j.p.h.s.HTTPSamplerBase: Parser for text/xml is org.apache.jmeter.protocol.http.parser.LagartoBasedHtmlParser
+2026-06-03 23:54:39,300 INFO o.a.j.p.h.s.HTTPSamplerBase: Parser for text/vnd.wap.wml is org.apache.jmeter.protocol.http.parser.RegexpHTMLParser
+2026-06-03 23:54:39,300 INFO o.a.j.p.h.s.HTTPSamplerBase: Parser for text/css is org.apache.jmeter.protocol.http.parser.CssParser
+2026-06-03 23:54:39,385 INFO o.a.j.JMeter: Creating summariser <summary>
+2026-06-03 23:54:39,404 INFO o.a.j.e.StandardJMeterEngine: Running the test!
+2026-06-03 23:54:39,407 INFO o.a.j.s.SampleEvent: List of sample_variables: []
+2026-06-03 23:54:39,407 INFO o.a.j.s.SampleEvent: List of sample_variables: []
+2026-06-03 23:54:39,414 INFO o.a.j.e.u.CompoundVariable: Note: Function class names must contain the string: '.functions.'
+2026-06-03 23:54:39,415 INFO o.a.j.e.u.CompoundVariable: Note: Function class names must not contain the string: '.gui.'
+2026-06-03 23:54:39,484 INFO o.a.j.r.ClassFinder: Will scan jar /opt/homebrew/Cellar/jmeter/5.6.3/libexec/lib/ext/jmeter-plugins-manager-1.9.jar with filter ExtendsClassFilter [parents=[interface org.apache.jmeter.functions.Function], inner=false, contains=null, notContains=null]. Consider exposing JMeter plugins via META-INF/services, and add JMeter-Skip-Class-Scanning=true manifest attribute so JMeter can skip classfile scanning
+2026-06-03 23:54:39,711 INFO o.a.j.r.ResultCollector: Folder at /Users/mihirdalal/Documents/Startup/challengesphere/docs/load-testing/results was created
+2026-06-03 23:54:39,717 INFO o.a.j.JMeter: Running test (1780511079717)
+2026-06-03 23:54:39,735 INFO o.a.j.e.StandardJMeterEngine: Starting ThreadGroup: 1 : 1000 DAU - Authenticated App Users
+2026-06-03 23:54:39,736 INFO o.a.j.e.StandardJMeterEngine: Starting 1 threads for group 1000 DAU - Authenticated App Users.
+2026-06-03 23:54:39,736 INFO o.a.j.e.StandardJMeterEngine: Thread will continue on error
+2026-06-03 23:54:39,736 INFO o.a.j.t.ThreadGroup: Starting thread group... number=1 threads=1 ramp-up=1 delayedStart=false
+2026-06-03 23:54:39,744 INFO o.a.j.t.ThreadGroup: Started thread group number 1
+2026-06-03 23:54:39,744 INFO o.a.j.e.StandardJMeterEngine: All thread groups have been started
+2026-06-03 23:54:39,861 INFO o.a.j.t.JMeterThread: Thread started: 1000 DAU - Authenticated App Users 1-1
+2026-06-03 23:54:39,862 INFO o.a.j.s.FileServer: Stored: docs/load-testing/data/target_users.csv
+2026-06-03 23:54:39,874 INFO o.a.j.s.FileServer: Stored: docs/load-testing/data/submission_ids.csv
+2026-06-03 23:54:39,874 INFO o.a.j.s.FileServer: Stored: docs/load-testing/data/challenge_ids.csv
+2026-06-03 23:54:39,875 INFO o.a.j.s.FileServer: Stored: docs/load-testing/data/users.csv
+2026-06-03 23:54:40,474 INFO o.a.j.t.JMeterThread: Thread finished: 1000 DAU - Authenticated App Users 1-1
+2026-06-03 23:54:40,474 INFO o.a.j.e.StandardJMeterEngine: Notifying test listeners of end of test
+2026-06-03 23:54:40,475 INFO o.a.j.s.FileServer: Close: docs/load-testing/data/submission_ids.csv
+2026-06-03 23:54:40,475 INFO o.a.j.s.FileServer: Close: docs/load-testing/data/target_users.csv
+2026-06-03 23:54:40,475 INFO o.a.j.s.FileServer: Close: docs/load-testing/data/users.csv
+2026-06-03 23:54:40,475 INFO o.a.j.s.FileServer: Close: docs/load-testing/data/challenge_ids.csv
+2026-06-03 23:54:40,476 INFO o.a.j.r.Summariser: summary =      0 in 00:00:00 = ******/s Avg:     0 Min: 9223372036854775807 Max: -9223372036854775808 Err:     0 (0.00%)

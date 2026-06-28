@@ -59,6 +59,17 @@ public class GloryServiceImpl implements GloryService {
     @Autowired
     private NotificationService notificationService;
 
+    @Autowired
+    private MediaUrlService mediaUrlService;
+
+    private GloryUserResponse toGloryUserResponse(Glory glory, User user) {
+        GloryUserResponse response = GloryUserResponse.from(glory, user);
+        if (response.getProfilePicUrl() != null && !response.getProfilePicUrl().isBlank()) {
+            response.setProfilePicUrl(mediaUrlService.toReadableMediaUrl(response.getProfilePicUrl()));
+        }
+        return response;
+    }
+
     @Override
     @Transactional
     public boolean toggleGlory(Long submissionId, Long userId) throws ChallengeSphereException {
@@ -154,7 +165,7 @@ public class GloryServiceImpl implements GloryService {
                 : userRepository.findAllById(userIds).stream()
                 .collect(Collectors.toMap(User::getId, user -> user));
 
-        return glories.map(glory -> GloryUserResponse.from(glory, usersById.get(glory.getUserId())));
+        return glories.map(glory -> toGloryUserResponse(glory, usersById.get(glory.getUserId())));
     }
 
     @Override

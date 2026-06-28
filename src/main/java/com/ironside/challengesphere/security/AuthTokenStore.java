@@ -12,6 +12,7 @@ import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.time.Instant;
 import java.sql.Timestamp;
+import java.util.Optional;
 
 @Service
 public class AuthTokenStore {
@@ -38,6 +39,14 @@ public class AuthTokenStore {
             DELETE FROM challengesphere.auth_tokens
             WHERE token_hash = ?
               AND token_type = ?
+            """;
+    private static final String FIND_USER_ID_SQL = """
+            SELECT user_id
+            FROM challengesphere.auth_tokens
+            WHERE token_hash = ?
+              AND token_type = ?
+              AND expires_at > CURRENT_TIMESTAMP
+            LIMIT 1
             """;
     private static final String REVOKE_ALL_SQL = """
             DELETE FROM challengesphere.auth_tokens
@@ -84,6 +93,22 @@ public class AuthTokenStore {
             jdbcTemplate.update(REVOKE_SQL, tokenHash(token), type);
         } catch (DataAccessException e) {
             logger.warn("SQL token revoke failed for type={}: {}", type, e.getMessage());
+        }
+    }
+
+    public Optional<Long> findUserId(String token, String type) {
+        try {
+            return jdbcTemplate.query(
+                    FIND_USER_ID_SQL,
+                    resultSet -> resultSet.next()
+                            ? Optional.of(resultSet.getLong("user_id"))
+                            : Optional.empty(),
+                    tokenHash(token),
+                    type
+            );
+        } catch (DataAccessException e) {
+            logger.error("SQL token lookup failed for type={}", type, e);
+            return Optional.empty();
         }
     }
 

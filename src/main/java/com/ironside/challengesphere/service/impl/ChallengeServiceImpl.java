@@ -764,7 +764,10 @@ public class ChallengeServiceImpl implements ChallengeService {
 
             logger.info("Found {} participants (including creator) for challenge {}", users.size(), challengeId);
 
-            return ChallengeParticipantsResponse.create(challengeId, users);
+            return ChallengeParticipantsResponse.create(
+                    challengeId,
+                    withReadableParticipantProfilePhotos(users)
+            );
 
         } catch (ChallengeSphereException e) {
             throw e;
@@ -776,6 +779,31 @@ public class ChallengeServiceImpl implements ChallengeService {
                     logger
             );
         }
+    }
+
+    private List<User> withReadableParticipantProfilePhotos(List<User> users) {
+        if (users == null || users.isEmpty()) {
+            return List.of();
+        }
+        return users.stream().map(user -> {
+            User participant = new User();
+            participant.setId(user.getId());
+            participant.setUsername(user.getUsername());
+            participant.setProfilePicUrl(
+                    user.getProfilePicUrl() == null || user.getProfilePicUrl().isBlank()
+                            ? user.getProfilePicUrl()
+                            : mediaUrlService.toReadableMediaUrl(user.getProfilePicUrl())
+            );
+            participant.setActive(user.getActive());
+            participant.setCreatedAt(user.getCreatedAt());
+            participant.setGenuinenessScore(user.getGenuinenessScore());
+            participant.setChallengesCreated(user.getChallengesCreated());
+            participant.setChallengesAccepted(user.getChallengesAccepted());
+            participant.setFollowers(user.getFollowers());
+            participant.setFollowing(user.getFollowing());
+            participant.setSubmissionsCount(user.getSubmissionsCount());
+            return participant;
+        }).toList();
     }
 
     @Override

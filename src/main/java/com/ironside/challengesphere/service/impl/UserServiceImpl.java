@@ -9,6 +9,7 @@ import java.util.stream.Collectors;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
@@ -380,7 +381,7 @@ public class UserServiceImpl implements UserService {
             User updatedUser = userRepository.save(user);
             safeCacheUser(updatedUser);
             logger.info("Successfully updated user details for userId: {}", userId);
-            return updatedUser;
+            return withReadableProfilePicUrl(updatedUser);
 
         } catch (ChallengeSphereException e) {
             throw e;
@@ -930,15 +931,20 @@ public class UserServiceImpl implements UserService {
     }
 
     private User withReadableProfilePicUrl(User user) {
-        if (user == null || user.getProfilePicUrl() == null || user.getProfilePicUrl().isBlank() || mediaUrlService == null) {
+        if (user == null) {
             return user;
         }
+        User readableUser = new User();
+        BeanUtils.copyProperties(user, readableUser);
+        if (user.getProfilePicUrl() == null || user.getProfilePicUrl().isBlank() || mediaUrlService == null) {
+            return readableUser;
+        }
         try {
-            user.setProfilePicUrl(mediaUrlService.toReadableMediaUrl(user.getProfilePicUrl()));
+            readableUser.setProfilePicUrl(mediaUrlService.toReadableMediaUrl(user.getProfilePicUrl()));
         } catch (Exception e) {
             logger.warn("Failed to prepare readable profile photo URL for userId={}: {}", user.getId(), e.getMessage());
         }
-        return user;
+        return readableUser;
     }
 
     private List<User> withReadableProfilePicUrls(List<User> users) {

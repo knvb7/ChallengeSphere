@@ -31,6 +31,9 @@ public class EmailServiceImpl implements EmailService {
     @Value("${app.frontend.base-url:https://challengesphere.com}")
     private String frontendBaseUrl;
 
+    @Value("${app.password-reset.base-url:myapp://reset-password}")
+    private String passwordResetBaseUrl;
+
     @Value("${app.mail.enabled:true}")
     private boolean mailEnabled;
 
@@ -62,7 +65,7 @@ public class EmailServiceImpl implements EmailService {
             logger.warn("Skipping password reset email, missing email address");
             return;
         }
-        String resetUrl = frontendBaseUrl + "/reset-password?token=" + resetToken;
+        String resetUrl = passwordResetBaseUrl + "?token=" + resetToken;
         String subject = "Reset your ChallengeSphere password";
         String html = "<div style=\"font-family:Arial,sans-serif;color:#222;\">"
                 + "<h2>Password reset requested</h2>"

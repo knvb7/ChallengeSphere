@@ -78,6 +78,9 @@ public class LeaderboardServiceImpl implements LeaderboardService {
     @Autowired
     private RedisCacheServiceImpl cacheService;
 
+    @Autowired
+    private MediaUrlService mediaUrlService;
+
     // challengeIds whose ranks are stale — flushed by flushDirtyRanks below.
     // Used as a set; the boolean value is ignored. ConcurrentHashMap.newKeySet gives us
     // the same API and avoids allocating Boolean.TRUE on every dirty-mark.
@@ -132,7 +135,7 @@ public class LeaderboardServiceImpl implements LeaderboardService {
                             .userId(user.getId())
                             .username(user.getUsername())
                             .displayName(user.getUsername())
-                            .profilePictureUrl(user.getProfilePicUrl())
+                            .profilePictureUrl(readableProfilePic(user.getProfilePicUrl()))
                             .rank(i + 1L)
                             .score(le.getScore())
                             .submissionCount(le.getSubmissionCount())
@@ -254,11 +257,15 @@ public class LeaderboardServiceImpl implements LeaderboardService {
                 .toList();
         Map<Long, User> userMap = userRepository.findAllById(userIds).stream()
                 .collect(Collectors.toMap(User::getId, u -> u));
+        Map<Long, LeaderboardEntry> leaderboardEntryMap =
+                leaderboardEntryRepository.findByChallengeIdAndUserIds(challengeId, userIds).stream()
+                        .collect(Collectors.toMap(entry -> entry.getUser().getId(), entry -> entry));
 
         List<LeaderboardEntryDTO> entries = new ArrayList<>();
         for (RedisCacheServiceImpl.LeaderboardEntry cached : cachedEntries) {
             Long cachedUserId = Long.valueOf(cached.userId());
             User user = userMap.get(cachedUserId);
+            LeaderboardEntry leaderboardEntry = leaderboardEntryMap.get(cachedUserId);
             if (user == null) {
                 continue;
             }
@@ -266,12 +273,21 @@ public class LeaderboardServiceImpl implements LeaderboardService {
                     .userId(user.getId())
                     .username(user.getUsername())
                     .displayName(user.getUsername())
-                    .profilePictureUrl(user.getProfilePicUrl())
+                    .profilePictureUrl(readableProfilePic(user.getProfilePicUrl()))
                     .rank(cached.rank())
                     .score(cached.score())
+                    .submissionCount(leaderboardEntry == null ? 0 : leaderboardEntry.getSubmissionCount())
+                    .gloriesCount(leaderboardEntry == null ? 0L : (long) leaderboardEntry.getGloryPoints())
+                    .currentStreak(leaderboardEntry == null ? 0 : leaderboardEntry.getStreakDays())
                     .build());
         }
         return entries;
+    }
+
+    private String readableProfilePic(String value) {
+        return value == null || value.isBlank()
+                ? value
+                : mediaUrlService.toReadableMediaUrl(value);
     }
     
     @Override

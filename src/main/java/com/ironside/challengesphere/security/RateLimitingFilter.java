@@ -81,6 +81,9 @@ public class RateLimitingFilter extends OncePerRequestFilter {
         if (path.startsWith("/api/v1/auth/otp/")) {
             return new Limit("otp", 5, Duration.ofMinutes(10));
         }
+        if ("POST".equals(method) && path.equals("/api/v1/auth/forgot-password")) {
+            return new Limit("password-reset", 5, Duration.ofMinutes(15));
+        }
         if ("POST".equals(method) && (path.equals("/api/v1/auth/login")
                 || path.equals("/api/v1/auth/register")
                 || path.equals("/api/v1/auth/google")

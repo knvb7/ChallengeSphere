@@ -30,6 +30,16 @@ public interface LeaderboardEntryRepository extends JpaRepository<LeaderboardEnt
     Optional<LeaderboardEntry> findByChallengeIdAndUserId(Long challengeId, Long userId);
 
     /**
+     * Load authoritative leaderboard metadata for a cached set of users.
+     */
+    @Query("SELECT le FROM LeaderboardEntry le " +
+           "WHERE le.challenge.id = :challengeId " +
+           "AND le.user.id IN :userIds")
+    List<LeaderboardEntry> findByChallengeIdAndUserIds(
+            @Param("challengeId") Long challengeId,
+            @Param("userIds") List<Long> userIds);
+
+    /**
      * Check if user has entry in leaderboard
      */
     boolean existsByChallengeIdAndUserId(Long challengeId, Long userId);

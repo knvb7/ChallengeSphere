@@ -2,6 +2,7 @@ package com.ironside.challengesphere.controller;
 
 import com.ironside.challengesphere.api.request.ToggleActivateUserRequest;
 import com.ironside.challengesphere.api.request.GetFollowersFollowingRequest;
+import com.ironside.challengesphere.api.request.GeneratePresignedUrlsRequest;
 import com.ironside.challengesphere.api.request.GetUserPayload;
 import com.ironside.challengesphere.api.request.UpdateUserRequest;
 import com.ironside.challengesphere.api.request.UserRegistrationRequest;
@@ -11,11 +12,13 @@ import com.ironside.challengesphere.api.response.FollowRelationshipResponse;
 import com.ironside.challengesphere.api.response.FollowersFollowingResponse;
 import com.ironside.challengesphere.api.response.UserRegistrationResponse;
 import com.ironside.challengesphere.api.response.UserSearchResponse;
+import com.ironside.challengesphere.api.response.PresignedUrlsResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.model.User;
 import com.ironside.challengesphere.security.SecurityAccess;
 import com.ironside.challengesphere.security.UserPrincipal;
 import com.ironside.challengesphere.service.UserService;
+import com.ironside.challengesphere.service.impl.ProfilePhotoService;
 import lombok.RequiredArgsConstructor;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -38,6 +41,9 @@ public class UserController {
 
     @Autowired
     private UserService userService;
+
+    @Autowired
+    private ProfilePhotoService profilePhotoService;
 
 //    @Autowired
 //    private AuthService authService;
@@ -215,6 +221,16 @@ public class UserController {
         request.setProfilePicUrl(profilePicUrl);
         userService.updateUserDetails(request);
         return ResponseEntity.ok(Map.of("success", true, "profilePicUrl", profilePicUrl));
+    }
+
+    @PostMapping("/{userId}/profile-picture/presigned-url")
+    public ResponseEntity<PresignedUrlsResponse> generateProfilePhotoUpload(
+            @AuthenticationPrincipal UserPrincipal principal,
+            @PathVariable Long userId,
+            @Valid @RequestBody GeneratePresignedUrlsRequest.MediaFileInfo file)
+            throws ChallengeSphereException {
+        SecurityAccess.requireSelf(principal, userId);
+        return ResponseEntity.ok(profilePhotoService.generateUpload(userId, file));
     }
 
     @PostMapping("/block")

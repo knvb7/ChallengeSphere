@@ -18,6 +18,7 @@ import com.ironside.challengesphere.service.NotificationService;
 import com.ironside.challengesphere.service.PushNotificationService;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
@@ -59,6 +60,9 @@ public class NotificationServiceImpl implements NotificationService {
     private final EmailService emailService;
     private final PushNotificationService pushNotificationService;
     private final ObjectMapper objectMapper = new ObjectMapper();
+
+    @Autowired
+    private MediaUrlService mediaUrlService;
 
     public NotificationServiceImpl(NotificationRepository notificationRepository,
                                    UserRepository userRepository,
@@ -341,7 +345,7 @@ public class NotificationServiceImpl implements NotificationService {
                 .ifPresent(title -> data.put("challengeTitle", title));
         data.put("targetUserId", submission.getUserId());
         data.put("targetUsername", recipient.get().getUsername());
-        data.put("targetProfilePicUrl", recipient.get().getProfilePicUrl());
+        data.put("targetProfilePicUrl", readableProfilePic(recipient.get().getProfilePicUrl()));
         data.put("dayNumber", submission.getDayNumber());
         data.put("mediaUrl", firstMediaUrl(submission.getMediaUrls()));
         if (commentId != null) {
@@ -432,7 +436,7 @@ public class NotificationServiceImpl implements NotificationService {
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("actorUserId", actor.getId());
         data.put("actorUsername", actor.getUsername());
-        data.put("actorProfilePicUrl", actor.getProfilePicUrl());
+        data.put("actorProfilePicUrl", readableProfilePic(actor.getProfilePicUrl()));
         return data;
     }
 
@@ -455,7 +459,7 @@ public class NotificationServiceImpl implements NotificationService {
         data.put("creatorUserId", challenge.getCreatorId());
         data.put("targetUserId", recipient.getId());
         data.put("targetUsername", recipient.getUsername());
-        data.put("targetProfilePicUrl", recipient.getProfilePicUrl());
+        data.put("targetProfilePicUrl", readableProfilePic(recipient.getProfilePicUrl()));
         data.put("isPrivate", challenge.getIsPrivate());
         return data;
     }
@@ -468,7 +472,7 @@ public class NotificationServiceImpl implements NotificationService {
         data.put("creatorUserId", challenge.getCreatorId());
         data.put("targetUserId", recipient.getId());
         data.put("targetUsername", recipient.getUsername());
-        data.put("targetProfilePicUrl", recipient.getProfilePicUrl());
+        data.put("targetProfilePicUrl", readableProfilePic(recipient.getProfilePicUrl()));
         data.put("isPrivate", challenge.getIsPrivate());
         return data;
     }
@@ -488,6 +492,12 @@ public class NotificationServiceImpl implements NotificationService {
         }
         String[] parts = mediaUrls.split(",");
         return parts.length == 0 ? null : parts[0].trim();
+    }
+
+    private String readableProfilePic(String value) {
+        return value == null || value.isBlank() || mediaUrlService == null
+                ? value
+                : mediaUrlService.toReadableMediaUrl(value);
     }
 
     private String displayName(User user) {
