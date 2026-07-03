@@ -43,7 +43,6 @@ public class SecurityConfig {
                 .cors(Customizer.withDefaults())
                 .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> {
-                    auth.requestMatchers("/api/v1/auth/change-password").authenticated();
                     auth.requestMatchers(
                             "/api/v1/auth/**",
                             "/actuator/health"

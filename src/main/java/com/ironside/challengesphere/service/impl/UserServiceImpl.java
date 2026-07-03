@@ -39,6 +39,7 @@ import com.ironside.challengesphere.repository.SubmissionRepository;
 import com.ironside.challengesphere.repository.UserBlockRepository;
 import com.ironside.challengesphere.repository.UserReportRepository;
 import com.ironside.challengesphere.repository.UserRepository;
+import com.ironside.challengesphere.security.AuthTokenStore;
 import com.ironside.challengesphere.service.NotificationService;
 import com.ironside.challengesphere.service.UserService;
 
@@ -74,7 +75,13 @@ public class UserServiceImpl implements UserService {
     private MediaUrlService mediaUrlService;
 
     @Autowired
+    private ProfilePhotoService profilePhotoService;
+
+    @Autowired
     private RedisCacheServiceImpl redisCacheServiceImpl;
+
+    @Autowired
+    private AuthTokenStore authTokenStore;
 
     @Override
     public long getTotalUserCount() {
@@ -88,8 +95,7 @@ public class UserServiceImpl implements UserService {
         String emailId = getUserPayload.getEmailId();
         String phone = getUserPayload.getPhone();
         String username = getUserPayload.getUsername();
-        logger.info("Retrieving user with parameters - userId: {}, emailId: {}, phone: {}, username: {}",
-                userId, emailId, phone, username);
+        logger.debug("Retrieving user profile");
 
         try {
             // 1. Fetch by userId — cache first, DB on miss or cache failure
@@ -102,7 +108,7 @@ public class UserServiceImpl implements UserService {
                     return restrictProfileForViewer(cached.get(), currentUserId);
                     }
                 } catch (Exception cacheEx) {
-                    logger.warn("Cache lookup failed for userId={}, falling back to DB: {}", userId, cacheEx.getMessage());
+                    logger.warn("Cache lookup failed for userId={}, falling back to DB", userId);
                 }
                 logger.info("Fetching from DB for userId: {}", userId);
                 Optional<User> user = userRepository.findById(userId);
@@ -120,7 +126,7 @@ public class UserServiceImpl implements UserService {
                 String emailKey = emailId.trim();
                 Optional<User> user = userRepository.findByEmailId(emailKey);
                 if (user.isPresent()) {
-                    logger.info("User found by emailId: {}", emailId);
+                    logger.debug("Account lookup matched email");
                     final User found = user.get();
                     stampLastLogin(found);
                     safeCacheUser(found);
@@ -133,7 +139,7 @@ public class UserServiceImpl implements UserService {
                 String phoneKey = phone.trim();
                 Optional<User> user = userRepository.findByPhone(phoneKey);
                 if (user.isPresent()) {
-                    logger.info("User found by phone: {}", phone);
+                    logger.debug("Account lookup matched phone");
                     final User found = user.get();
                     stampLastLogin(found);
                     safeCacheUser(found);
@@ -144,10 +150,10 @@ public class UserServiceImpl implements UserService {
             // 4. Fetch by username from DB
             if (username != null && !username.trim().isEmpty()) {
                 String usernameKey = username.trim();
-                logger.debug("Fetching from DB for username: {}", username);
+                logger.debug("Fetching user by username");
                 Optional<User> user = userRepository.findByUsername(usernameKey);
                 if (user.isPresent()) {
-                    logger.info("User found by username: {}", username);
+                    logger.debug("User found by username");
                     final User found = user.get();
                     stampLastLogin(found);
                     safeCacheUser(found);
@@ -155,13 +161,11 @@ public class UserServiceImpl implements UserService {
                 }
             }
 
-            logger.warn("User not found with any of the provided parameters - userId: {}, emailId: {}, phone: {}, username: {}",
-                    userId, emailId, phone, username);
+            logger.debug("User lookup did not match an account");
         } catch (ChallengeSphereException e) {
             throw e;
         } catch (Exception e) {
-            logger.error("Error retrieving user with parameters - userId: {}, emailId: {}, phone: {}, username: {}. Error: {}",
-                    userId, emailId, phone, username, e.getMessage(), e);
+            logger.error("User retrieval failed | exception={}", e.getClass().getSimpleName());
         }
 
         throw new ChallengeSphereException("User not found with provided parameters", HttpStatus.NOT_FOUND, logger);
@@ -199,7 +203,7 @@ public class UserServiceImpl implements UserService {
                     results.getTotalElements()
             );
         } catch (Exception e) {
-            logger.error("Error searching users for query '{}': {}", normalizedQuery, e.getMessage(), e);
+            logger.error("User search failed | exception={}", e.getClass().getSimpleName());
             throw new ChallengeSphereException(
                     "Failed to search users",
                     HttpStatus.INTERNAL_SERVER_ERROR,
@@ -242,7 +246,7 @@ public class UserServiceImpl implements UserService {
         } catch (ChallengeSphereException e) {
             throw e;
         } catch (Exception e) {
-            logger.error("Error getting suggested users for userId {}: {}", currentUserId, e.getMessage(), e);
+            logger.error("Error getting suggested users for userId {}: {}", currentUserId, e.getClass().getSimpleName());
             throw new ChallengeSphereException(
                     "Failed to load suggested users",
                     HttpStatus.INTERNAL_SERVER_ERROR,
@@ -279,7 +283,7 @@ public class UserServiceImpl implements UserService {
             user.setLastLoginAt(new Timestamp(System.currentTimeMillis()));
             safeCacheUser(user);
         } catch (Exception e) {
-            logger.warn("Failed to stamp last_login_at for userId={}: {}", user.getId(), e.getMessage());
+            logger.warn("Failed to stamp last_login_at for userId={}: {}", user.getId(), e.getClass().getSimpleName());
         }
     }
 
@@ -288,15 +292,13 @@ public class UserServiceImpl implements UserService {
         try {
             cacheService.cacheUserProfile(user);
         } catch (Exception e) {
-            logger.warn("Failed to cache user profile for userId={}: {}", user.getId(), e.getMessage());
+            logger.warn("Failed to cache user profile for userId={}: {}", user.getId(), e.getClass().getSimpleName());
         }
     }
 
     @Override
-    public User updateUserDetails(UpdateUserRequest updateUserRequest) throws ChallengeSphereException {
-        Long userId = updateUserRequest.getUserId();
-        logger.info("Updating user details for userId: {} with emailId: {}, phone: {}, username: {}",
-                   userId, updateUserRequest.getEmailId(), updateUserRequest.getPhone(), updateUserRequest.getUsername());
+    public User updateUserDetails(Long userId, UpdateUserRequest updateUserRequest) throws ChallengeSphereException {
+        logger.info("Updating self-service profile fields for userId: {}", userId);
 
         try {
             // Optional<User> cachedUserOpt = cacheService.getCachedUserProfile(userId, User.class);
@@ -314,48 +316,16 @@ public class UserServiceImpl implements UserService {
             logger.debug("Loaded userId: {} from DB", userId);
             // }
 
-            if (updateUserRequest.getEmailId() != null && !updateUserRequest.getEmailId().trim().isEmpty()) {
-                user.setEmailId(updateUserRequest.getEmailId().trim());
-                logger.debug("Updated emailId for user {}", userId);
-            }
-            if (updateUserRequest.getPhone() != null && !updateUserRequest.getPhone().trim().isEmpty()) {
-                user.setPhone(updateUserRequest.getPhone().trim());
-                logger.debug("Updated phone for user {}", userId);
-            }
             if (updateUserRequest.getUsername() != null && !updateUserRequest.getUsername().trim().isEmpty()) {
                 user.setUsername(updateUserRequest.getUsername().trim());
                 logger.debug("Updated username for user {}", userId);
             }
-            if (updateUserRequest.getHashedPassword() != null && !updateUserRequest.getHashedPassword().trim().isEmpty()) {
-                user.setHashedPassword(encodePassword(updateUserRequest.getHashedPassword()));
-                logger.debug("Updated hashedPassword for user {}", userId);
-            }
-            Integer incomingGenuinityScore = updateUserRequest.getGenuinityScore() != null
-                    ? updateUserRequest.getGenuinityScore()
-                    : updateUserRequest.getGenuinenessScore();
-            if (incomingGenuinityScore != null) {
-                user.setGenuinenessScore(incomingGenuinityScore);
-                logger.debug("Updated genuinenessScore for user {}", userId);
-            }
-            if (updateUserRequest.getActive() != null) {
-                user.setActive(updateUserRequest.getActive());
-                logger.debug("Updated active for user {}", userId);
-            }
-            if (updateUserRequest.getChallengesCreated() != null) {
-                user.setChallengesCreated(updateUserRequest.getChallengesCreated());
-                logger.debug("Updated challengesCreated for user {}", userId);
-            }
-            if (updateUserRequest.getChallengesAccepted() != null) {
-                user.setChallengesAccepted(updateUserRequest.getChallengesAccepted());
-                logger.debug("Updated challengesAccepted for user {}", userId);
-            }
             if (updateUserRequest.getProfilePicUrl() != null) {
-                user.setProfilePicUrl(updateUserRequest.getProfilePicUrl());
+                user.setProfilePicUrl(profilePhotoService.validateUploadedObjectKey(
+                        userId,
+                        updateUserRequest.getProfilePicUrl()
+                ));
                 logger.debug("Updated profilePicUrl for user {}", userId);
-            }
-            if (updateUserRequest.getPremiumUser() != null) {
-                user.setPremiumUser(updateUserRequest.getPremiumUser());
-                logger.debug("Updated premiumUser for user {}", userId);
             }
             if (updateUserRequest.getNotifications() != null) {
                 user.setNotifications(updateUserRequest.getNotifications());
@@ -373,6 +343,10 @@ public class UserServiceImpl implements UserService {
                 user.setAge(updateUserRequest.getAge());
                 logger.debug("Updated age for user {}", userId);
             }
+            if (updateUserRequest.getGender() != null) {
+                user.setGender(updateUserRequest.getGender());
+                logger.debug("Updated gender for user {}", userId);
+            }
             if (updateUserRequest.getInterests() != null) {
                 user.setInterests(updateUserRequest.getInterests());
                 logger.debug("Updated interests for user {}", userId);
@@ -386,7 +360,7 @@ public class UserServiceImpl implements UserService {
         } catch (ChallengeSphereException e) {
             throw e;
         } catch (Exception e) {
-            logger.error("Error updating user details for userId: {}: {}", userId, e.getMessage(), e);
+            logger.error("Error updating user details for userId: {}: {}", userId, e.getClass().getSimpleName());
             throw new ChallengeSphereException(
                     "Failed to update user details",
                     HttpStatus.INTERNAL_SERVER_ERROR,
@@ -479,7 +453,7 @@ public class UserServiceImpl implements UserService {
                 notificationService.notifyFollow(following.getId(), follower.getId());
             } catch (Exception e) {
                 logger.warn("Failed to create follow notification for followerId={}, followingId={}: {}",
-                        followerId, followingId, e.getMessage());
+                        followerId, followingId, e.getClass().getSimpleName());
             }
 
             logger.info("User {} successfully followed user {}", followerId, followingId);
@@ -489,7 +463,7 @@ public class UserServiceImpl implements UserService {
             throw e;
         } catch (Exception e) {
             logger.error("Error following user - followerId: {}, followingId: {}: {}",
-                    followerId, followingId, e.getMessage(), e);
+                    followerId, followingId, e.getClass().getSimpleName());
             throw new ChallengeSphereException(
                     "Failed to follow user",
                     HttpStatus.INTERNAL_SERVER_ERROR,
@@ -530,7 +504,7 @@ public class UserServiceImpl implements UserService {
 
         } catch (Exception e) {
             logger.error("Error unfollowing user - followerId: {}, followingId: {}: {}",
-                    followerId, followingId, e.getMessage(), e);
+                    followerId, followingId, e.getClass().getSimpleName());
             throw new ChallengeSphereException(
                     "Failed to unfollow user",
                     HttpStatus.INTERNAL_SERVER_ERROR,
@@ -601,7 +575,7 @@ public class UserServiceImpl implements UserService {
         } catch (ChallengeSphereException e) {
             throw e;
         } catch (Exception e) {
-            logger.error("Error getting followers for userId: {}: {}", userId, e.getMessage(), e);
+            logger.error("Error getting followers for userId: {}: {}", userId, e.getClass().getSimpleName());
             throw new ChallengeSphereException(
                     "Failed to get followers",
                     HttpStatus.INTERNAL_SERVER_ERROR,
@@ -639,7 +613,7 @@ public class UserServiceImpl implements UserService {
         } catch (ChallengeSphereException e) {
             throw e;
         } catch (Exception e) {
-            logger.error("Error getting following for userId: {}: {}", userId, e.getMessage(), e);
+            logger.error("Error getting following for userId: {}: {}", userId, e.getClass().getSimpleName());
             throw new ChallengeSphereException(
                     "Failed to get following",
                     HttpStatus.INTERNAL_SERVER_ERROR,
@@ -649,6 +623,7 @@ public class UserServiceImpl implements UserService {
     }
 
     @Override
+    @Transactional
     public ToggleUserActivationResponse toggleUserActivation(ToggleActivateUserRequest request) throws ChallengeSphereException {
         Long userId = request.getUserId();
 
@@ -667,6 +642,7 @@ public class UserServiceImpl implements UserService {
             boolean currentStatus = Boolean.TRUE.equals(user.getActive());
             boolean newStatus = !currentStatus;
             userRepository.updateUserActiveStatus(userId, newStatus);
+            authTokenStore.revokeAllForUser(userId);
             safeInvalidateUser(userId);
 
             String action = newStatus ? "activated" : "deactivated";
@@ -677,7 +653,7 @@ public class UserServiceImpl implements UserService {
         } catch (ChallengeSphereException e) {
             throw e;
         } catch (Exception e) {
-            logger.error("Error toggling activation status for user with userId: {}: {}", userId, e.getMessage(), e);
+            logger.error("Error toggling activation status for user with userId: {}: {}", userId, e.getClass().getSimpleName());
             throw new ChallengeSphereException(
                     "Failed to toggle user activation status",
                     HttpStatus.INTERNAL_SERVER_ERROR,
@@ -778,14 +754,14 @@ public class UserServiceImpl implements UserService {
     @Override
     @Transactional
     public UserRegistrationResponse registerUser(UserRegistrationRequest request) throws ChallengeSphereException {
-        logger.info("Registering new user with username: {}, email: {}", request.getUsername(), request.getEmailId());
+        logger.info("Registering new user");
 
         try {
             // Validate if user already exists
             if (request.getUsername() != null) {
                 Optional<User> existingUser = userRepository.findByUsername(request.getUsername());
                 if (existingUser.isPresent()) {
-                    logger.warn("Registration failed: Username already exists: {}", request.getUsername());
+                    logger.warn("Registration rejected because username already exists");
                     throw new ChallengeSphereException(
                             "Username already exists",
                             HttpStatus.CONFLICT,
@@ -797,7 +773,7 @@ public class UserServiceImpl implements UserService {
             if (request.getEmailId() != null) {
                 Optional<User> existingUser = userRepository.findByEmailId(request.getEmailId());
                 if (existingUser.isPresent()) {
-                    logger.warn("Registration failed: Email already exists: {}", request.getEmailId());
+                    logger.warn("Registration rejected because email already exists");
                     throw new ChallengeSphereException(
                             "Email already exists",
                             HttpStatus.CONFLICT,
@@ -809,7 +785,7 @@ public class UserServiceImpl implements UserService {
             if (request.getPhone() != null && !request.getPhone().trim().isEmpty()) {
                 Optional<User> existingUser = userRepository.findByPhone(request.getPhone());
                 if (existingUser.isPresent()) {
-                    logger.warn("Registration failed: Phone already exists: {}", request.getPhone());
+                    logger.warn("Registration rejected because phone already exists");
                     throw new ChallengeSphereException(
                             "Phone number already exists",
                             HttpStatus.CONFLICT,
@@ -843,16 +819,16 @@ public class UserServiceImpl implements UserService {
             // Save user
             User savedUser = userRepository.save(newUser);
             safeCacheUser(savedUser);
-            logger.info("Successfully registered user with id: {}, username: {}", savedUser.getId(), savedUser.getUsername());
+            logger.info("Successfully registered user with id={}", savedUser.getId());
 
             return UserRegistrationResponse.success(savedUser);
 
         } catch (ChallengeSphereException e) {
             throw e;
         } catch (Exception e) {
-            logger.error("Error registering user: {}", e.getMessage(), e);
+            logger.error("User registration failed | exception={}", e.getClass().getSimpleName());
             throw new ChallengeSphereException(
-                    "Failed to register user: " + e.getMessage(),
+                    "Failed to register user",
                     HttpStatus.INTERNAL_SERVER_ERROR,
                     logger
             );
@@ -876,7 +852,7 @@ public class UserServiceImpl implements UserService {
         try {
             cacheService.invalidateUserProfile(userId);
         } catch (Exception e) {
-            logger.warn("Failed to invalidate cached user profile for userId={}: {}", userId, e.getMessage());
+            logger.warn("Failed to invalidate cached user profile for userId={}: {}", userId, e.getClass().getSimpleName());
         }
     }
 
@@ -924,7 +900,7 @@ public class UserServiceImpl implements UserService {
         try {
             user.setSubmissionsCount(submissionRepository.countActiveByUserId(user.getId()));
         } catch (Exception e) {
-            logger.warn("Failed to attach submissions count for userId={}: {}", user.getId(), e.getMessage());
+            logger.warn("Failed to attach submissions count for userId={}: {}", user.getId(), e.getClass().getSimpleName());
             user.setSubmissionsCount(0);
         }
         return user;
@@ -942,7 +918,7 @@ public class UserServiceImpl implements UserService {
         try {
             readableUser.setProfilePicUrl(mediaUrlService.toReadableMediaUrl(user.getProfilePicUrl()));
         } catch (Exception e) {
-            logger.warn("Failed to prepare readable profile photo URL for userId={}: {}", user.getId(), e.getMessage());
+            logger.warn("Failed to prepare readable profile photo URL for userId={}: {}", user.getId(), e.getClass().getSimpleName());
         }
         return readableUser;
     }

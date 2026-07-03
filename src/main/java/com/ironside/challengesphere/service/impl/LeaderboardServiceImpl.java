@@ -178,7 +178,7 @@ public class LeaderboardServiceImpl implements LeaderboardService {
         } catch (ChallengeSphereException e) {
             throw e;
         } catch (Exception e) {
-            logger.error("Error getting leaderboard for challenge {}: {}", challengeId, e.getMessage(), e);
+            logger.error("Error getting leaderboard for challenge {}: {}", challengeId, e.getClass().getSimpleName());
             throw new ChallengeSphereException(
                     "Failed to get leaderboard",
                     HttpStatus.INTERNAL_SERVER_ERROR,
@@ -239,7 +239,7 @@ public class LeaderboardServiceImpl implements LeaderboardService {
 
         } catch (Exception e) {
             logger.error("Error getting user rank for challenge {}, user {}: {}",
-                challengeId, userId, e.getMessage(), e);
+                challengeId, userId, e.getClass().getSimpleName());
             return null;
         }
     }
@@ -297,8 +297,8 @@ public class LeaderboardServiceImpl implements LeaderboardService {
         Long userId = request.getUserId();
         Double score = request.getScore();
         
-        logger.info("Updating score for challenge: {}, user: {}, score: {}, reason: {}", 
-            challengeId, userId, score, request.getReason());
+        logger.info("Updating score for challenge={}, userId={}, score={}",
+            challengeId, userId, score);
         
         try {
             // Step 1: Persist to database first (source of truth)
@@ -320,7 +320,7 @@ public class LeaderboardServiceImpl implements LeaderboardService {
             dirtyChallengeIds.add(challengeId);
         } catch (Exception e) {
             logger.error("Error updating score for challenge {}, user {}: {}", 
-                challengeId, userId, e.getMessage(), e);
+                challengeId, userId, e.getClass().getSimpleName());
             throw new ChallengeSphereException(
                     "Failed to update leaderboard score",
                     HttpStatus.INTERNAL_SERVER_ERROR,
@@ -332,8 +332,8 @@ public class LeaderboardServiceImpl implements LeaderboardService {
     @Override
     @Transactional
     public void incrementScore(Long challengeId, Long userId, double points, String reason) {
-        logger.debug("Incrementing score for challenge: {}, user: {}, points: {}, reason: {}", 
-            challengeId, userId, points, reason);
+        logger.debug("Incrementing score for challenge={}, userId={}, points={}",
+            challengeId, userId, points);
         
         try {
             // Step 1: Update database first (source of truth)
@@ -343,12 +343,12 @@ public class LeaderboardServiceImpl implements LeaderboardService {
             entry.incrementSubmissionCount();
             leaderboardEntryRepository.save(entry);
             
-            logger.info("Score updated: challenge={}, user={}, points={}, newScore={}, reason={}",
-                challengeId, userId, points, newScore, reason);
+            logger.info("Score updated: challenge={}, userId={}, points={}, newScore={}",
+                challengeId, userId, points, newScore);
             dirtyChallengeIds.add(challengeId);
         } catch (Exception e) {
             logger.error("Error incrementing score: challenge={}, user={}, points={}",
-                challengeId, userId, points, e);
+                challengeId, userId, points);
             // Don't throw - leaderboard updates should be best effort
         }
     }
@@ -373,7 +373,7 @@ public class LeaderboardServiceImpl implements LeaderboardService {
             try {
                 updateRanks(challengeId);
             } catch (Exception e) {
-                logger.error("Rank refresh failed for challenge {}: {}", challengeId, e.getMessage(), e);
+                logger.error("Rank refresh failed for challenge {}: {}", challengeId, e.getClass().getSimpleName());
                 // Re-mark so the next tick retries
                 dirtyChallengeIds.add(challengeId);
             }
@@ -386,16 +386,16 @@ public class LeaderboardServiceImpl implements LeaderboardService {
         logger.info("Rebuilding leaderboard for challenge: {}", challengeId);
         
         try {
-            // Step 1: Try to rebuild from database first (preferred - has historical data)
+            // Step 1: Snapshot existing entries for logging only. Rebuild must recalculate
+            // from source data so historical inflated submission scores can be corrected.
             List<LeaderboardEntry> dbEntries = leaderboardEntryRepository.findActiveByChallengeId(challengeId);
-            
+
             if (!dbEntries.isEmpty()) {
-                logger.info("Found {} leaderboard entries in database for challenge {}", 
+                logger.info("Recalculating {} existing leaderboard entries from source data for challenge {}",
                     dbEntries.size(), challengeId);
-                return;
             }
-            
-            // Step 2: If DB is empty, rebuild from source data (UserChallenge + Submissions)
+
+            // Step 2: Rebuild from source data (UserChallenge + unique submitted days).
             List<UserChallenge> participants = userChallengeRepository.findActiveByChallengeId(challengeId);
             
             if (participants.isEmpty()) {
@@ -419,7 +419,8 @@ public class LeaderboardServiceImpl implements LeaderboardService {
             Map<Long, User> userMap = userRepository.findAllById(userIds).stream()
                     .collect(Collectors.toMap(User::getId, user -> user));
             
-            // Get submission counts per user
+            // Get submitted-day counts per user. A challenge day counts once even if
+            // it has multiple active submissions or multiple media files.
             Map<Long, Long> submissionCounts = getSubmissionCounts(challengeId, userIds);
             
             // Get glory counts per user
@@ -445,6 +446,7 @@ public class LeaderboardServiceImpl implements LeaderboardService {
                     entry.setGloryPoints((int) glories);
                     entry.setStreakDays(streak);
                     leaderboardEntryRepository.save(entry);
+                    cacheService.addToLeaderboard(challengeId, userId, score);
                 }
             }
             
@@ -457,7 +459,7 @@ public class LeaderboardServiceImpl implements LeaderboardService {
         } catch (ChallengeSphereException e) {
             throw e;
         } catch (Exception e) {
-            logger.error("Error rebuilding leaderboard for challenge {}: {}", challengeId, e.getMessage(), e);
+            logger.error("Error rebuilding leaderboard for challenge {}: {}", challengeId, e.getClass().getSimpleName());
             throw new ChallengeSphereException(
                     "Failed to rebuild leaderboard",
                     HttpStatus.INTERNAL_SERVER_ERROR,
@@ -477,7 +479,7 @@ public class LeaderboardServiceImpl implements LeaderboardService {
             
             logger.info("Successfully removed user {} from leaderboard for challenge {}", userId, challengeId);
         } catch (Exception e) {
-            logger.error("Error removing user from leaderboard: challenge={}, user={}", challengeId, userId, e);
+            logger.error("Error removing user from leaderboard: challenge={}, user={}", challengeId, userId);
         }
     }
     
@@ -493,7 +495,7 @@ public class LeaderboardServiceImpl implements LeaderboardService {
             
             logger.info("Initialized leaderboard score for user {} in challenge {}", userId, challengeId);
         } catch (Exception e) {
-            logger.error("Error initializing user score: challenge={}, user={}", challengeId, userId, e);
+            logger.error("Error initializing user score: challenge={}, user={}", challengeId, userId);
         }
     }
     
@@ -511,16 +513,26 @@ public class LeaderboardServiceImpl implements LeaderboardService {
     }
     
     /**
-     * Get submission counts per user for a challenge
+     * Get submitted-day counts per user for a challenge.
      */
     private Map<Long, Long> getSubmissionCounts(Long challengeId, List<Long> userIds) {
         try {
             List<Submission> submissions = submissionRepository.findByChallengeIdAndUserIdIn(challengeId, userIds);
-            return submissions.stream()
+            Map<Long, Set<Integer>> submittedDaysByUser = submissions.stream()
                     .filter(Submission::getActive)
-                    .collect(Collectors.groupingBy(Submission::getUserId, Collectors.counting()));
+                    .filter(submission -> submission.getDayNumber() != null)
+                    .collect(Collectors.groupingBy(
+                            Submission::getUserId,
+                            Collectors.mapping(Submission::getDayNumber, Collectors.toSet())
+                    ));
+
+            return submittedDaysByUser.entrySet().stream()
+                    .collect(Collectors.toMap(
+                            Map.Entry::getKey,
+                            entry -> (long) entry.getValue().size()
+                    ));
         } catch (Exception e) {
-            logger.error("Error getting submission counts for challenge {}: {}", challengeId, e.getMessage());
+            logger.error("Error getting submitted-day counts for challenge {}: {}", challengeId, e.getClass().getSimpleName());
             return new HashMap<>();
         }
     }
@@ -538,7 +550,7 @@ public class LeaderboardServiceImpl implements LeaderboardService {
                             Collectors.summingLong(Submission::getGloriesCount)
                     ));
         } catch (Exception e) {
-            logger.error("Error getting glory counts for challenge {}: {}", challengeId, e.getMessage());
+            logger.error("Error getting glory counts for challenge {}: {}", challengeId, e.getClass().getSimpleName());
             return new HashMap<>();
         }
     }
@@ -582,7 +594,7 @@ public class LeaderboardServiceImpl implements LeaderboardService {
             return streak;
         } catch (Exception e) {
             logger.error("Error calculating streak for challenge {}, user {}: {}", 
-                challengeId, userId, e.getMessage());
+                challengeId, userId, e.getClass().getSimpleName());
             return 0;
         }
     }
@@ -616,7 +628,7 @@ public class LeaderboardServiceImpl implements LeaderboardService {
             
             logger.info("Found {} leaderboard entries for challenge {}", entries.size(), challengeId);
         } catch (Exception e) {
-            logger.error("Error syncing leaderboard for challenge {}: {}", challengeId, e.getMessage(), e);
+            logger.error("Error syncing leaderboard for challenge {}: {}", challengeId, e.getClass().getSimpleName());
         }
     }
     
@@ -634,7 +646,7 @@ public class LeaderboardServiceImpl implements LeaderboardService {
             stats.put("totalSubmissions", leaderboardEntryRepository.getTotalSubmissions(challengeId));
             stats.put("source", "database");
         } catch (Exception e) {
-            logger.error("Error getting leaderboard stats for challenge {}: {}", challengeId, e.getMessage());
+            logger.error("Error getting leaderboard stats for challenge {}: {}", challengeId, e.getClass().getSimpleName());
             stats.put("error", e.getMessage());
         }
         
@@ -652,7 +664,7 @@ public class LeaderboardServiceImpl implements LeaderboardService {
             leaderboardEntryRepository.updateRanksForChallenge(challengeId);
             logger.info("Successfully updated ranks for challenge {}", challengeId);
         } catch (Exception e) {
-            logger.error("Error updating ranks for challenge {}: {}", challengeId, e.getMessage(), e);
+            logger.error("Error updating ranks for challenge {}: {}", challengeId, e.getClass().getSimpleName());
         }
     }
     
@@ -668,7 +680,7 @@ public class LeaderboardServiceImpl implements LeaderboardService {
             leaderboardEntryRepository.markChallengeCompleted(challengeId);
             logger.info("Marked challenge {} leaderboard as completed", challengeId);
         } catch (Exception e) {
-            logger.error("Error marking challenge {} as completed: {}", challengeId, e.getMessage(), e);
+            logger.error("Error marking challenge {} as completed: {}", challengeId, e.getClass().getSimpleName());
         }
     }
 }

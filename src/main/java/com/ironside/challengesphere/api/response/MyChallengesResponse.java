@@ -28,6 +28,8 @@ public class MyChallengesResponse {
         private Boolean active;
         private Timestamp createdAt;
         private Long creatorId;
+        private String creatorUsername;
+        private String creatorProfilePicUrl;
         private Long currentOwnerId;
         private Integer numberOfDays;
         private String challengeMode;
@@ -51,6 +53,8 @@ public class MyChallengesResponse {
             summary.active = challenge.getActive();
             summary.createdAt = challenge.getCreatedAt();
             summary.creatorId = challenge.getCreatorId();
+            summary.creatorUsername = challenge.getCreatorUsername();
+            summary.creatorProfilePicUrl = challenge.getCreatorProfilePicUrl();
             summary.currentOwnerId = challenge.getCurrentOwnerId();
             summary.numberOfDays = challenge.getNumberOfDays();
             summary.challengeMode = challenge.getChallengeMode();

@@ -38,13 +38,16 @@ public class HevyIntegrationServiceImpl implements HevyIntegrationService {
     private final UserIntegrationRepository repository;
     private final RestClient restClient;
     private final ObjectMapper objectMapper;
+    private final IntegrationCredentialCipher credentialCipher;
 
     public HevyIntegrationServiceImpl(UserIntegrationRepository repository,
                                       RestClient.Builder restClientBuilder,
-                                      ObjectMapper objectMapper) {
+                                      ObjectMapper objectMapper,
+                                      IntegrationCredentialCipher credentialCipher) {
         this.repository = repository;
         this.restClient = restClientBuilder.build();
         this.objectMapper = objectMapper;
+        this.credentialCipher = credentialCipher;
     }
 
     @Override
@@ -58,7 +61,12 @@ public class HevyIntegrationServiceImpl implements HevyIntegrationService {
         integration.setExternalUserId(text(userInfo, "id", "user_id"));
         integration.setExternalUsername(text(userInfo, "username", "handle"));
         integration.setDisplayName(text(userInfo, "name", "display_name", "username"));
-        integration.setAccessToken(request.apiKey());
+        integration.setAccessToken(credentialCipher.encrypt(
+                userId,
+                PROVIDER,
+                "access_token",
+                request.apiKey()
+        ));
         integration.setConnectedAt(integration.getConnectedAt() != null ? integration.getConnectedAt() : Timestamp.from(now));
         integration.setUpdatedAt(Timestamp.from(now));
         repository.save(integration);
@@ -77,7 +85,7 @@ public class HevyIntegrationServiceImpl implements HevyIntegrationService {
     public HevyConnectionResponse sync(Long userId) throws ChallengeSphereException {
         UserIntegration integration = repository.findByUserIdAndProvider(userId, PROVIDER)
                 .orElseThrow(() -> new ChallengeSphereException("Connect Hevy before syncing workouts.", HttpStatus.BAD_REQUEST, logger));
-        JsonNode workouts = fetchWorkouts(integration.getAccessToken());
+        JsonNode workouts = fetchWorkouts(decryptApiKey(integration));
         HevyWorkoutSummary summary = toWorkoutSummary(workouts, Instant.now());
         integration.setSnapshotJson(writeSummary(summary));
         integration.setLastSyncedAt(Timestamp.from(Instant.parse(summary.syncedAt())));
@@ -163,7 +171,7 @@ public class HevyIntegrationServiceImpl implements HevyIntegrationService {
         try {
             return objectMapper.readValue(raw, HevyWorkoutSummary.class);
         } catch (JsonProcessingException e) {
-            logger.warn("Could not read Hevy snapshot JSON: {}", e.getMessage());
+            logger.warn("Could not read Hevy snapshot JSON: {}", e.getClass().getSimpleName());
             return null;
         }
     }
@@ -174,6 +182,29 @@ public class HevyIntegrationServiceImpl implements HevyIntegrationService {
         } catch (JsonProcessingException e) {
             throw new ChallengeSphereException("Could not save Hevy workout snapshot.", HttpStatus.INTERNAL_SERVER_ERROR, logger, e);
         }
+    }
+
+    private String decryptApiKey(UserIntegration integration) {
+        String stored = integration.getAccessToken();
+        if (stored == null || stored.isBlank()) {
+            throw new IllegalStateException("Stored Hevy credential is missing");
+        }
+        if (!credentialCipher.isEncrypted(stored)) {
+            integration.setAccessToken(credentialCipher.encrypt(
+                    integration.getUserId(),
+                    PROVIDER,
+                    "access_token",
+                    stored
+            ));
+            repository.save(integration);
+            return stored;
+        }
+        return credentialCipher.decrypt(
+                integration.getUserId(),
+                PROVIDER,
+                "access_token",
+                stored
+        );
     }
 
     private static HevyWorkoutSummaryItem toWorkoutItem(JsonNode workout) {

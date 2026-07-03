@@ -10,6 +10,7 @@ import com.ironside.challengesphere.api.request.GoogleAuthRequest;
 import com.ironside.challengesphere.api.request.LoginRequest;
 import com.ironside.challengesphere.api.request.UserRegistrationRequest;
 import com.ironside.challengesphere.api.response.AuthResponse;
+import com.ironside.challengesphere.api.response.SelfUserResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.model.User;
 import com.ironside.challengesphere.repository.UserRepository;
@@ -35,6 +36,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.security.GeneralSecurityException;
+import java.security.SecureRandom;
 import java.sql.Timestamp;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
@@ -43,6 +45,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -59,6 +62,9 @@ public class AuthServiceImpl implements AuthService {
     private static final URI GOOGLE_USERINFO_URI = URI.create("https://www.googleapis.com/oauth2/v3/userinfo");
     private static final String PASSWORD_RESET_TOKEN_TYPE = "password_reset";
     private static final Duration PASSWORD_RESET_TOKEN_TTL = Duration.ofMinutes(30);
+    private static final String RESET_CODE_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
+    private static final int RESET_CODE_LENGTH = 10;
+    private static final SecureRandom SECURE_RANDOM = new SecureRandom();
 
     private final UserRepository userRepository;
     private final JwtService jwtService;
@@ -122,11 +128,19 @@ public class AuthServiceImpl implements AuthService {
                 : userRepository.findByEmailId(email);
         boolean isNewUser = googleUser.isEmpty() && emailUser.isEmpty();
 
-        User user = googleUser.orElseGet(() -> emailUser
-                .map(existing -> linkGoogleId(existing, googleId, pictureUrl))
-                .orElseGet(() -> createGoogleUser(email, googleId, name, pictureUrl)));
+        User user;
+        if (googleUser.isPresent()) {
+            user = googleUser.get();
+            ensureAccountMayAuthenticate(user);
+        } else if (emailUser.isPresent()) {
+            user = emailUser.get();
+            ensureAccountMayAuthenticate(user);
+            user = linkGoogleId(user, googleId, pictureUrl);
+        } else {
+            user = createGoogleUser(email, googleId, name, pictureUrl);
+        }
 
-        logger.info("Google sign-in success for userId={} email={}", user.getId(), email);
+        logger.info("Google sign-in success for userId={}", user.getId());
         AuthResponse response = buildAuthResponse(user);
         response.setIsNewUser(isNewUser);
         return response;
@@ -150,14 +164,11 @@ public class AuthServiceImpl implements AuthService {
                 logger
         ));
 
-        if (!Boolean.TRUE.equals(user.getActive())) {
-            throw new ChallengeSphereException("User account is disabled",
-                    HttpStatus.FORBIDDEN, logger);
-        }
         if (!passwordMatches(request.getPassword(), user.getHashedPassword())) {
             throw new ChallengeSphereException("Invalid username or password",
                     HttpStatus.UNAUTHORIZED, logger);
         }
+        ensureAccountMayAuthenticate(user);
 
         user.setLastLoginAt(new Timestamp(System.currentTimeMillis()));
         userRepository.updateLastLoginAt(user.getId());
@@ -175,7 +186,13 @@ public class AuthServiceImpl implements AuthService {
             throw new ChallengeSphereException("Invalid or expired refresh token",
                     HttpStatus.UNAUTHORIZED, logger);
         }
-        User user = userService.getUserDetails(userId, null, null);
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new ChallengeSphereException(
+                        "Invalid or expired refresh token",
+                        HttpStatus.UNAUTHORIZED,
+                        logger
+                ));
+        ensureAccountMayAuthenticate(user);
         authTokenStore.revoke(refreshToken, "refresh");
         return buildAuthResponse(user);
     }
@@ -200,6 +217,7 @@ public class AuthServiceImpl implements AuthService {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new ChallengeSphereException("User not found",
                         HttpStatus.UNAUTHORIZED, logger));
+        ensureAccountMayAuthenticate(user);
         return toReadableAuthUser(user);
     }
 
@@ -248,18 +266,19 @@ public class AuthServiceImpl implements AuthService {
         }
 
         userRepository.findByEmailIdIgnoreCase(email.trim()).ifPresent(user -> {
-            String token = UUID.randomUUID().toString().replace("-", "");
-            authTokenStore.store(token, PASSWORD_RESET_TOKEN_TYPE, user.getId(), PASSWORD_RESET_TOKEN_TTL);
-            emailService.sendPasswordResetEmail(user, token);
+            String resetCode = generateResetCode();
+            authTokenStore.store(resetCode, PASSWORD_RESET_TOKEN_TYPE, user.getId(), PASSWORD_RESET_TOKEN_TTL);
+            emailService.sendPasswordResetEmail(user, resetCode);
         });
     }
 
     @Override
     @Transactional
-    public void resetPassword(String token, String newPassword, String confirmPassword)
+    public void resetPassword(String resetCode, String newPassword, String confirmPassword)
             throws ChallengeSphereException {
-        if (!StringUtils.hasText(token)) {
-            throw new ChallengeSphereException("Password reset link is invalid or expired",
+        String normalizedResetCode = normalizeResetCode(resetCode);
+        if (!normalizedResetCode.matches("[A-HJ-NP-Z2-9]{" + RESET_CODE_LENGTH + "}")) {
+            throw new ChallengeSphereException("Password reset code is invalid or expired",
                     HttpStatus.BAD_REQUEST, logger);
         }
         if (newPassword == null || !newPassword.equals(confirmPassword)) {
@@ -267,15 +286,15 @@ public class AuthServiceImpl implements AuthService {
         }
         validatePasswordPolicy(newPassword);
 
-        Long userId = authTokenStore.findUserId(token, PASSWORD_RESET_TOKEN_TYPE)
+        Long userId = authTokenStore.consume(normalizedResetCode, PASSWORD_RESET_TOKEN_TYPE)
                 .orElseThrow(() -> new ChallengeSphereException(
-                        "Password reset link is invalid or expired",
+                        "Password reset code is invalid or expired",
                         HttpStatus.BAD_REQUEST,
                         logger
                 ));
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new ChallengeSphereException(
-                        "Password reset link is invalid or expired",
+                        "Password reset code is invalid or expired",
                         HttpStatus.BAD_REQUEST,
                         logger
                 ));
@@ -288,6 +307,25 @@ public class AuthServiceImpl implements AuthService {
     }
 
     // --- helpers ---
+
+    private String generateResetCode() {
+        StringBuilder code = new StringBuilder(RESET_CODE_LENGTH);
+        for (int i = 0; i < RESET_CODE_LENGTH; i++) {
+            code.append(RESET_CODE_ALPHABET.charAt(
+                    SECURE_RANDOM.nextInt(RESET_CODE_ALPHABET.length())
+            ));
+        }
+        return code.toString();
+    }
+
+    private String normalizeResetCode(String resetCode) {
+        if (resetCode == null) {
+            return "";
+        }
+        return resetCode
+                .replaceAll("[\\s-]", "")
+                .toUpperCase(Locale.ROOT);
+    }
 
     private GoogleProfile verifyGoogleCredentials(GoogleAuthRequest request, List<String> allowedAudiences)
             throws ChallengeSphereException {
@@ -341,7 +379,7 @@ public class AuthServiceImpl implements AuthService {
             throw new ChallengeSphereException("Invalid Google ID token",
                     HttpStatus.UNAUTHORIZED, logger);
         } catch (GeneralSecurityException | IOException e) {
-            logger.error("Google token verification failed: {}", e.getMessage());
+            logger.error("Google ID token verification failed");
             throw new ChallengeSphereException("Google token verification failed",
                     HttpStatus.UNAUTHORIZED, logger);
         }
@@ -356,7 +394,7 @@ public class AuthServiceImpl implements AuthService {
             boolean audienceAllowed = StringUtils.hasText(audience) && allowedAudiences.contains(audience);
             boolean authorizedPartyAllowed = StringUtils.hasText(authorizedParty) && allowedAudiences.contains(authorizedParty);
             if (!audienceAllowed && !authorizedPartyAllowed) {
-                logger.warn("Rejected Google access token with audience={} authorizedParty={}", audience, authorizedParty);
+                logger.warn("Rejected Google access token with an untrusted audience");
                 throw new ChallengeSphereException("Invalid Google access token audience",
                         HttpStatus.UNAUTHORIZED, logger);
             }
@@ -384,7 +422,7 @@ public class AuthServiceImpl implements AuthService {
         } catch (ChallengeSphereException e) {
             throw e;
         } catch (Exception e) {
-            logger.error("Google access token verification failed: {}", e.getMessage());
+            logger.error("Google access token verification failed");
             throw new ChallengeSphereException("Google token verification failed",
                     HttpStatus.UNAUTHORIZED, logger);
         }
@@ -413,7 +451,7 @@ public class AuthServiceImpl implements AuthService {
     private Map<String, Object> executeGoogleJsonRequest(HttpRequest request) throws IOException, InterruptedException {
         HttpResponse<String> response = GOOGLE_HTTP_CLIENT.send(request, HttpResponse.BodyHandlers.ofString());
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
-            logger.warn("Google token endpoint returned status={} body={}", response.statusCode(), response.body());
+            logger.warn("Google token endpoint rejected token with status={}", response.statusCode());
             throw new IOException("Google token endpoint returned " + response.statusCode());
         }
         return OBJECT_MAPPER.readValue(response.body(), JSON_MAP);
@@ -469,7 +507,7 @@ public class AuthServiceImpl implements AuthService {
         user.setFollowing(0);
         user.setPremiumUser(0);
         user.setNotifications(1);
-        logger.info("Creating new Google user email={}", email);
+        logger.info("Creating new Google-authenticated user");
         return userRepository.save(user);
     }
 
@@ -486,7 +524,8 @@ public class AuthServiceImpl implements AuthService {
         return candidate;
     }
 
-    private AuthResponse buildAuthResponse(User user) {
+    private AuthResponse buildAuthResponse(User user) throws ChallengeSphereException {
+        ensureAccountMayAuthenticate(user);
         Instant issuedAt = Instant.now();
         String accessToken = jwtService.generateAccessToken(user.getId(), user.getUsername());
         String refreshToken = jwtService.generateRefreshToken(user.getId(), user.getUsername());
@@ -501,8 +540,25 @@ public class AuthServiceImpl implements AuthService {
                 .expiresIn(accessTokenExpiryMs)
                 .issuedAt(issuedAt)
                 .expiresAt(issuedAt.plusMillis(accessTokenExpiryMs))
-                .user(toReadableAuthUser(user))
+                .user(SelfUserResponse.from(toReadableAuthUser(user)))
                 .build();
+    }
+
+    private void ensureAccountMayAuthenticate(User user) throws ChallengeSphereException {
+        if (user != null
+                && Boolean.TRUE.equals(user.getActive())
+                && user.getBannedAt() == null) {
+            return;
+        }
+
+        if (user != null && user.getId() != null) {
+            authTokenStore.revokeAllForUser(user.getId());
+        }
+        throw new ChallengeSphereException(
+                "User account is disabled",
+                HttpStatus.FORBIDDEN,
+                logger
+        );
     }
 
     private User toReadableAuthUser(User user) {

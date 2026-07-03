@@ -85,7 +85,7 @@ public class MediaUrlService {
             });
             return resolved.url();
         } catch (Exception e) {
-            logger.warn("Failed to sign readable media URL for object {}: {}", objectName, e.getMessage());
+            logger.warn("Failed to sign readable media URL");
             return mediaUrl;
         }
     }
@@ -116,7 +116,7 @@ public class MediaUrlService {
             try {
                 GetSignedUrlForS3.updateObjectCacheControl(bucketName, objectName, PRIVATE_IMAGE_CACHE_CONTROL);
             } catch (Exception e) {
-                logger.warn("Failed to set cache headers for S3 object {}: {}", objectName, e.getMessage());
+                logger.warn("Failed to set cache headers for S3 object");
             }
         }
     }
@@ -158,7 +158,7 @@ public class MediaUrlService {
             try {
                 GetSignedUrlForS3.deleteObject(bucketName, objectName);
             } catch (Exception e) {
-                logger.warn("Failed to delete S3 object {}: {}", objectName, e.getMessage());
+                logger.warn("Failed to delete S3 object");
             }
         }
     }
@@ -217,7 +217,7 @@ public class MediaUrlService {
 
             return objectPath == null ? null : URLDecoder.decode(objectPath, StandardCharsets.UTF_8);
         } catch (Exception e) {
-            logger.debug("Could not parse media URL as S3 object: {}", mediaUrl);
+            logger.debug("Could not parse media URL as an S3 object");
             return null;
         }
     }

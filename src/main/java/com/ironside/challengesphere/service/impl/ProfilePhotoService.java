@@ -12,11 +12,16 @@ import org.springframework.stereotype.Service;
 
 import java.util.List;
 import java.util.UUID;
+import java.util.regex.Pattern;
 
 @Service
 public class ProfilePhotoService {
     private static final Logger logger = LogManager.getLogger(ProfilePhotoService.class);
     private static final long UPLOAD_URL_TTL_SECONDS = 3600L;
+    private static final Pattern PROFILE_OBJECT_KEY = Pattern.compile(
+            "^profiles/user_(\\d+)/\\d{10,17}_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-"
+                    + "[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\\.(?:jpg|png|gif)$"
+    );
 
     private final UserRepository userRepository;
     private final MediaUrlService mediaUrlService;
@@ -62,6 +67,22 @@ public class ProfilePhotoService {
                 UPLOAD_URL_TTL_SECONDS
         );
         return PresignedUrlsResponse.success(userId, List.of(upload));
+    }
+
+    public String validateUploadedObjectKey(Long userId, String objectKey)
+            throws ChallengeSphereException {
+        String normalizedKey = objectKey == null ? "" : objectKey.trim();
+        var matcher = PROFILE_OBJECT_KEY.matcher(normalizedKey);
+        if (userId == null
+                || !matcher.matches()
+                || !Long.toString(userId).equals(matcher.group(1))) {
+            throw new ChallengeSphereException(
+                    "Invalid profile photo upload key",
+                    HttpStatus.BAD_REQUEST,
+                    logger
+            );
+        }
+        return normalizedKey;
     }
 
     private void validateProfilePhoto(GeneratePresignedUrlsRequest.MediaFileInfo file)

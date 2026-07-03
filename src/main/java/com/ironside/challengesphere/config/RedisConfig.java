@@ -15,6 +15,7 @@ import org.springframework.data.redis.connection.RedisStandaloneConfiguration;
 import org.springframework.data.redis.connection.jedis.JedisClientConfiguration;
 import org.springframework.data.redis.connection.jedis.JedisConnectionFactory;
 import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.serializer.GenericJackson2JsonRedisSerializer;
 import org.springframework.data.redis.serializer.RedisSerializationContext;
 import org.springframework.data.redis.serializer.StringRedisSerializer;
@@ -39,6 +40,9 @@ public class RedisConfig {
     @Value("${spring.redis.password:}")
     private String redisPassword;
 
+    @Value("${spring.redis.password-parameter-name:}")
+    private String redisPasswordParameterName;
+
     @Value("${spring.redis.timeout:60000}")
     private long timeout;
 
@@ -59,6 +63,12 @@ public class RedisConfig {
 
     @Value("${spring.redis.jedis.pool.max-wait:-1}")
     private long maxWait;
+
+    private final SsmSecureParameterReader secureParameterReader;
+
+    public RedisConfig(SsmSecureParameterReader secureParameterReader) {
+        this.secureParameterReader = secureParameterReader;
+    }
 
     /**
      * Configure Jedis connection pool
@@ -96,8 +106,14 @@ public class RedisConfig {
         redisStandaloneConfiguration.setDatabase(database);
 
         // Set password if provided
-        if (redisPassword != null && !redisPassword.isEmpty()) {
-            redisStandaloneConfiguration.setPassword(redisPassword);
+        String resolvedPassword = redisPassword;
+        if ((resolvedPassword == null || resolvedPassword.isBlank())
+                && redisPasswordParameterName != null
+                && !redisPasswordParameterName.isBlank()) {
+            resolvedPassword = secureParameterReader.read(redisPasswordParameterName);
+        }
+        if (resolvedPassword != null && !resolvedPassword.isBlank()) {
+            redisStandaloneConfiguration.setPassword(resolvedPassword);
             logger.info("Redis password configured");
         }
 
@@ -153,6 +169,11 @@ public class RedisConfig {
         template.afterPropertiesSet();
         logger.info("RedisTemplate configured successfully");
         return template;
+    }
+
+    @Bean
+    public StringRedisTemplate stringRedisTemplate(RedisConnectionFactory connectionFactory) {
+        return new StringRedisTemplate(connectionFactory);
     }
 
     /**

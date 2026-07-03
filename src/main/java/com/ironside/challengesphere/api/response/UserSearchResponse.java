@@ -12,7 +12,7 @@ import java.util.List;
 @AllArgsConstructor
 public class UserSearchResponse {
     private String query;
-    private List<User> users;
+    private List<PublicUserResponse> users;
     private Integer currentPage;
     private Integer pageSize;
     private Integer totalCount;
@@ -24,7 +24,7 @@ public class UserSearchResponse {
         int totalPages = (int) Math.ceil((double) totalCount / pageSize);
         return new UserSearchResponse(
                 query,
-                users,
+                PublicUserResponse.fromUsers(users),
                 currentPage,
                 pageSize,
                 Math.toIntExact(totalCount),

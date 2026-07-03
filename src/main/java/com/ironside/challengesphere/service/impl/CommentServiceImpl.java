@@ -245,7 +245,7 @@ public class CommentServiceImpl implements CommentService {
             try {
                 notificationService.notifyCommentAsync(submission, userId, commentId);
             } catch (Exception e) {
-                logger.warn("Failed to schedule comment notification for commentId={}: {}", commentId, e.getMessage());
+                logger.warn("Failed to schedule comment notification for commentId={}: {}", commentId, e.getClass().getSimpleName());
             }
         };
 

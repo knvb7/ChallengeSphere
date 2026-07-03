@@ -47,6 +47,7 @@ public class StravaIntegrationServiceImpl implements StravaIntegrationService {
     private final StravaOAuthStateSigner stateSigner;
     private final RestClient restClient;
     private final ObjectMapper objectMapper;
+    private final IntegrationCredentialCipher credentialCipher;
     private final String clientId;
     private final String clientSecret;
 
@@ -54,12 +55,14 @@ public class StravaIntegrationServiceImpl implements StravaIntegrationService {
                                         StravaOAuthStateSigner stateSigner,
                                         RestClient.Builder restClientBuilder,
                                         ObjectMapper objectMapper,
+                                        IntegrationCredentialCipher credentialCipher,
                                         @Value("${app.strava.client-id:}") String clientId,
                                         @Value("${app.strava.client-secret:}") String clientSecret) {
         this.repository = repository;
         this.stateSigner = stateSigner;
         this.restClient = restClientBuilder.build();
         this.objectMapper = objectMapper;
+        this.credentialCipher = credentialCipher;
         this.clientId = clientId;
         this.clientSecret = clientSecret;
     }
@@ -188,14 +191,15 @@ public class StravaIntegrationServiceImpl implements StravaIntegrationService {
                 ? integration.getAccessTokenExpiresAt().toInstant()
                 : Instant.EPOCH;
         if (integration.getAccessToken() != null && expiresAt.isAfter(Instant.now().plusSeconds(60))) {
-            return integration.getAccessToken();
+            return decryptCredential(integration, "access_token", integration.getAccessToken());
         }
 
+        String refreshToken = decryptCredential(integration, "refresh_token", integration.getRefreshToken());
         MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
         form.add("client_id", clientId);
         form.add("client_secret", clientSecret);
         form.add("grant_type", "refresh_token");
-        form.add("refresh_token", integration.getRefreshToken());
+        form.add("refresh_token", refreshToken);
         try {
             StravaTokenResponse token = restClient.post()
                     .uri(URI.create(STRAVA_TOKEN_URL))
@@ -203,8 +207,10 @@ public class StravaIntegrationServiceImpl implements StravaIntegrationService {
                     .body(form)
                     .retrieve()
                     .body(StravaTokenResponse.class);
-            integration.setAccessToken(token.getAccessToken());
-            integration.setRefreshToken(token.getRefreshToken());
+            integration.setAccessToken(encryptCredential(
+                    integration, "access_token", token.getAccessToken()));
+            integration.setRefreshToken(encryptCredential(
+                    integration, "refresh_token", token.getRefreshToken()));
             integration.setAccessTokenExpiresAt(Timestamp.from(Instant.ofEpochSecond(token.getExpiresAt())));
             integration.setUpdatedAt(Timestamp.from(Instant.now()));
             repository.save(integration);
@@ -239,8 +245,10 @@ public class StravaIntegrationServiceImpl implements StravaIntegrationService {
         integration.setExternalUsername(athlete != null ? athlete.getUsername() : null);
         integration.setDisplayName(displayNameFor(athlete));
         integration.setAvatarUrl(athlete != null && athlete.getProfile() != null ? athlete.getProfile() : athlete != null ? athlete.getProfileMedium() : null);
-        integration.setAccessToken(token.getAccessToken());
-        integration.setRefreshToken(token.getRefreshToken());
+        integration.setAccessToken(encryptCredential(
+                integration, "access_token", token.getAccessToken()));
+        integration.setRefreshToken(encryptCredential(
+                integration, "refresh_token", token.getRefreshToken()));
         integration.setAccessTokenExpiresAt(Timestamp.from(Instant.ofEpochSecond(token.getExpiresAt())));
         integration.setScopes(scopes != null && !scopes.isBlank() ? scopes : token.getScope());
         integration.setConnectedAt(integration.getConnectedAt() != null ? integration.getConnectedAt() : Timestamp.from(now));
@@ -273,7 +281,7 @@ public class StravaIntegrationServiceImpl implements StravaIntegrationService {
         try {
             return objectMapper.readValue(raw, StravaActivitySummary.class);
         } catch (JsonProcessingException e) {
-            logger.warn("Could not read Strava snapshot JSON: {}", e.getMessage());
+            logger.warn("Could not read Strava snapshot JSON: {}", e.getClass().getSimpleName());
             return null;
         }
     }
@@ -284,6 +292,45 @@ public class StravaIntegrationServiceImpl implements StravaIntegrationService {
         } catch (JsonProcessingException e) {
             throw new ChallengeSphereException("Could not save Strava activity snapshot.", HttpStatus.INTERNAL_SERVER_ERROR, logger, e);
         }
+    }
+
+    private String encryptCredential(
+            UserIntegration integration,
+            String field,
+            String plaintext
+    ) {
+        return credentialCipher.encrypt(
+                integration.getUserId(),
+                integration.getProvider(),
+                field,
+                plaintext
+        );
+    }
+
+    private String decryptCredential(
+            UserIntegration integration,
+            String field,
+            String storedValue
+    ) {
+        if (storedValue == null || storedValue.isBlank()) {
+            throw new IllegalStateException("Stored integration credential is missing");
+        }
+        if (!credentialCipher.isEncrypted(storedValue)) {
+            String encrypted = encryptCredential(integration, field, storedValue);
+            if ("access_token".equals(field)) {
+                integration.setAccessToken(encrypted);
+            } else {
+                integration.setRefreshToken(encrypted);
+            }
+            repository.save(integration);
+            return storedValue;
+        }
+        return credentialCipher.decrypt(
+                integration.getUserId(),
+                integration.getProvider(),
+                field,
+                storedValue
+        );
     }
 
     private void requireConfigured() throws ChallengeSphereException {

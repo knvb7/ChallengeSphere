@@ -28,7 +28,6 @@ class RdsIamDataSourceConfig {
             @Value("${app.datasource.iam-auth.hostname}") String hostname,
             @Value("${app.datasource.iam-auth.port}") int port,
             @Value("${app.datasource.iam-auth.aws-profile:}") String awsProfile,
-            @Value("${app.datasource.iam-auth.access-keys-csv:}") String accessKeysCsv,
             @Value("${spring.datasource.hikari.pool-name:ChallengeSphereProdPool}") String poolName,
             @Value("${spring.datasource.hikari.maximum-pool-size:10}") int maximumPoolSize,
             @Value("${spring.datasource.hikari.minimum-idle:10}") int minimumIdle,
@@ -43,7 +42,7 @@ class RdsIamDataSourceConfig {
 
         IamAuthDataSource iamAuthDataSource = new IamAuthDataSource(
                 username,
-                new AwsRdsIamAuthTokenProvider(region, hostname, port, awsProfile, accessKeysCsv),
+                new AwsRdsIamAuthTokenProvider(region, hostname, port, awsProfile),
                 postgresDataSource::getConnection
         );
 

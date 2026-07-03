@@ -12,6 +12,7 @@ import org.aspectj.lang.reflect.MethodSignature;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Component;
+import org.springframework.web.servlet.HandlerMapping;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
@@ -20,7 +21,7 @@ import java.lang.reflect.Method;
 
 /**
  * AOP Aspect that logs every API call across all controllers.
- * Logs: HTTP method, URI, controller method, parameters, response status, and execution time.
+ * Logs only stable route metadata, response status, and execution time.
  */
 @Aspect
 @Component
@@ -60,28 +61,21 @@ public class ApiLoggingAspect {
 
         // Extract HTTP method and URI from the current request
         String httpMethod = "UNKNOWN";
-        String requestUri = "UNKNOWN";
-        String queryString = "";
-        String remoteAddr = "";
+        String routePattern = "UNKNOWN";
 
         ServletRequestAttributes attributes =
                 (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
         if (attributes != null) {
             HttpServletRequest request = attributes.getRequest();
             httpMethod = request.getMethod();
-            requestUri = request.getRequestURI();
-            queryString = request.getQueryString() != null ? "?" + request.getQueryString() : "";
-            remoteAddr = request.getRemoteAddr();
+            Object matchedPattern = request.getAttribute(HandlerMapping.BEST_MATCHING_PATTERN_ATTRIBUTE);
+            if (matchedPattern instanceof String pattern && !pattern.isBlank()) {
+                routePattern = pattern;
+            }
         }
 
-        // Extract parameter names and values
-        String[] paramNames = signature.getParameterNames();
-        Object[] paramValues = joinPoint.getArgs();
-        String params = formatParams(paramNames, paramValues);
-
-        // Log the incoming request
-        logger.info("▶ API CALLED  | {} {} {} | Controller: {}.{} | Params: [{}] | IP: {}",
-                httpMethod, requestUri, queryString, className, methodName, params, remoteAddr);
+        logger.info("API called | method={} route={} handler={}.{}",
+                httpMethod, routePattern, className, methodName);
 
         Object result;
         try {
@@ -94,8 +88,8 @@ public class ApiLoggingAspect {
                 status = String.valueOf(responseEntity.getStatusCode().value());
             }
 
-            logger.info("✔ API SUCCESS | {} {} | Controller: {}.{} | Status: {} | Duration: {} ms",
-                    httpMethod, requestUri, className, methodName, status, duration);
+            logger.info("API completed | method={} route={} handler={}.{} status={} durationMs={}",
+                    httpMethod, routePattern, className, methodName, status, duration);
 
             return result;
         } catch (Exception ex) {
@@ -105,49 +99,17 @@ public class ApiLoggingAspect {
                     ? baseException.getStatus()
                     : HttpStatus.INTERNAL_SERVER_ERROR;
             if (status.is5xxServerError()) {
-                logger.error("✘ API FAILED  | {} {} | Controller: {}.{} | Exception: {} - {} | Duration: {} ms",
-                        httpMethod, requestUri, className, methodName,
-                        ex.getClass().getSimpleName(), ex.getMessage(), duration);
+                logger.error("API failed | method={} route={} handler={}.{} status={} exception={} durationMs={}",
+                        httpMethod, routePattern, className, methodName, status.value(),
+                        ex.getClass().getSimpleName(), duration);
             } else {
-                logger.warn("API rejected | {} {} | Controller: {}.{} | Status: {} | Exception: {} - {} | Duration: {} ms",
-                        httpMethod, requestUri, className, methodName, status.value(),
-                        ex.getClass().getSimpleName(), ex.getMessage(), duration);
+                logger.warn("API rejected | method={} route={} handler={}.{} status={} exception={} durationMs={}",
+                        httpMethod, routePattern, className, methodName, status.value(),
+                        ex.getClass().getSimpleName(), duration);
             }
 
             throw ex;
         }
     }
 
-    /**
-     * Formats method parameter names and values for logging.
-     * Skips large or sensitive objects; shows primitives, strings, and numeric types directly.
-     */
-    private String formatParams(String[] names, Object[] values) {
-        if (names == null || names.length == 0) {
-            return "";
-        }
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < names.length; i++) {
-            if (i > 0) sb.append(", ");
-            sb.append(names[i]).append("=");
-            if (values[i] == null) {
-                sb.append("null");
-            } else if (isSimpleType(values[i])) {
-                sb.append(values[i]);
-            } else {
-                // For request bodies and complex objects, just log the class name to avoid dumping huge payloads
-                sb.append(values[i].getClass().getSimpleName()).append("{...}");
-            }
-        }
-        return sb.toString();
-    }
-
-    private boolean isSimpleType(Object obj) {
-        return obj instanceof String
-                || obj instanceof Number
-                || obj instanceof Boolean
-                || obj instanceof Enum
-                || obj.getClass().isPrimitive();
-    }
 }
-

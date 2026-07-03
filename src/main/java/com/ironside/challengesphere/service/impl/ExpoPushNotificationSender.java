@@ -38,7 +38,7 @@ public class ExpoPushNotificationSender implements PushNotificationSender {
                     .retrieve()
                     .toBodilessEntity();
         } catch (Exception e) {
-            logger.warn("Failed to send {} Expo push notification(s): {}", messages.size(), e.getMessage());
+            logger.warn("Failed to send {} Expo push notification(s): {}", messages.size(), e.getClass().getSimpleName());
         }
     }
 }

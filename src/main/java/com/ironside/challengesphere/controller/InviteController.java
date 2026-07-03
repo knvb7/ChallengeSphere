@@ -51,7 +51,7 @@ public class InviteController {
             @AuthenticationPrincipal UserPrincipal principal,
             @Valid @RequestBody RedeemInviteRequest request) throws ChallengeSphereException {
         request.setUserId(SecurityAccess.requireUserId(principal));
-        logger.info("POST /api/v1/invites/redeem - code: {}", request.getInviteCode());
+        logger.info("POST /api/v1/invites/redeem by user {}", request.getUserId());
         RedeemInviteResponse response = inviteService.redeemInvite(request);
         return ResponseEntity.ok(response);
     }
@@ -63,7 +63,7 @@ public class InviteController {
     @GetMapping("/{inviteCode}")
     public ResponseEntity<InviteLinkResponse> getInviteDetails(
             @PathVariable String inviteCode) throws ChallengeSphereException {
-        logger.info("GET /api/v1/invites/{}", inviteCode);
+        logger.debug("GET /api/v1/invites/{inviteCode}");
         InviteLinkResponse response = inviteService.getInviteDetails(inviteCode);
         return ResponseEntity.ok(response);
     }
@@ -74,9 +74,11 @@ public class InviteController {
      */
     @GetMapping("/challenge/{challengeId}")
     public ResponseEntity<ChallengeInvitesResponse> getInvitesForChallenge(
+            @AuthenticationPrincipal UserPrincipal principal,
             @PathVariable Long challengeId) throws ChallengeSphereException {
-        logger.info("GET /api/v1/invites/challenge/{}", challengeId);
-        ChallengeInvitesResponse response = inviteService.getInvitesForChallenge(challengeId);
+        Long userId = SecurityAccess.requireUserId(principal);
+        logger.info("GET /api/v1/invites/challenge/{} by user {}", challengeId, userId);
+        ChallengeInvitesResponse response = inviteService.getInvitesForChallenge(challengeId, userId);
         return ResponseEntity.ok(response);
     }
 

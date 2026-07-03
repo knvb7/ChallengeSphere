@@ -29,7 +29,7 @@ public interface UserService {
 
     long getTotalUserCount();
 
-    User updateUserDetails(UpdateUserRequest updateUserRequest) throws ChallengeSphereException;
+    User updateUserDetails(Long userId, UpdateUserRequest updateUserRequest) throws ChallengeSphereException;
 
     FollowActionResponse follow(Long followerId, Long followingId) throws ChallengeSphereException;
 

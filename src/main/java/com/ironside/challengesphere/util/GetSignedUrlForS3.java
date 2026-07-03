@@ -38,16 +38,17 @@ public class GetSignedUrlForS3 {
     @Value("${aws.credentials.profile:}")
     private String awsProfile;
 
-    @Value("${aws.credentials.access-keys-csv:}")
-    private String accessKeysCsv;
-
     private static volatile S3Presigner presigner;
     private static volatile S3Client s3Client;
 
     @PostConstruct
     public void storage() {
+        AwsCredentialsProvider credentialsProvider = AwsCredentialsProviderFactory.create(awsProfile);
+        storage(credentialsProvider);
+    }
+
+    void storage(AwsCredentialsProvider credentialsProvider) {
         Region region = Region.of(awsRegion);
-        AwsCredentialsProvider credentialsProvider = AwsCredentialsProviderFactory.create(awsProfile, accessKeysCsv);
         presigner = S3Presigner.builder()
                 .region(region)
                 .credentialsProvider(credentialsProvider)
@@ -90,7 +91,7 @@ public class GetSignedUrlForS3 {
                 .build();
 
         String signedUrl = presigner().presignPutObject(presignRequest).url().toString();
-        logger.info("Generated S3 PUT signed URL for object: {}", objectName);
+        logger.debug("Generated S3 PUT signed URL");
         return signedUrl;
     }
 
@@ -110,7 +111,7 @@ public class GetSignedUrlForS3 {
                 .build();
 
         String signedUrl = presigner().presignGetObject(presignRequest).url().toString();
-        logger.debug("Generated S3 GET signed URL for object: {}", objectName);
+        logger.debug("Generated S3 GET signed URL");
         return signedUrl;
     }
 
@@ -123,7 +124,7 @@ public class GetSignedUrlForS3 {
                     .build());
         } catch (S3Exception e) {
             if (e.statusCode() == 404) {
-                logger.warn("Skipping cache-control update; S3 object not found: {}", objectName);
+                logger.warn("Skipping cache-control update; S3 object not found");
                 return;
             }
             throw e;
@@ -144,7 +145,7 @@ public class GetSignedUrlForS3 {
         }
 
         s3Client().copyObject(copyRequest.build());
-        logger.debug("Updated cache-control for S3 object {} to {}", objectName, cacheControl);
+        logger.debug("Updated cache-control for S3 object");
     }
 
     public static void deleteObject(String bucketName, String objectName) {
@@ -153,10 +154,10 @@ public class GetSignedUrlForS3 {
                     .bucket(bucketName)
                     .key(objectName)
                     .build());
-            logger.info("Deleted S3 object: {}", objectName);
+            logger.debug("Deleted S3 object");
         } catch (S3Exception e) {
             if (e.statusCode() == 404) {
-                logger.warn("S3 object was not found for deletion: {}", objectName);
+                logger.warn("S3 object was not found for deletion");
                 return;
             }
             throw e;
@@ -171,7 +172,7 @@ public class GetSignedUrlForS3 {
                 .cacheControl("private, max-age=3600")
                 .build();
         s3Client().putObject(objectRequest, RequestBody.fromBytes(content));
-        logger.info("Uploaded object to S3: {}", objectName);
+        logger.debug("Uploaded object to S3");
     }
 
     private static long resolveExpiration(Long expirationTime) {

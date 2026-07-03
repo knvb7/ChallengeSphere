@@ -7,6 +7,7 @@ import com.ironside.challengesphere.model.User;
 import com.ironside.challengesphere.repository.ModerationFlagRepository;
 import com.ironside.challengesphere.repository.SubmissionRepository;
 import com.ironside.challengesphere.repository.UserRepository;
+import com.ironside.challengesphere.security.AuthTokenStore;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -42,6 +43,9 @@ public class AdminController {
     @Autowired
     private SubmissionRepository submissionRepository;
 
+    @Autowired
+    private AuthTokenStore authTokenStore;
+
     /**
      * Reactivate a user that was banned (by moderation or otherwise).
      * POST /api/v1/admin/users/{id}/reactivate
@@ -55,6 +59,7 @@ public class AdminController {
         user.setBannedAt(null);
         user.setBanReason(null);
         userRepository.save(user);
+        authTokenStore.revokeAllForUser(id);
         logger.info("Reactivated user {}", id);
         return ResponseEntity.ok(Map.of("userId", id, "active", true));
     }
@@ -104,6 +109,7 @@ public class AdminController {
                     u.setBannedAt(new Timestamp(System.currentTimeMillis()));
                     u.setBanReason("Moderation review: " + flag.getCategory() + " " + flag.getSeverity());
                     userRepository.save(u);
+                    authTokenStore.revokeAllForUser(u.getId());
                 }
             }
             default -> throw new ChallengeSphereException(

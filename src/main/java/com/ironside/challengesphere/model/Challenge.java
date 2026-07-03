@@ -48,6 +48,12 @@ public class Challenge {
     @Column(name = "creator_id", nullable = false)
     private Long creatorId;
 
+    @Transient
+    private String creatorUsername;
+
+    @Transient
+    private String creatorProfilePicUrl;
+
     @Column(name = "current_owner_id", nullable = false)
     private Long currentOwnerId;
 

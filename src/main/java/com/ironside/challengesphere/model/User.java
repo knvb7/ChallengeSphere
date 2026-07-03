@@ -2,6 +2,7 @@ package com.ironside.challengesphere.model;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.ironside.challengesphere.util.UserGender;
 import com.ironside.challengesphere.util.UserRole;
 import jakarta.persistence.*;
 import lombok.Getter;
@@ -85,6 +86,10 @@ public class User {
 
     @Column(name = "age")
     private Integer age;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "gender", length = 32)
+    private UserGender gender;
 
     @Convert(converter = StringListConverter.class)
     @Column(name = "interests")

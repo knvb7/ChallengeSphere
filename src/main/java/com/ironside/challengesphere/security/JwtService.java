@@ -34,15 +34,18 @@ public class JwtService {
     private long refreshTokenExpiryMs;
 
     private final Environment environment;
+    private final JwtSigningSecretProvider signingSecretProvider;
     private Key signingKey;
 
     @Autowired
-    public JwtService(Environment environment) {
+    public JwtService(Environment environment, JwtSigningSecretProvider signingSecretProvider) {
         this.environment = environment;
+        this.signingSecretProvider = signingSecretProvider;
     }
 
     public JwtService() {
         this.environment = null;
+        this.signingSecretProvider = null;
     }
 
     @PostConstruct
@@ -134,18 +137,22 @@ public class JwtService {
     }
 
     private Key createSigningKey() {
-        if (!StringUtils.hasText(jwtSecret)) {
+        String configuredSecret = jwtSecret;
+        if (!StringUtils.hasText(configuredSecret) && signingSecretProvider != null) {
+            configuredSecret = signingSecretProvider.get();
+        }
+        if (!StringUtils.hasText(configuredSecret)) {
             throw new IllegalStateException("jwt.secret must be configured");
         }
-        if (isProdProfile() && LOCAL_DEV_FALLBACK_SECRET.equals(jwtSecret)) {
+        if (isProdProfile() && LOCAL_DEV_FALLBACK_SECRET.equals(configuredSecret)) {
             throw new IllegalStateException("Production jwt.secret must not use the local development fallback");
         }
 
         byte[] keyBytes;
         try {
-            keyBytes = Decoders.BASE64.decode(jwtSecret);
+            keyBytes = Decoders.BASE64.decode(configuredSecret);
         } catch (Exception ignored) {
-            keyBytes = jwtSecret.getBytes(StandardCharsets.UTF_8);
+            keyBytes = configuredSecret.getBytes(StandardCharsets.UTF_8);
         }
 
         if (keyBytes.length < 32) {

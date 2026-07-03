@@ -7,6 +7,7 @@ import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.core.userdetails.UserDetails;
+import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.security.web.authentication.WebAuthenticationDetailsSource;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
@@ -34,20 +35,32 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             throws ServletException, IOException {
         String token = extractToken(request);
 
-        if (StringUtils.hasText(token) && jwtService.isValidAccessToken(token)) {
-            Long userId = jwtService.extractUserId(token);
-            if (userId != null
-                    && authTokenStore.exists(token, "access", userId)
-                    && SecurityContextHolder.getContext().getAuthentication() == null) {
-                UserDetails userDetails = userDetailsService.loadUserById(userId);
-                UsernamePasswordAuthenticationToken authentication = new UsernamePasswordAuthenticationToken(
-                        userDetails,
-                        null,
-                        userDetails.getAuthorities()
-                );
-                authentication.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
-                SecurityContextHolder.getContext().setAuthentication(authentication);
+        try {
+            if (StringUtils.hasText(token) && jwtService.isValidAccessToken(token)) {
+                Long userId = jwtService.extractUserId(token);
+                if (userId != null
+                        && authTokenStore.exists(token, "access", userId)
+                        && SecurityContextHolder.getContext().getAuthentication() == null) {
+                    UserDetails userDetails = userDetailsService.loadUserById(userId);
+                    if (!userDetails.isEnabled()
+                            || !userDetails.isAccountNonLocked()
+                            || !userDetails.isAccountNonExpired()
+                            || !userDetails.isCredentialsNonExpired()) {
+                        authTokenStore.revokeAllForUser(userId);
+                    } else {
+                        UsernamePasswordAuthenticationToken authentication = new UsernamePasswordAuthenticationToken(
+                                userDetails,
+                                null,
+                                userDetails.getAuthorities()
+                        );
+                        authentication.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
+                        SecurityContextHolder.getContext().setAuthentication(authentication);
+                    }
+                }
             }
+        } catch (UsernameNotFoundException ignored) {
+            Long userId = safeExtractUserId(token);
+            authTokenStore.revokeAllForUser(userId);
         }
 
         filterChain.doFilter(request, response);
@@ -59,5 +72,13 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             return authHeader.substring(7).trim();
         }
         return null;
+    }
+
+    private Long safeExtractUserId(String token) {
+        try {
+            return jwtService.extractUserId(token);
+        } catch (Exception ignored) {
+            return null;
+        }
     }
 }

@@ -31,7 +31,7 @@ public class UserPrincipal implements UserDetails {
                 user.getId(),
                 user.getUsername(),
                 user.getHashedPassword(),
-                Boolean.TRUE.equals(user.getActive()),
+                Boolean.TRUE.equals(user.getActive()) && user.getBannedAt() == null,
                 user.getRole()
         );
     }

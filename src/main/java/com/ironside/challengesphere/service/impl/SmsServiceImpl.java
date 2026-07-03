@@ -47,9 +47,9 @@ public class SmsServiceImpl implements SmsService {
         try {
             Twilio.init(accountSid, authToken);
             initialized = true;
-            logger.info("Twilio client initialized for Verify service {}", verifyServiceSid);
+            logger.info("Twilio Verify client initialized");
         } catch (Exception e) {
-            logger.error("Failed to initialize Twilio client: {}", e.getMessage());
+            logger.error("Failed to initialize Twilio client");
         }
     }
 
@@ -59,10 +59,10 @@ public class SmsServiceImpl implements SmsService {
         String normalized = normalize(phoneE164);
         try {
             Verification verification = Verification.creator(verifyServiceSid, normalized, "sms").create();
-            logger.info("Sent OTP to {} (sid={}, status={})", normalized, verification.getSid(), verification.getStatus());
+            logger.info("OTP dispatch accepted with status={}", verification.getStatus());
             return verification.getSid();
         } catch (ApiException e) {
-            logger.error("Twilio send OTP failed for {}: {}", normalized, e.getMessage());
+            logger.error("Twilio OTP dispatch failed");
             throw new ChallengeSphereException("Failed to send verification code: " + e.getMessage(),
                     HttpStatus.BAD_GATEWAY, logger, e);
         }
@@ -80,10 +80,10 @@ public class SmsServiceImpl implements SmsService {
                     .setTo(normalized)
                     .setCode(code)
                     .create();
-            logger.info("Verify check for {} returned status={}", normalized, check.getStatus());
+            logger.info("OTP verification returned status={}", check.getStatus());
             return "approved".equalsIgnoreCase(check.getStatus());
         } catch (ApiException e) {
-            logger.error("Twilio verify OTP failed for {}: {}", normalized, e.getMessage());
+            logger.error("Twilio OTP verification failed");
             throw new ChallengeSphereException("Failed to verify code: " + e.getMessage(),
                     HttpStatus.BAD_GATEWAY, logger, e);
         }

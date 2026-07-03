@@ -237,7 +237,7 @@ public class NotificationServiceImpl implements NotificationService {
             logger.info("Created {} challenge invite notification(s) for challengeId={}", toSave.size(), challenge.getId());
         } catch (Exception e) {
             logger.warn("Failed to create challenge invite notifications for challengeId={}: {}",
-                    challenge == null ? null : challenge.getId(), e.getMessage());
+                    challenge == null ? null : challenge.getId(), e.getClass().getSimpleName());
         }
     }
 
@@ -317,7 +317,7 @@ public class NotificationServiceImpl implements NotificationService {
         try {
             notifyComment(submission, actorUserId, commentId);
         } catch (Exception e) {
-            logger.warn("Failed to create comment notification for commentId={}: {}", commentId, e.getMessage());
+            logger.warn("Failed to create comment notification for commentId={}: {}", commentId, e.getClass().getSimpleName());
         }
     }
 
@@ -481,7 +481,7 @@ public class NotificationServiceImpl implements NotificationService {
         try {
             return objectMapper.writeValueAsString(data);
         } catch (JsonProcessingException e) {
-            logger.warn("Failed to serialize notification action object: {}", e.getMessage());
+            logger.warn("Failed to serialize notification action object: {}", e.getClass().getSimpleName());
             return "{}";
         }
     }

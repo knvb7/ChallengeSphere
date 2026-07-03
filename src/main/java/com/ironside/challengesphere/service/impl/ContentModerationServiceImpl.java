@@ -41,9 +41,6 @@ public class ContentModerationServiceImpl implements ContentModerationService {
     @Value("${aws.credentials.profile:}")
     private String awsProfile;
 
-    @Value("${aws.credentials.access-keys-csv:}")
-    private String accessKeysCsv;
-
     @Value("${aws.rekognition.min-confidence:70}")
     private Float minConfidence;
 
@@ -60,11 +57,11 @@ public class ContentModerationServiceImpl implements ContentModerationService {
         try {
             this.client = RekognitionClient.builder()
                     .region(Region.of(awsRegion))
-                    .credentialsProvider(AwsCredentialsProviderFactory.create(awsProfile, accessKeysCsv))
+                    .credentialsProvider(AwsCredentialsProviderFactory.create(awsProfile))
                     .build();
             logger.info("Rekognition moderation client initialized for region {}", awsRegion);
         } catch (Exception e) {
-            logger.error("Failed to initialize Rekognition moderation client; moderation will no-op until fixed", e);
+            logger.error("Failed to initialize Rekognition moderation client; moderation will no-op until fixed");
         }
     }
 
@@ -110,13 +107,13 @@ public class ContentModerationServiceImpl implements ContentModerationService {
                 continue;
             }
             if (!isImage(url)) {
-                logger.debug("Skipping non-image URL from moderation: {}", url);
+                logger.debug("Skipping non-image media item during moderation");
                 continue;
             }
 
             String objectName = toS3ObjectName(url);
             if (objectName == null || objectName.isBlank()) {
-                logger.warn("Skipping moderation for unrecognized S3 media URL: {}", url);
+                logger.warn("Skipping moderation for an unrecognized S3 media location");
                 if (strict) {
                     throw new IllegalArgumentException("Unrecognized S3 media URL: " + url);
                 }
@@ -135,7 +132,7 @@ public class ContentModerationServiceImpl implements ContentModerationService {
                         .minConfidence(minConfidence)
                         .build());
             } catch (Exception e) {
-                logger.error("Rekognition moderation call failed; allowing submission through", e);
+                logger.error("Rekognition moderation call failed; allowing submission through");
                 if (strict) {
                     throw new IllegalStateException("Rekognition moderation call failed", e);
                 }
@@ -201,7 +198,7 @@ public class ContentModerationServiceImpl implements ContentModerationService {
 
             return objectPath == null ? null : URLDecoder.decode(objectPath, StandardCharsets.UTF_8);
         } catch (Exception e) {
-            logger.debug("Could not parse media URL as S3 object: {}", url);
+            logger.debug("Could not parse moderation media location as an S3 object");
             return null;
         }
     }

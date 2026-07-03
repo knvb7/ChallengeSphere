@@ -46,6 +46,8 @@ public class RecentChallengesResponse {
         private Boolean active;
         private Timestamp createdAt;
         private Long creatorId;
+        private String creatorUsername;
+        private String creatorProfilePicUrl;
         private Long currentOwnerId;
         private Integer numberOfDays;
         private String challengeMode;
@@ -67,6 +69,8 @@ public class RecentChallengesResponse {
                     .active(challenge.getActive())
                     .createdAt(challenge.getCreatedAt())
                     .creatorId(challenge.getCreatorId())
+                    .creatorUsername(challenge.getCreatorUsername())
+                    .creatorProfilePicUrl(challenge.getCreatorProfilePicUrl())
                     .currentOwnerId(challenge.getCurrentOwnerId())
                     .numberOfDays(challenge.getNumberOfDays())
                     .challengeMode(challenge.getChallengeMode())

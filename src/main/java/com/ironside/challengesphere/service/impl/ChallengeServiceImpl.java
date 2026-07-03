@@ -42,6 +42,7 @@ import com.ironside.challengesphere.api.response.PopularChallengesResponse;
 import com.ironside.challengesphere.api.response.PresignedUrlsResponse;
 import com.ironside.challengesphere.api.response.RecentChallengesResponse;
 import com.ironside.challengesphere.api.response.UserChallengesResponse;
+import com.ironside.challengesphere.config.ChallengeParticipationProperties;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.model.Challenge;
 import com.ironside.challengesphere.model.Submission;
@@ -70,6 +71,9 @@ public class ChallengeServiceImpl implements ChallengeService {
 
     @Autowired
     private UserChallengeRepository userChallengeRepository;
+
+    @Autowired
+    private ChallengeParticipationProperties challengeParticipationProperties;
 
     @Autowired
     private SubmissionRepository submissionRepository;
@@ -110,7 +114,7 @@ public class ChallengeServiceImpl implements ChallengeService {
 
             return challenge.map(this::withReadableCoverPhotoUrls);
         } catch (Exception e) {
-            logger.error("Error fetching challenge by id {}: {}", challengeId, e.getMessage(), e);
+            logger.error("Error fetching challenge by id {}: {}", challengeId, e.getClass().getSimpleName());
             throw new ChallengeSphereException(
                     "Failed to fetch challenge",
                     HttpStatus.INTERNAL_SERVER_ERROR,
@@ -137,7 +141,9 @@ public class ChallengeServiceImpl implements ChallengeService {
             Optional<UserChallengesResponse> cached = cacheService.getCachedUserChallenges(userId, page, pageSize, activeFilter, UserChallengesResponse.class);
             if (cached.isPresent()) {
                 logger.info("Cache hit for user challenges: userId={}, page={}", userId, page);
-                return cached.get();
+                UserChallengesResponse cachedResponse = cached.get();
+                cachedResponse.setChallenges(withReadableCoverPhotoUrls(cachedResponse.getChallenges()));
+                return cachedResponse;
             }
             logger.debug("Cache miss for user challenges: userId={}, fetching from DB", userId);
 
@@ -189,7 +195,7 @@ public class ChallengeServiceImpl implements ChallengeService {
         } catch (ChallengeSphereException e) {
             throw e;
         } catch (Exception e) {
-            logger.error("Error getting challenges for userId: {}: {}", userId, e.getMessage(), e);
+            logger.error("Error getting challenges for userId: {}: {}", userId, e.getClass().getSimpleName());
             throw new ChallengeSphereException(
                     "Failed to get user challenges",
                     HttpStatus.INTERNAL_SERVER_ERROR,
@@ -214,18 +220,17 @@ public class ChallengeServiceImpl implements ChallengeService {
             List<Challenge> paginatedChallenges = publicChallenges.stream()
                     .skip(offset)
                     .limit(normalizedPageSize)
-                    .map(this::withReadableCoverPhotoUrls)
                     .toList();
 
             return UserChallengesResponse.create(
                     creatorId,
-                    paginatedChallenges,
+                    withReadableCoverPhotoUrls(paginatedChallenges),
                     normalizedPage,
                     normalizedPageSize,
                     totalCount
             );
         } catch (Exception e) {
-            logger.error("Error getting public challenges for creatorId {}: {}", creatorId, e.getMessage(), e);
+            logger.error("Error getting public challenges for creatorId {}: {}", creatorId, e.getClass().getSimpleName());
             throw new ChallengeSphereException(
                     "Failed to get public creator challenges",
                     HttpStatus.INTERNAL_SERVER_ERROR,
@@ -237,7 +242,7 @@ public class ChallengeServiceImpl implements ChallengeService {
     @Override
     @Transactional
     public ChallengeCreateResponse createChallenge(ChallengeCreateRequest request) throws ChallengeSphereException {
-        logger.info("Creating challenge with title: {} for creator userId: {}", request.getTitle(), request.getCreatorUserId());
+        logger.info("Creating challenge for creator userId={}", request.getCreatorUserId());
 
         try {
             // Validate that the creator user exists
@@ -322,7 +327,7 @@ public class ChallengeServiceImpl implements ChallengeService {
         } catch (ChallengeSphereException e) {
             throw e;
         } catch (Exception e) {
-            logger.error("Error creating challenge for creator userId: {}: {}", request.getCreatorUserId(), e.getMessage(), e);
+            logger.error("Error creating challenge for creator userId: {}: {}", request.getCreatorUserId(), e.getClass().getSimpleName());
             throw new ChallengeSphereException(
                     "Failed to create challenge",
                     HttpStatus.INTERNAL_SERVER_ERROR,
@@ -361,7 +366,7 @@ public class ChallengeServiceImpl implements ChallengeService {
             userRepository.increaseChallengeCreatedCountForAUser(userId);
             logger.info("Updated challengesCreated count for userId: {}", userId);
         } catch (Exception e) {
-            logger.error("Error updating challengesCreated count for user {}: {}", userId, e.getMessage(), e);
+            logger.error("Error updating challengesCreated count for user {}: {}", userId, e.getClass().getSimpleName());
         }
     }
 
@@ -373,7 +378,7 @@ public class ChallengeServiceImpl implements ChallengeService {
             userRepository.increaseChallengeAcceptedCountForAUser(userId);
             logger.info("Updated challengesAccepted count for userId: {}", userId);
         } catch (Exception e) {
-            logger.error("Error updating challengesAccepted count for user {}: {}", userId, e.getMessage(), e);
+            logger.error("Error updating challengesAccepted count for user {}: {}", userId, e.getClass().getSimpleName());
         }
     }
 
@@ -415,7 +420,7 @@ public class ChallengeServiceImpl implements ChallengeService {
                     result.size());
             return withReadableCoverPhotoUrls(result);
         } catch (Exception e) {
-            logger.error("Error fetching challenges by ids {}: {}", challengeIds, e.getMessage(), e);
+            logger.error("Error fetching challenges by ids {}: {}", challengeIds, e.getClass().getSimpleName());
             throw new ChallengeSphereException(
                     "Failed to fetch challenges by ids",
                     HttpStatus.INTERNAL_SERVER_ERROR,
@@ -463,7 +468,7 @@ public class ChallengeServiceImpl implements ChallengeService {
 
             logger.info("Deleted {} challenges and invalidated caches", challenges.size());
         } catch (Exception e) {
-            logger.error("Error during bulk update for challenges {}: {}", challengeIds, e.getMessage(), e);
+            logger.error("Error during bulk update for challenges {}: {}", challengeIds, e.getClass().getSimpleName());
             throw new RuntimeException("Failed to perform bulk update on challenges", e);
         }
     }
@@ -506,7 +511,7 @@ public class ChallengeServiceImpl implements ChallengeService {
             logger.info("Disabled {} challenges for {} users and invalidated caches", challenges.size(), userIds.size());
 
         } catch (Exception e) {
-            logger.error("Error disabling challenges for userIds {}.", userIds, e);
+            logger.error("Error disabling challenges for userIds {}.", userIds);
             throw new ChallengeSphereException(
                     "Failed to disable challenges for users",
                     HttpStatus.INTERNAL_SERVER_ERROR,
@@ -585,6 +590,26 @@ public class ChallengeServiceImpl implements ChallengeService {
                     .filter(userId -> !alreadyJoinedUserIds.contains(userId))
                     .collect(Collectors.toList());
 
+            for (Long userId : successfulUserIds.stream().sorted().toList()) {
+                userRepository.findByIdForUpdate(userId)
+                        .orElseThrow(() -> new ChallengeSphereException(
+                                "User not found with id: " + userId,
+                                HttpStatus.NOT_FOUND,
+                                logger
+                        ));
+                long activeParticipations =
+                        userChallengeRepository.countSlotConsumingParticipations(userId);
+                int limit = challengeParticipationProperties.getMaxActiveParticipations();
+                if (activeParticipations >= limit) {
+                    throw new ChallengeSphereException(
+                            "You can participate in at most " + limit
+                                    + " active challenges at a time. Complete or leave a challenge before joining another.",
+                            HttpStatus.CONFLICT,
+                            logger
+                    );
+                }
+            }
+
             // Determine failed users (non-existent + already joined)
             List<Long> failedUserIds = new ArrayList<>();
             failedUserIds.addAll(nonExistentUserIds);
@@ -631,7 +656,7 @@ public class ChallengeServiceImpl implements ChallengeService {
         } catch (ChallengeSphereException e) {
             throw e;
         } catch (Exception e) {
-            logger.error("Error processing join request for challenge {}: {}", challengeId, e.getMessage(), e);
+            logger.error("Error processing join request for challenge {}: {}", challengeId, e.getClass().getSimpleName());
             throw new ChallengeSphereException(
                     "Failed to join challenge",
                     HttpStatus.INTERNAL_SERVER_ERROR,
@@ -714,7 +739,7 @@ public class ChallengeServiceImpl implements ChallengeService {
         } catch (ChallengeSphereException e) {
             throw e;
         } catch (Exception e) {
-            logger.error("Error processing leave request for challenge {}: {}", challengeId, e.getMessage(), e);
+            logger.error("Error processing leave request for challenge {}: {}", challengeId, e.getClass().getSimpleName());
             throw new ChallengeSphereException(
                     "Failed to leave challenge",
                     HttpStatus.INTERNAL_SERVER_ERROR,
@@ -772,7 +797,7 @@ public class ChallengeServiceImpl implements ChallengeService {
         } catch (ChallengeSphereException e) {
             throw e;
         } catch (Exception e) {
-            logger.error("Error fetching participants for challenge {}: {}", challengeId, e.getMessage(), e);
+            logger.error("Error fetching participants for challenge {}: {}", challengeId, e.getClass().getSimpleName());
             throw new ChallengeSphereException(
                     "Failed to fetch challenge participants",
                     HttpStatus.INTERNAL_SERVER_ERROR,
@@ -814,8 +839,8 @@ public class ChallengeServiceImpl implements ChallengeService {
         int page = request.getPage();
         int pageSize = request.getPageSize();
 
-        logger.info("Getting challenges by hashtags: {}, currentUserId: {}, page: {}, pageSize: {}",
-                hashtags, currentUserId, page, pageSize);
+        logger.info("Getting challenges by hashtag filter for userId={}, page={}, pageSize={}",
+                currentUserId, page, pageSize);
 
         try {
             if (currentUserId == null || !userRepository.existsById(currentUserId)) {
@@ -834,7 +859,7 @@ public class ChallengeServiceImpl implements ChallengeService {
                     .toList();
 
             if (matchingChallenges.isEmpty()) {
-                logger.info("No active challenges found for hashtags: {}", hashtags);
+                logger.info("No active challenges found for hashtag filter");
                 return ChallengesByHashtagResponse.create(hashtags, new ArrayList<>(), page, pageSize, 0);
             }
 
@@ -851,7 +876,8 @@ public class ChallengeServiceImpl implements ChallengeService {
                     .collect(Collectors.groupingBy(UserChallenge::getChallengeId, Collectors.counting()));
 
             // Create challenge with participant count objects and sort by count (descending)
-            List<ChallengesByHashtagResponse.ChallengeWithParticipantCount> challengeWithCounts = matchingChallenges.stream()
+            List<ChallengesByHashtagResponse.ChallengeWithParticipantCount> challengeWithCounts =
+                    withReadableCoverPhotoUrls(matchingChallenges).stream()
                     .map(challenge -> new ChallengesByHashtagResponse.ChallengeWithParticipantCount(
                             challenge,
                             participantCountMap.getOrDefault(challenge.getId(), 0L).intValue()
@@ -866,19 +892,16 @@ public class ChallengeServiceImpl implements ChallengeService {
                     .skip(offset)
                     .limit(pageSize)
                     .collect(Collectors.toList());
-            paginatedChallenges.forEach(challenge ->
-                    challenge.setCoverPhotoUrls(toReadableCoverPhotoUrls(challenge.getCoverPhotoUrls()))
-            );
 
-            logger.info("Found {} challenges for hashtags '{}' (showing page {}/{})",
-                    totalCount, hashtags, page, (int) Math.ceil((double) totalCount / pageSize));
+            logger.info("Found {} challenges for hashtag filter (showing page {}/{})",
+                    totalCount, page, (int) Math.ceil((double) totalCount / pageSize));
 
             ChallengesByHashtagResponse response = ChallengesByHashtagResponse.create(hashtags, paginatedChallenges, page, pageSize, totalCount);
 
             return response;
 
         } catch (Exception e) {
-            logger.error("Error fetching challenges by hashtags {}: {}", hashtags, e.getMessage(), e);
+            logger.error("Hashtag challenge lookup failed | exception={}", e.getClass().getSimpleName());
             throw new ChallengeSphereException(
                     "Failed to fetch challenges by hashtag",
                     HttpStatus.INTERNAL_SERVER_ERROR,
@@ -951,7 +974,8 @@ public class ChallengeServiceImpl implements ChallengeService {
                     .collect(Collectors.groupingBy(UserChallenge::getChallengeId, Collectors.counting()));
 
             // Create challenge with participant count objects and sort by count (descending)
-            List<PopularChallengesResponse.ChallengeWithParticipantCount> challengeWithCounts = publicChallenges.stream()
+            List<PopularChallengesResponse.ChallengeWithParticipantCount> challengeWithCounts =
+                    withReadableCoverPhotoUrls(publicChallenges).stream()
                     .map(challenge -> new PopularChallengesResponse.ChallengeWithParticipantCount(
                             challenge,
                             participantCountMap.getOrDefault(challenge.getId(), 0L).intValue()
@@ -966,9 +990,6 @@ public class ChallengeServiceImpl implements ChallengeService {
                     .skip(offset)
                     .limit(pageSize)
                     .collect(Collectors.toList());
-            paginatedChallenges.forEach(challenge ->
-                    challenge.setCoverPhotoUrls(toReadableCoverPhotoUrls(challenge.getCoverPhotoUrls()))
-            );
 
             logger.info("Found {} public challenges matching criteria (showing page {}/{})",
                     totalCount, page, (int) Math.ceil((double) totalCount / pageSize));
@@ -978,7 +999,7 @@ public class ChallengeServiceImpl implements ChallengeService {
             return response;
 
         } catch (Exception e) {
-            logger.error("Error fetching popular challenges: {}", e.getMessage(), e);
+            logger.error("Error fetching popular challenges: {}", e.getClass().getSimpleName());
             throw new ChallengeSphereException(
                     "Failed to fetch popular challenges",
                     HttpStatus.INTERNAL_SERVER_ERROR,
@@ -1040,11 +1061,12 @@ public class ChallengeServiceImpl implements ChallengeService {
 
             // Convert to response with engagement metrics
             final Map<Long, Long> finalParticipantMap = participantCountMap;
-            List<RecentChallengesResponse.ChallengeInfo> challengeInfos = challenges.stream()
+            List<RecentChallengesResponse.ChallengeInfo> challengeInfos =
+                    withReadableCoverPhotoUrls(challenges).stream()
                     .map(challenge -> {
                         int participantCount = finalParticipantMap.getOrDefault(challenge.getId(), 0L).intValue();
                         return RecentChallengesResponse.ChallengeInfo.fromChallenge(
-                                withReadableCoverPhotoUrls(challenge), 0, 0, participantCount);
+                                challenge, 0, 0, participantCount);
                     })
                     .toList();
 
@@ -1054,7 +1076,7 @@ public class ChallengeServiceImpl implements ChallengeService {
             return response;
 
         } catch (Exception e) {
-            logger.error("Error fetching recent challenges: {}", e.getMessage(), e);
+            logger.error("Error fetching recent challenges: {}", e.getClass().getSimpleName());
             throw new ChallengeSphereException(
                     "Failed to fetch recent challenges",
                     HttpStatus.INTERNAL_SERVER_ERROR,
@@ -1167,7 +1189,7 @@ public class ChallengeServiceImpl implements ChallengeService {
         } catch (ChallengeSphereException e) {
             throw e;
         } catch (Exception e) {
-            logger.error("Error fetching challenge detail for id {}: {}", challengeId, e.getMessage(), e);
+            logger.error("Error fetching challenge detail for id {}: {}", challengeId, e.getClass().getSimpleName());
             throw new ChallengeSphereException("Failed to fetch challenge detail", HttpStatus.INTERNAL_SERVER_ERROR, logger);
         }
     }
@@ -1225,7 +1247,7 @@ public class ChallengeServiceImpl implements ChallengeService {
         } catch (ChallengeSphereException e) {
             throw e;
         } catch (Exception e) {
-            logger.error("Error fetching progress: challengeId={}, userId={}: {}", challengeId, userId, e.getMessage(), e);
+            logger.error("Error fetching progress: challengeId={}, userId={}: {}", challengeId, userId, e.getClass().getSimpleName());
             throw new ChallengeSphereException("Failed to fetch challenge progress", HttpStatus.INTERNAL_SERVER_ERROR, logger);
         }
     }
@@ -1259,7 +1281,9 @@ public class ChallengeServiceImpl implements ChallengeService {
                     .toList();
 
             List<Long> challengeIds = paginatedUserChallenges.stream().map(UserChallenge::getChallengeId).toList();
-            Map<Long, Challenge> challengeMap = challengeRepository.findAllById(challengeIds)
+            Map<Long, Challenge> challengeMap = withReadableCoverPhotoUrls(
+                    challengeRepository.findAllById(challengeIds)
+            )
                     .stream().collect(Collectors.toMap(Challenge::getId, c -> c));
 
             List<MyChallengesResponse.ChallengeSummary> summaries = new ArrayList<>();
@@ -1277,7 +1301,7 @@ public class ChallengeServiceImpl implements ChallengeService {
                 int completionPct = totalDays > 0 ? (int) Math.round((daysCompleted * 100.0) / totalDays) : 0;
 
                 MyChallengesResponse.ChallengeSummary summary = MyChallengesResponse.ChallengeSummary.from(
-                        withReadableCoverPhotoUrls(c)
+                        c
                 );
                 summary.setDaysCompleted(daysCompleted);
                 summary.setCurrentStreak(computeCurrentStreak(submittedDays));
@@ -1291,7 +1315,7 @@ public class ChallengeServiceImpl implements ChallengeService {
         } catch (ChallengeSphereException e) {
             throw e;
         } catch (Exception e) {
-            logger.error("Error fetching my challenges for userId={}: {}", userId, e.getMessage(), e);
+            logger.error("Error fetching my challenges for userId={}: {}", userId, e.getClass().getSimpleName());
             throw new ChallengeSphereException("Failed to fetch my challenges", HttpStatus.INTERNAL_SERVER_ERROR, logger);
         }
     }
@@ -1326,7 +1350,7 @@ public class ChallengeServiceImpl implements ChallengeService {
         } catch (ChallengeSphereException e) {
             throw e;
         } catch (Exception e) {
-            logger.error("Error generating challenge presigned URLs for userId={}: {}", request.getUserId(), e.getMessage(), e);
+            logger.error("Error generating challenge presigned URLs for userId={}: {}", request.getUserId(), e.getClass().getSimpleName());
             throw new ChallengeSphereException("Failed to generate presigned URLs", HttpStatus.INTERNAL_SERVER_ERROR, logger);
         }
     }
@@ -1387,8 +1411,19 @@ public class ChallengeServiceImpl implements ChallengeService {
         if (challenges == null || challenges.isEmpty()) {
             return List.of();
         }
+
+        Set<Long> creatorIds = challenges.stream()
+                .map(Challenge::getCreatorId)
+                .filter(java.util.Objects::nonNull)
+                .collect(Collectors.toSet());
+        Map<Long, User> creatorsById = userRepository.findAllById(creatorIds).stream()
+                .collect(Collectors.toMap(User::getId, creator -> creator));
+
         return challenges.stream()
-                .map(this::withReadableCoverPhotoUrls)
+                .map(challenge -> withReadableChallengeMedia(
+                        challenge,
+                        creatorsById.get(challenge.getCreatorId())
+                ))
                 .toList();
     }
 
@@ -1397,6 +1432,13 @@ public class ChallengeServiceImpl implements ChallengeService {
             return null;
         }
 
+        User creator = challenge.getCreatorId() == null
+                ? null
+                : userRepository.findById(challenge.getCreatorId()).orElse(null);
+        return withReadableChallengeMedia(challenge, creator);
+    }
+
+    private Challenge withReadableChallengeMedia(Challenge challenge, User creator) {
         Challenge copy = new Challenge();
         copy.setId(challenge.getId());
         copy.setHashtags(challenge.getHashtags());
@@ -1409,11 +1451,30 @@ public class ChallengeServiceImpl implements ChallengeService {
         copy.setActive(challenge.getActive());
         copy.setCreatedAt(challenge.getCreatedAt());
         copy.setCreatorId(challenge.getCreatorId());
+        copy.setCreatorUsername(
+                creator == null ? challenge.getCreatorUsername() : creator.getUsername()
+        );
+        copy.setCreatorProfilePicUrl(toReadableProfilePicUrl(
+                creator == null ? challenge.getCreatorProfilePicUrl() : creator.getProfilePicUrl()
+        ));
         copy.setCurrentOwnerId(challenge.getCurrentOwnerId());
         copy.setNumberOfDays(challenge.getNumberOfDays());
         copy.setChallengeMode(challenge.getChallengeMode());
         copy.setCoverPhotoUrls(toReadableCoverPhotoUrls(challenge.getCoverPhotoUrls()));
         return copy;
+    }
+
+    private String toReadableProfilePicUrl(String profilePicUrl) {
+        if (profilePicUrl == null || profilePicUrl.isBlank() || mediaUrlService == null) {
+            return profilePicUrl;
+        }
+
+        try {
+            return mediaUrlService.toReadableMediaUrl(profilePicUrl);
+        } catch (Exception e) {
+            logger.warn("Failed to prepare readable creator profile photo URL: {}", e.getClass().getSimpleName());
+            return profilePicUrl;
+        }
     }
 
     private String toReadableCoverPhotoUrls(String rawCoverPhotoUrls) {
@@ -1427,7 +1488,7 @@ public class ChallengeServiceImpl implements ChallengeService {
         try {
             return mediaUrlService.toReadableMediaUrls(rawCoverPhotoUrls);
         } catch (Exception e) {
-            logger.warn("Failed to prepare readable challenge cover URL(s): {}", e.getMessage());
+            logger.warn("Failed to prepare readable challenge cover URL(s): {}", e.getClass().getSimpleName());
             return rawCoverPhotoUrls;
         }
     }
@@ -1589,7 +1650,7 @@ public class ChallengeServiceImpl implements ChallengeService {
                 notificationService.notifyChallengeJoined(challenge, joinedUserId, recipientUserIds);
             } catch (Exception e) {
                 logger.warn("Failed to notify challenge owner(s) for challengeId={} joinedUserId={}: {}",
-                        challenge.getId(), joinedUserId, e.getMessage());
+                        challenge.getId(), joinedUserId, e.getClass().getSimpleName());
             }
         }
     }

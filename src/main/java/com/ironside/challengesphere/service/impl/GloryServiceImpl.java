@@ -127,7 +127,7 @@ public class GloryServiceImpl implements GloryService {
                 notificationService.notifyGlory(submission, userId);
             } catch (Exception e) {
                 logger.warn("Failed to create glory notification for submissionId={}, userId={}: {}",
-                        submissionId, userId, e.getMessage());
+                        submissionId, userId, e.getClass().getSimpleName());
             }
         }
 
@@ -255,7 +255,7 @@ public class GloryServiceImpl implements GloryService {
             cacheService.invalidateGloryCaches(submission.getId());
             cacheService.invalidateAllFeeds();
         } catch (Exception e) {
-            logger.warn("Failed to invalidate interaction caches for submission {}: {}", submission.getId(), e.getMessage());
+            logger.warn("Failed to invalidate interaction caches for submission {}: {}", submission.getId(), e.getClass().getSimpleName());
         }
     }
 

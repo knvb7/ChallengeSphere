@@ -29,11 +29,10 @@ public interface InviteService {
     /**
      * Get all invite links for a specific challenge.
      */
-    ChallengeInvitesResponse getInvitesForChallenge(Long challengeId) throws ChallengeSphereException;
+    ChallengeInvitesResponse getInvitesForChallenge(Long challengeId, Long userId) throws ChallengeSphereException;
 
     /**
      * Deactivate an invite link. Only the creator of the invite or the challenge creator can do this.
      */
     void deactivateInvite(Long inviteId, Long userId) throws ChallengeSphereException;
 }
-

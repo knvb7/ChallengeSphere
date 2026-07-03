@@ -11,6 +11,7 @@ import com.ironside.challengesphere.api.request.UserRegistrationRequest;
 import com.ironside.challengesphere.api.request.VerifyOtpRequest;
 import com.ironside.challengesphere.api.response.AuthResponse;
 import com.ironside.challengesphere.api.response.MessageResponse;
+import com.ironside.challengesphere.api.response.SelfUserResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.model.User;
 import com.ironside.challengesphere.repository.UserRepository;
@@ -44,6 +45,8 @@ import java.util.Optional;
 public class AuthController {
 
     private static final Logger logger = LogManager.getLogger(AuthController.class);
+    private static final String GOOGLE_ONLY_AUTH_MESSAGE =
+            "Password authentication is disabled. Use Google Sign-In.";
 
     private final SmsService smsService;
     private final EmailService emailService;
@@ -69,26 +72,13 @@ public class AuthController {
     @PostMapping("/otp/send")
     public ResponseEntity<Map<String, Object>> sendOtp(@Valid @RequestBody SendOtpRequest request)
             throws ChallengeSphereException {
-        String sid = smsService.sendOtp(request.getPhone());
-        return ResponseEntity.ok(Map.of(
-                "status", "sent",
-                "verificationSid", sid,
-                "phone", request.getPhone()
-        ));
+        throw googleOnlyAuthentication();
     }
 
     @PostMapping("/otp/verify")
     public ResponseEntity<Map<String, Object>> verifyOtp(@Valid @RequestBody VerifyOtpRequest request)
             throws ChallengeSphereException {
-        boolean approved = smsService.verifyOtp(request.getPhone(), request.getCode());
-        if (!approved) {
-            throw new ChallengeSphereException("Invalid or expired verification code",
-                    HttpStatus.BAD_REQUEST, logger);
-        }
-        return ResponseEntity.ok(Map.of(
-                "status", "approved",
-                "phone", request.getPhone()
-        ));
+        throw googleOnlyAuthentication();
     }
 
     @GetMapping("/username-availability")
@@ -106,29 +96,13 @@ public class AuthController {
     @PostMapping("/register")
     public ResponseEntity<AuthResponse> register(@Valid @RequestBody UserRegistrationRequest request)
             throws ChallengeSphereException {
-        if (StringUtils.hasText(request.getPhone()) && StringUtils.hasText(request.getOtpCode())) {
-            boolean approved = smsService.verifyOtp(request.getPhone(), request.getOtpCode());
-            if (!approved) {
-                throw new ChallengeSphereException("Invalid or expired verification code",
-                        HttpStatus.BAD_REQUEST, logger);
-            }
-            logger.info("OTP verified for phone={} during registration", request.getPhone());
-        }
-
-        userService.registerUser(request);
-
-        LoginRequest loginRequest = new LoginRequest();
-        loginRequest.setUsername(request.getUsername());
-        loginRequest.setPassword(request.getPassword());
-        AuthResponse response = authService.login(loginRequest);
-        response.setIsNewUser(true);
-        return ResponseEntity.status(HttpStatus.CREATED).body(response);
+        throw googleOnlyAuthentication();
     }
 
     @PostMapping("/login")
     public ResponseEntity<AuthResponse> login(@Valid @RequestBody LoginRequest request)
             throws ChallengeSphereException {
-        return ResponseEntity.ok(authService.login(request));
+        throw googleOnlyAuthentication();
     }
 
     @PostMapping("/refresh")
@@ -146,39 +120,29 @@ public class AuthController {
 
     @PostMapping("/forgot-password")
     public ResponseEntity<MessageResponse> forgotPassword(
-            @Valid @RequestBody ForgotPasswordRequest request) {
-        authService.requestPasswordReset(request.getEmail());
-        return ResponseEntity.ok(new MessageResponse(
-                "If an account exists for that email, a password reset link has been sent."
-        ));
+            @Valid @RequestBody ForgotPasswordRequest request) throws ChallengeSphereException {
+        throw googleOnlyAuthentication();
     }
 
     @PostMapping("/reset-password")
     public ResponseEntity<MessageResponse> resetPassword(
             @Valid @RequestBody ResetPasswordRequest request) throws ChallengeSphereException {
-        authService.resetPassword(
-                request.getToken(),
-                request.getNewPassword(),
-                request.getConfirmPassword()
-        );
-        return ResponseEntity.ok(new MessageResponse("Password reset successfully. Please sign in."));
+        throw googleOnlyAuthentication();
     }
 
     @GetMapping("/me")
-    public ResponseEntity<User> me(@AuthenticationPrincipal UserPrincipal principal)
+    public ResponseEntity<SelfUserResponse> me(@AuthenticationPrincipal UserPrincipal principal)
             throws ChallengeSphereException {
         Long userId = SecurityAccess.requireUserId(principal);
         User user = userService.getUserDetails(userId, null, null);
-        return ResponseEntity.ok(user);
+        return ResponseEntity.ok(SelfUserResponse.from(user));
     }
 
     @PostMapping("/change-password")
     public ResponseEntity<MessageResponse> changePassword(
             @AuthenticationPrincipal UserPrincipal principal,
             @Valid @RequestBody ChangePasswordRequest request) throws ChallengeSphereException {
-        Long userId = SecurityAccess.requireUserId(principal);
-        authService.changePassword(userId, request.getCurrentPassword(), request.getNewPassword(), request.getConfirmPassword());
-        return ResponseEntity.ok(new MessageResponse("Password changed successfully. Please sign in again."));
+        throw googleOnlyAuthentication();
     }
 
     @PostMapping("/logout")
@@ -196,11 +160,11 @@ public class AuthController {
         return null;
     }
 
-    private void safelySendWelcome(User user) {
-        try {
-            emailService.sendWelcomeEmail(user);
-        } catch (Exception e) {
-            logger.warn("Welcome email dispatch failed for userId={}: {}", user.getId(), e.getMessage());
-        }
+    private ChallengeSphereException googleOnlyAuthentication() {
+        return new ChallengeSphereException(
+                GOOGLE_ONLY_AUTH_MESSAGE,
+                HttpStatus.GONE,
+                logger
+        );
     }
 }

@@ -13,7 +13,7 @@ import java.util.List;
 public class FollowersFollowingResponse {
 
     private Long userId;
-    private List<User> users;
+    private List<PublicUserResponse> users;
     private Integer currentPage;
     private Integer pageSize;
     private Integer totalCount;
@@ -26,7 +26,7 @@ public class FollowersFollowingResponse {
         int totalPages = (int) Math.ceil((double) totalCount / pageSize);
         return new FollowersFollowingResponse(
             userId,
-            followers,
+            PublicUserResponse.fromUsers(followers),
             currentPage,
             pageSize,
             totalCount,
@@ -41,7 +41,7 @@ public class FollowersFollowingResponse {
         int totalPages = (int) Math.ceil((double) totalCount / pageSize);
         return new FollowersFollowingResponse(
             userId,
-            following,
+            PublicUserResponse.fromUsers(following),
             currentPage,
             pageSize,
             totalCount,

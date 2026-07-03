@@ -111,7 +111,7 @@ public class FeedServiceImpl implements FeedService {
         } catch (ChallengeSphereException e) {
             throw e;
         } catch (Exception e) {
-            logger.error("Error getting following feed for userId {}: {}", userId, e.getMessage(), e);
+            logger.error("Error getting following feed for userId {}: {}", userId, e.getClass().getSimpleName());
             throw new ChallengeSphereException("Failed to get following feed", HttpStatus.INTERNAL_SERVER_ERROR, logger);
         }
     }
@@ -151,7 +151,7 @@ public class FeedServiceImpl implements FeedService {
             return response;
 
         } catch (Exception e) {
-            logger.error("Error getting trending feed: {}", e.getMessage(), e);
+            logger.error("Error getting trending feed: {}", e.getClass().getSimpleName());
             throw new ChallengeSphereException("Failed to get trending feed", HttpStatus.INTERNAL_SERVER_ERROR, logger);
         }
     }
@@ -191,7 +191,7 @@ public class FeedServiceImpl implements FeedService {
             return response;
 
         } catch (Exception e) {
-            logger.error("Error getting explore feed: {}", e.getMessage(), e);
+            logger.error("Error getting explore feed: {}", e.getClass().getSimpleName());
             throw new ChallengeSphereException("Failed to get explore feed", HttpStatus.INTERNAL_SERVER_ERROR, logger);
         }
     }
@@ -246,7 +246,7 @@ public class FeedServiceImpl implements FeedService {
         } catch (ChallengeSphereException e) {
             throw e;
         } catch (Exception e) {
-            logger.error("Error getting challenge feed for challengeId {}: {}", challengeId, e.getMessage(), e);
+            logger.error("Error getting challenge feed for challengeId {}: {}", challengeId, e.getClass().getSimpleName());
             throw new ChallengeSphereException("Failed to get challenge feed", HttpStatus.INTERNAL_SERVER_ERROR, logger);
         }
     }
@@ -322,7 +322,7 @@ public class FeedServiceImpl implements FeedService {
         } catch (ChallengeSphereException e) {
             throw e;
         } catch (Exception e) {
-            logger.error("Error getting user feed for targetUserId {}: {}", targetUserId, e.getMessage(), e);
+            logger.error("Error getting user feed for targetUserId {}: {}", targetUserId, e.getClass().getSimpleName());
             throw new ChallengeSphereException("Failed to get user feed", HttpStatus.INTERNAL_SERVER_ERROR, logger);
         }
     }

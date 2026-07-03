@@ -3,7 +3,6 @@ package com.ironside.challengesphere.api.response;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import com.fasterxml.jackson.annotation.JsonInclude;
-import com.ironside.challengesphere.model.User;
 import lombok.Builder;
 import lombok.NoArgsConstructor;
 import lombok.Builder.Default;
@@ -26,7 +25,7 @@ public class AuthResponse {
     private String username;
     private String email;
     private String userId;
-    private User user;
+    private SelfUserResponse user;
     private Boolean isNewUser;
     
     public AuthResponse(String accessToken) {

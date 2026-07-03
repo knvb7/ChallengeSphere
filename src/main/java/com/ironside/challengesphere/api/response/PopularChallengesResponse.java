@@ -28,6 +28,8 @@ public class PopularChallengesResponse {
         private Boolean active;
         private Timestamp createdAt;
         private Long creatorId;
+        private String creatorUsername;
+        private String creatorProfilePicUrl;
         private Long currentOwnerId;
         private Integer numberOfDays;
         private String challengeMode;
@@ -46,6 +48,8 @@ public class PopularChallengesResponse {
             this.active = challenge.getActive();
             this.createdAt = challenge.getCreatedAt();
             this.creatorId = challenge.getCreatorId();
+            this.creatorUsername = challenge.getCreatorUsername();
+            this.creatorProfilePicUrl = challenge.getCreatorProfilePicUrl();
             this.currentOwnerId = challenge.getCurrentOwnerId();
             this.numberOfDays = challenge.getNumberOfDays();
             this.challengeMode = challenge.getChallengeMode();

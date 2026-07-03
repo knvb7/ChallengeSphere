@@ -10,7 +10,7 @@ const runProdIamLocal = readFileSync(
   'utf8'
 );
 
-const apSouthRdsHost = 'database-1.cluster-cz2ywcai8jwm.ap-south-1.rds.amazonaws.com';
+const apSouthRdsHost = 'challengesphere-prod-encrypted.cluster-cz2ywcai8jwm.ap-south-1.rds.amazonaws.com';
 
 assert.match(
   prodProperties,

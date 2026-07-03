@@ -1,6 +1,7 @@
 package com.ironside.challengesphere.service.impl;
 
-import org.springframework.beans.factory.annotation.Value;
+import com.ironside.challengesphere.security.JwtSigningSecretProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import javax.crypto.Mac;
@@ -16,8 +17,16 @@ public class StravaOAuthStateSigner {
     private static final Duration STATE_TTL = Duration.ofMinutes(10);
     private final String secret;
 
-    public StravaOAuthStateSigner(@Value("${jwt.secret:challenge-sphere-dev-secret}") String secret) {
-        this.secret = secret == null || secret.isBlank() ? "challenge-sphere-dev-secret" : secret;
+    @Autowired
+    public StravaOAuthStateSigner(JwtSigningSecretProvider signingSecretProvider) {
+        this(signingSecretProvider.get());
+    }
+
+    public StravaOAuthStateSigner(String secret) {
+        if (secret == null || secret.isBlank()) {
+            throw new IllegalStateException("OAuth state signing secret must be configured");
+        }
+        this.secret = secret;
     }
 
     public String sign(Long userId, Instant now) {

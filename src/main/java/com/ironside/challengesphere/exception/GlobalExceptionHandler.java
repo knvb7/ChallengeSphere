@@ -31,8 +31,6 @@ public class GlobalExceptionHandler {
     // Handle BaseException (Custom exceptions)
     @ExceptionHandler(BaseException.class)
     public ResponseEntity<ApiError> handleBaseException(BaseException ex, WebRequest request) {
-        logger.error("BaseException occurred: {}", ex.getResponseMessage(), ex);
-
         ApiError apiError = ex.getApiError();
         if (apiError == null) {
             apiError = new ApiError();
@@ -42,9 +40,8 @@ public class GlobalExceptionHandler {
 
         HttpStatus status = ex.getStatus() != null ? ex.getStatus() : HttpStatus.INTERNAL_SERVER_ERROR;
         if (status.is5xxServerError()) {
-            logger.error("BaseException occurred: {}", ex.getResponseMessage(), ex);
-        } else {
-            logger.warn("Request failed with {}: {}", status, ex.getResponseMessage());
+            logger.error("Handled application failure | status={} exception={}",
+                    status.value(), ex.getClass().getSimpleName());
         }
         return new ResponseEntity<>(apiError, status);
     }
@@ -52,7 +49,7 @@ public class GlobalExceptionHandler {
     // Handle Validation Errors
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<ApiError> handleValidationExceptions(MethodArgumentNotValidException ex) {
-        logger.error("Validation error occurred: {}", ex.getMessage());
+        logger.warn("Request validation failed");
 
         Map<String, String> errors = new HashMap<>();
         ex.getBindingResult().getAllErrors().forEach((error) -> {
@@ -72,11 +69,11 @@ public class GlobalExceptionHandler {
     // Handle Constraint Violation Exceptions
     @ExceptionHandler(ConstraintViolationException.class)
     public ResponseEntity<ApiError> handleConstraintViolationException(ConstraintViolationException ex) {
-        logger.error("Constraint violation occurred: {}", ex.getMessage());
+        logger.warn("Request constraint validation failed");
 
         ApiError apiError = new ApiError();
         apiError.setErrorMessage("Constraint violation");
-        apiError.setDebugMessage(ex.getMessage());
+        apiError.setDebugMessage("One or more request constraints were violated");
         apiError.setErrorCode(400);
 
         return new ResponseEntity<>(apiError, HttpStatus.BAD_REQUEST);
@@ -85,11 +82,11 @@ public class GlobalExceptionHandler {
     // Handle Authentication Exceptions
     @ExceptionHandler({AuthenticationException.class})
     public ResponseEntity<ApiError> handleAuthenticationException(AuthenticationException ex) {
-        logger.error("Authentication error occurred: {}", ex.getMessage());
+        logger.warn("Authentication failed");
 
         ApiError apiError = new ApiError();
         apiError.setErrorMessage("Authentication failed");
-        apiError.setDebugMessage(ex.getMessage());
+        apiError.setDebugMessage("Authentication credentials were rejected");
         apiError.setErrorCode(401);
 
         return new ResponseEntity<>(apiError, HttpStatus.UNAUTHORIZED);
@@ -98,11 +95,11 @@ public class GlobalExceptionHandler {
     // Handle Access Denied Exceptions
     @ExceptionHandler(AccessDeniedException.class)
     public ResponseEntity<ApiError> handleAccessDeniedException(AccessDeniedException ex) {
-        logger.error("Access denied: {}", ex.getMessage());
+        logger.warn("Authorization denied");
 
         ApiError apiError = new ApiError();
         apiError.setErrorMessage("Access denied");
-        apiError.setDebugMessage(ex.getMessage());
+        apiError.setDebugMessage("The authenticated account is not authorized");
         apiError.setErrorCode(403);
 
         return new ResponseEntity<>(apiError, HttpStatus.FORBIDDEN);
@@ -111,7 +108,7 @@ public class GlobalExceptionHandler {
     // Handle Data Integrity Violation (Database constraint violations)
     @ExceptionHandler(DataIntegrityViolationException.class)
     public ResponseEntity<ApiError> handleDataIntegrityViolationException(DataIntegrityViolationException ex) {
-        logger.error("Data integrity violation: {}", ex.getMessage());
+        logger.warn("Database constraint rejected a request");
 
         ApiError apiError = new ApiError();
         apiError.setErrorMessage("Data integrity violation");
@@ -124,7 +121,7 @@ public class GlobalExceptionHandler {
     // Handle Missing Request Parameters
     @ExceptionHandler(MissingServletRequestParameterException.class)
     public ResponseEntity<ApiError> handleMissingServletRequestParameterException(MissingServletRequestParameterException ex) {
-        logger.error("Missing request parameter: {}", ex.getMessage());
+        logger.warn("Request is missing a required parameter");
 
         ApiError apiError = new ApiError();
         apiError.setErrorMessage("Missing required parameter");
@@ -137,7 +134,7 @@ public class GlobalExceptionHandler {
     // Handle Method Argument Type Mismatch
     @ExceptionHandler(MethodArgumentTypeMismatchException.class)
     public ResponseEntity<ApiError> handleMethodArgumentTypeMismatchException(MethodArgumentTypeMismatchException ex) {
-        logger.error("Method argument type mismatch: {}", ex.getMessage());
+        logger.warn("Request parameter type mismatch");
 
         ApiError apiError = new ApiError();
         apiError.setErrorMessage("Invalid parameter type");
@@ -150,7 +147,7 @@ public class GlobalExceptionHandler {
     // Handle HTTP Message Not Readable (Malformed JSON)
     @ExceptionHandler(HttpMessageNotReadableException.class)
     public ResponseEntity<ApiError> handleHttpMessageNotReadableException(HttpMessageNotReadableException ex) {
-        logger.error("HTTP message not readable: {}", ex.getMessage());
+        logger.warn("Request body could not be parsed");
 
         ApiError apiError = new ApiError();
         apiError.setErrorMessage("Malformed JSON request");
@@ -163,11 +160,11 @@ public class GlobalExceptionHandler {
     // Handle IllegalArgumentException
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<ApiError> handleIllegalArgumentException(IllegalArgumentException ex) {
-        logger.error("Illegal argument: {}", ex.getMessage());
+        logger.warn("Request contained an invalid argument");
 
         ApiError apiError = new ApiError();
         apiError.setErrorMessage("Invalid argument");
-        apiError.setDebugMessage(ex.getMessage());
+        apiError.setDebugMessage("The supplied argument is invalid");
         apiError.setErrorCode(400);
 
         return new ResponseEntity<>(apiError, HttpStatus.BAD_REQUEST);
@@ -176,11 +173,11 @@ public class GlobalExceptionHandler {
     // Handle IllegalStateException
     @ExceptionHandler(IllegalStateException.class)
     public ResponseEntity<ApiError> handleIllegalStateException(IllegalStateException ex) {
-        logger.error("Illegal state: {}", ex.getMessage());
+        logger.warn("Request conflicts with the current operation state");
 
         ApiError apiError = new ApiError();
         apiError.setErrorMessage("Invalid operation state");
-        apiError.setDebugMessage(ex.getMessage());
+        apiError.setDebugMessage("The operation is not valid in the current state");
         apiError.setErrorCode(409);
 
         return new ResponseEntity<>(apiError, HttpStatus.CONFLICT);
@@ -189,7 +186,7 @@ public class GlobalExceptionHandler {
     // Handle NullPointerException
     @ExceptionHandler(NullPointerException.class)
     public ResponseEntity<ApiError> handleNullPointerException(NullPointerException ex) {
-        logger.error("Null pointer exception occurred: {}", ex.getMessage(), ex);
+        logger.error("Unhandled null reference | exception={}", ex.getClass().getSimpleName());
 
         ApiError apiError = new ApiError();
         apiError.setErrorMessage("Internal server error");
@@ -202,7 +199,7 @@ public class GlobalExceptionHandler {
     // Handle all other exceptions
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiError> handleGlobalException(Exception ex, WebRequest request) {
-        logger.error("Unexpected error occurred: {}", ex.getMessage(), ex);
+        logger.error("Unhandled application exception | exception={}", ex.getClass().getSimpleName());
 
         ApiError apiError = new ApiError();
         apiError.setErrorMessage("Internal server error");

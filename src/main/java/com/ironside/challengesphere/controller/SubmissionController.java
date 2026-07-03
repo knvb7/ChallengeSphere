@@ -2,6 +2,8 @@ package com.ironside.challengesphere.controller;
 
 import com.ironside.challengesphere.api.request.CreateSubmissionRequest;
 import com.ironside.challengesphere.api.request.GeneratePresignedUrlsRequest;
+import com.ironside.challengesphere.api.request.SubmissionPreviewsRequest;
+import com.ironside.challengesphere.api.response.ChallengeSubmissionPreviewResponse;
 import com.ironside.challengesphere.api.response.DeleteSubmissionResponse;
 import com.ironside.challengesphere.api.response.PresignedUrlsResponse;
 import com.ironside.challengesphere.api.response.SubmissionResponse;
@@ -26,6 +28,7 @@ import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.util.List;
 import java.util.Map;
 
 @RestController
@@ -160,11 +163,21 @@ public class SubmissionController {
             @RequestParam @Min(1) Integer dayNumber,
             @RequestParam(defaultValue = "1") @Min(1) int page,
             @RequestParam(defaultValue = "20") @Min(1) @Max(100) int pageSize,
+            @RequestParam(defaultValue = "newest") String sortBy,
+            @RequestParam(required = false) String participantQuery,
             @AuthenticationPrincipal UserPrincipal principal) throws ChallengeSphereException {
 
         Long callerId = SecurityAccess.requireUserId(principal);
-        logger.info("Getting random submissions for challenge: {}, day: {}, page: {}, pageSize: {}", challengeId, dayNumber, page, pageSize);
-        SubmissionsResponse response = submissionService.getRandomChallengeSubmissionsByDay(challengeId, dayNumber, page, pageSize, callerId);
+        logger.info("Getting global submissions for challenge: {}, day: {}, page: {}, pageSize: {}, sortBy: {}", challengeId, dayNumber, page, pageSize, sortBy);
+        SubmissionsResponse response = submissionService.getRandomChallengeSubmissionsByDay(
+                challengeId,
+                dayNumber,
+                page,
+                pageSize,
+                callerId,
+                sortBy,
+                participantQuery
+        );
         return ResponseEntity.ok(response);
     }
 
@@ -183,6 +196,22 @@ public class SubmissionController {
         logger.info("Getting submissions for user: {}, page: {}, pageSize: {}", userId, page, pageSize);
         SubmissionsResponse response = submissionService.getSubmissionsByUser(userId, page, pageSize, SecurityAccess.requireUserId(principal));
         return ResponseEntity.ok(response);
+    }
+
+    /**
+     * Get up to four recent image submission previews for multiple challenges.
+     * POST /api/v1/submissions/previews
+     */
+    @PostMapping("/previews")
+    public ResponseEntity<List<ChallengeSubmissionPreviewResponse>> getSubmissionPreviews(
+            @AuthenticationPrincipal UserPrincipal principal,
+            @Valid @RequestBody SubmissionPreviewsRequest request) throws ChallengeSphereException {
+        Long callerId = SecurityAccess.requireUserId(principal);
+        return ResponseEntity.ok(submissionService.getSubmissionPreviews(
+                request.getChallengeIds(),
+                request.getUserId(),
+                callerId
+        ));
     }
 
     /**

@@ -39,7 +39,9 @@ public class InviteServiceImpl implements InviteService {
     private static final Logger logger = LogManager.getLogger(InviteServiceImpl.class);
 
     private static final String BASE62_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
-    private static final int INVITE_CODE_LENGTH = 8;
+    private static final int INVITE_CODE_LENGTH = 12;
+    private static final int MIN_LEGACY_INVITE_CODE_LENGTH = 8;
+    private static final String INVITE_UNAVAILABLE_MESSAGE = "Invite is invalid or unavailable";
     private static final int DEFAULT_EXPIRY_HOURS = 168; // 7 days
 
     private final SecureRandom secureRandom = new SecureRandom();
@@ -136,7 +138,7 @@ public class InviteServiceImpl implements InviteService {
 
         String inviteUrl = inviteBaseUrl + "/" + inviteCode;
 
-        logger.info("Successfully created invite link {} for challenge {}", inviteCode, challengeId);
+        logger.info("Successfully created invite {} for challenge {}", savedInvite.getId(), challengeId);
 
         return InviteLinkResponse.from(
                 savedInvite.getId(),
@@ -158,42 +160,9 @@ public class InviteServiceImpl implements InviteService {
         String inviteCode = request.getInviteCode();
         Long userId = request.getUserId();
 
-        logger.info("Redeeming invite code {} for user {}", inviteCode, userId);
+        logger.info("Redeeming invite for user {}", userId);
 
-        // Find the invite
-        ChallengeInvite invite = challengeInviteRepository.findByInviteCode(inviteCode)
-                .orElseThrow(() -> new ChallengeSphereException(
-                        "Invalid invite code: " + inviteCode,
-                        HttpStatus.NOT_FOUND,
-                        logger
-                ));
-
-        // Validate invite is active
-        if (!invite.getActive()) {
-            throw new ChallengeSphereException(
-                    "This invite link has been deactivated",
-                    HttpStatus.BAD_REQUEST,
-                    logger
-            );
-        }
-
-        // Validate invite has not expired
-        if (invite.getExpiresAt() != null && invite.getExpiresAt().before(Timestamp.from(Instant.now()))) {
-            throw new ChallengeSphereException(
-                    "This invite link has expired",
-                    HttpStatus.BAD_REQUEST,
-                    logger
-            );
-        }
-
-        // Validate max uses not exceeded
-        if (invite.getMaxUses() != null && invite.getUseCount() >= invite.getMaxUses()) {
-            throw new ChallengeSphereException(
-                    "This invite link has reached its maximum number of uses",
-                    HttpStatus.BAD_REQUEST,
-                    logger
-            );
-        }
+        ChallengeInvite invite = findAvailableInvite(inviteCode);
 
         // Validate user exists
         if (!userRepository.existsById(userId)) {
@@ -215,18 +184,10 @@ public class InviteServiceImpl implements InviteService {
 
         // Validate challenge exists and is active
         Challenge challenge = challengeRepository.findById(invite.getChallengeId())
-                .orElseThrow(() -> new ChallengeSphereException(
-                        "Challenge associated with this invite no longer exists",
-                        HttpStatus.NOT_FOUND,
-                        logger
-                ));
+                .orElseThrow(this::inviteUnavailable);
 
-        if (!challenge.getActive()) {
-            throw new ChallengeSphereException(
-                    "The challenge associated with this invite is no longer active",
-                    HttpStatus.BAD_REQUEST,
-                    logger
-            );
+        if (!Boolean.TRUE.equals(challenge.getActive())) {
+            throw inviteUnavailable();
         }
 
         // Check if user is already a participant
@@ -268,33 +229,27 @@ public class InviteServiceImpl implements InviteService {
         // Auto-deactivate if max uses reached
         if (invite.getMaxUses() != null && invite.getUseCount() >= invite.getMaxUses()) {
             invite.setActive(false);
-            logger.info("Invite {} auto-deactivated after reaching max uses ({})", inviteCode, invite.getMaxUses());
+            logger.info("Invite {} auto-deactivated after reaching max uses ({})", invite.getId(), invite.getMaxUses());
         }
 
         challengeInviteRepository.save(invite);
 
-        logger.info("User {} successfully joined challenge {} via invite code {}", userId, invite.getChallengeId(), inviteCode);
+        logger.info("User {} successfully joined challenge {} via invite {}", userId, invite.getChallengeId(), invite.getId());
 
         return RedeemInviteResponse.success(invite.getChallengeId(), challenge.getTitle(), userId);
     }
 
     @Override
     public InviteLinkResponse getInviteDetails(String inviteCode) throws ChallengeSphereException {
-        logger.info("Getting invite details for code: {}", inviteCode);
+        logger.debug("Getting invite preview");
 
-        ChallengeInvite invite = challengeInviteRepository.findByInviteCode(inviteCode)
-                .orElseThrow(() -> new ChallengeSphereException(
-                        "Invalid invite code: " + inviteCode,
-                        HttpStatus.NOT_FOUND,
-                        logger
-                ));
-
+        ChallengeInvite invite = findAvailableInvite(inviteCode);
         Challenge challenge = challengeRepository.findById(invite.getChallengeId())
-                .orElseThrow(() -> new ChallengeSphereException(
-                        "Challenge associated with this invite no longer exists",
-                        HttpStatus.NOT_FOUND,
-                        logger
-                ));
+                .orElseThrow(this::inviteUnavailable);
+
+        if (!Boolean.TRUE.equals(challenge.getActive())) {
+            throw inviteUnavailable();
+        }
 
         String inviteUrl = inviteBaseUrl + "/" + invite.getInviteCode();
 
@@ -313,16 +268,25 @@ public class InviteServiceImpl implements InviteService {
     }
 
     @Override
-    public ChallengeInvitesResponse getInvitesForChallenge(Long challengeId) throws ChallengeSphereException {
-        logger.info("Getting all invites for challenge: {}", challengeId);
+    public ChallengeInvitesResponse getInvitesForChallenge(Long challengeId, Long userId) throws ChallengeSphereException {
+        logger.info("Getting invite inventory for challenge {} by user {}", challengeId, userId);
 
-        // Validate challenge exists
         Challenge challenge = challengeRepository.findById(challengeId)
                 .orElseThrow(() -> new ChallengeSphereException(
                         "Challenge not found with id: " + challengeId,
                         HttpStatus.NOT_FOUND,
                         logger
                 ));
+
+        boolean isChallengeOwner = challenge.getCreatorId().equals(userId)
+                || challenge.getCurrentOwnerId().equals(userId);
+        if (!isChallengeOwner) {
+            throw new ChallengeSphereException(
+                    "Only the challenge owner can view its invite links",
+                    HttpStatus.FORBIDDEN,
+                    logger
+            );
+        }
 
         List<ChallengeInvite> invites = challengeInviteRepository.findByChallengeId(challengeId);
 
@@ -386,20 +350,16 @@ public class InviteServiceImpl implements InviteService {
     }
 
     /**
-     * Generate a unique Base62 invite code (8 characters, URL-friendly).
+     * Generate a unique 12-character Base62 invite capability.
      */
     private String generateUniqueInviteCode() {
-        String code;
-        int attempts = 0;
-        do {
-            code = generateBase62Code(INVITE_CODE_LENGTH);
-            attempts++;
-            if (attempts > 10) {
-                // Extremely unlikely, but prevent infinite loops
-                code = generateBase62Code(INVITE_CODE_LENGTH + 2);
+        for (int attempt = 0; attempt < 100; attempt++) {
+            String code = generateBase62Code(INVITE_CODE_LENGTH);
+            if (challengeInviteRepository.findByInviteCode(code).isEmpty()) {
+                return code;
             }
-        } while (challengeInviteRepository.findByInviteCode(code).isPresent());
-        return code;
+        }
+        throw new IllegalStateException("Unable to allocate a unique invite code");
     }
 
     private String generateBase62Code(int length) {
@@ -409,5 +369,45 @@ public class InviteServiceImpl implements InviteService {
         }
         return sb.toString();
     }
-}
 
+    private ChallengeInvite findAvailableInvite(String inviteCode) throws ChallengeSphereException {
+        if (!hasValidInviteCodeFormat(inviteCode)) {
+            throw inviteUnavailable();
+        }
+
+        ChallengeInvite invite = challengeInviteRepository.findByInviteCode(inviteCode)
+                .orElseThrow(this::inviteUnavailable);
+
+        if (!Boolean.TRUE.equals(invite.getActive())
+                || (invite.getExpiresAt() != null
+                && !invite.getExpiresAt().after(Timestamp.from(Instant.now())))
+                || (invite.getMaxUses() != null
+                && invite.getUseCount() >= invite.getMaxUses())) {
+            throw inviteUnavailable();
+        }
+
+        return invite;
+    }
+
+    private boolean hasValidInviteCodeFormat(String inviteCode) {
+        if (inviteCode == null
+                || inviteCode.length() < MIN_LEGACY_INVITE_CODE_LENGTH
+                || inviteCode.length() > INVITE_CODE_LENGTH) {
+            return false;
+        }
+        for (int index = 0; index < inviteCode.length(); index++) {
+            if (BASE62_CHARS.indexOf(inviteCode.charAt(index)) < 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private ChallengeSphereException inviteUnavailable() {
+        return new ChallengeSphereException(
+                INVITE_UNAVAILABLE_MESSAGE,
+                HttpStatus.NOT_FOUND,
+                logger
+        );
+    }
+}

@@ -13,18 +13,22 @@ import java.io.IOException;
 import java.math.BigInteger;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 @Component
 public class RateLimitingFilter extends OncePerRequestFilter {
 
-    private final Map<String, Window> windows = new ConcurrentHashMap<>();
+    private final RateLimitStore rateLimitStore;
     private volatile List<IpRange> trustedProxyRanges = List.of();
+
+    public RateLimitingFilter(RateLimitStore rateLimitStore) {
+        this.rateLimitStore = rateLimitStore;
+    }
 
     @Value("${app.security.trusted-proxy-cidrs:}")
     void setTrustedProxyCidrs(String trustedProxyCidrs) {
@@ -48,27 +52,37 @@ public class RateLimitingFilter extends OncePerRequestFilter {
             throws ServletException, IOException {
         Limit limit = limitFor(request);
         if (limit != null) {
-            String key = limit.name() + ":" + clientKey(request);
-            if (!allow(key, limit.maxRequests(), limit.window())) {
+            RateLimitStore.Decision decision;
+            try {
+                decision = rateLimitStore.consume(
+                        rateLimitKey(limit.name(), clientKey(request)),
+                        limit.maxRequests(),
+                        limit.window()
+                );
+            } catch (RuntimeException unavailable) {
+                response.setStatus(503);
+                response.setContentType(MediaType.APPLICATION_JSON_VALUE);
+                response.setHeader("Cache-Control", "no-store");
+                response.setHeader("Retry-After", "1");
+                response.getWriter().write(
+                        "{\"errorMessage\":\"Request protection is temporarily unavailable\",\"errorCode\":503}"
+                );
+                return;
+            }
+
+            response.setHeader("X-RateLimit-Limit", Integer.toString(limit.maxRequests()));
+            response.setHeader("X-RateLimit-Remaining", Integer.toString(decision.remaining()));
+            if (!decision.allowed()) {
                 response.setStatus(429);
                 response.setContentType(MediaType.APPLICATION_JSON_VALUE);
+                response.setHeader("Cache-Control", "no-store");
+                response.setHeader("Retry-After", Long.toString(decision.retryAfterSeconds()));
                 response.getWriter().write("{\"errorMessage\":\"Too many requests\",\"errorCode\":429}");
                 return;
             }
         }
 
         filterChain.doFilter(request, response);
-    }
-
-    private boolean allow(String key, int maxRequests, Duration duration) {
-        Instant now = Instant.now();
-        Window window = windows.compute(key, (ignored, existing) -> {
-            if (existing == null || !existing.expiresAt().isAfter(now)) {
-                return new Window(1, now.plus(duration));
-            }
-            return new Window(existing.count() + 1, existing.expiresAt());
-        });
-        return window.count() <= maxRequests;
     }
 
     private Limit limitFor(HttpServletRequest request) {
@@ -82,13 +96,25 @@ public class RateLimitingFilter extends OncePerRequestFilter {
             return new Limit("otp", 5, Duration.ofMinutes(10));
         }
         if ("POST".equals(method) && path.equals("/api/v1/auth/forgot-password")) {
-            return new Limit("password-reset", 5, Duration.ofMinutes(15));
+            return new Limit("password-reset-request", 5, Duration.ofMinutes(15));
+        }
+        if ("POST".equals(method) && path.equals("/api/v1/auth/reset-password")) {
+            return new Limit("password-reset-attempt", 5, Duration.ofMinutes(15));
         }
         if ("POST".equals(method) && (path.equals("/api/v1/auth/login")
                 || path.equals("/api/v1/auth/register")
                 || path.equals("/api/v1/auth/google")
                 || path.equals("/api/v1/auth/refresh"))) {
             return new Limit("auth", 20, Duration.ofMinutes(5));
+        }
+        if (("POST".equals(method) && path.equals("/api/v1/invites/redeem"))
+                || ("GET".equals(method)
+                && path.startsWith("/api/v1/invites/")
+                && !path.startsWith("/api/v1/invites/challenge/"))) {
+            return new Limit("invite-probe", 20, Duration.ofMinutes(5));
+        }
+        if ("POST".equals(method) && path.equals("/api/v1/invites")) {
+            return new Limit("invite-create", 20, Duration.ofMinutes(5));
         }
         if ("POST".equals(method) && (path.equals("/api/v1/users/follow")
                 || path.equals("/api/v1/users/unfollow"))) {
@@ -146,10 +172,25 @@ public class RateLimitingFilter extends OncePerRequestFilter {
         return trustedProxyRanges.stream().anyMatch(range -> range.contains(ipAddress));
     }
 
-    private record Limit(String name, int maxRequests, Duration window) {
+    private String rateLimitKey(String bucket, String clientIdentity) {
+        return "rate-limit:v1:" + bucket + ":" + sha256(clientIdentity == null ? "unknown" : clientIdentity);
     }
 
-    private record Window(int count, Instant expiresAt) {
+    private String sha256(String value) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(StandardCharsets.UTF_8));
+            StringBuilder hex = new StringBuilder(digest.length * 2);
+            for (byte b : digest) {
+                hex.append(String.format("%02x", b));
+            }
+            return hex.toString();
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 is unavailable");
+        }
+    }
+
+    private record Limit(String name, int maxRequests, Duration window) {
     }
 
     private record IpRange(BigInteger network, int prefixLength, int totalBits) {

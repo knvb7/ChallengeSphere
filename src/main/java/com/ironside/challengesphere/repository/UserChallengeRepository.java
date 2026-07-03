@@ -38,4 +38,15 @@ public interface UserChallengeRepository extends JpaRepository<UserChallenge, Lo
 
     @Query(value = "SELECT COUNT(*) FROM challengesphere.user_challenges WHERE challenge_id = :challengeId AND active = true", nativeQuery = true)
     int countActiveByChallengeId(@Param("challengeId") Long challengeId);
+
+    @Query(value = """
+            SELECT COUNT(*)
+            FROM challengesphere.user_challenges uc
+            JOIN challengesphere.challenges c ON c.id = uc.challenge_id
+            WHERE uc.user_id = :userId
+              AND uc.active = true
+              AND COALESCE(uc.completed, false) = false
+              AND c.active = true
+            """, nativeQuery = true)
+    long countSlotConsumingParticipations(@Param("userId") Long userId);
 }

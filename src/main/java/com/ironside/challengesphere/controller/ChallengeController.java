@@ -33,6 +33,7 @@ import com.ironside.challengesphere.api.request.LeaveChallengeRequest;
 import com.ironside.challengesphere.api.response.ChallengeCreateResponse;
 import com.ironside.challengesphere.api.response.ChallengeDetailResponse;
 import com.ironside.challengesphere.api.response.ChallengeParticipantsResponse;
+import com.ironside.challengesphere.api.response.ChallengeParticipationPolicyResponse;
 import com.ironside.challengesphere.api.response.ChallengeProgressResponse;
 import com.ironside.challengesphere.api.response.ChallengesByHashtagResponse;
 import com.ironside.challengesphere.api.response.JoinChallengeResponse;
@@ -43,6 +44,7 @@ import com.ironside.challengesphere.api.response.PresignedUrlsResponse;
 import com.ironside.challengesphere.api.response.RecentChallengesResponse;
 import com.ironside.challengesphere.api.response.UserChallengesResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
+import com.ironside.challengesphere.config.ChallengeParticipationProperties;
 import com.ironside.challengesphere.model.Challenge;
 import com.ironside.challengesphere.security.SecurityAccess;
 import com.ironside.challengesphere.security.UserPrincipal;
@@ -59,6 +61,9 @@ public class ChallengeController {
 
     @Autowired
     private ChallengeService challengeService;
+
+    @Autowired
+    private ChallengeParticipationProperties challengeParticipationProperties;
 
     @PostMapping
     public ResponseEntity<ChallengeCreateResponse> createChallenge(
@@ -132,6 +137,13 @@ public class ChallengeController {
         request.setUserIds(List.of(actorUserId));
         JoinChallengeResponse response = challengeService.joinChallenge(request);
         return ResponseEntity.ok(response);
+    }
+
+    @GetMapping("/participation-policy")
+    public ResponseEntity<ChallengeParticipationPolicyResponse> getParticipationPolicy() {
+        return ResponseEntity.ok(new ChallengeParticipationPolicyResponse(
+                challengeParticipationProperties.getMaxActiveParticipations()
+        ));
     }
 
     @PostMapping("/leave")

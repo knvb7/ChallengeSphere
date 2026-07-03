@@ -40,13 +40,12 @@ public class AuthTokenStore {
             WHERE token_hash = ?
               AND token_type = ?
             """;
-    private static final String FIND_USER_ID_SQL = """
-            SELECT user_id
-            FROM challengesphere.auth_tokens
+    private static final String CONSUME_SQL = """
+            DELETE FROM challengesphere.auth_tokens
             WHERE token_hash = ?
               AND token_type = ?
               AND expires_at > CURRENT_TIMESTAMP
-            LIMIT 1
+            RETURNING user_id
             """;
     private static final String REVOKE_ALL_SQL = """
             DELETE FROM challengesphere.auth_tokens
@@ -69,7 +68,7 @@ public class AuthTokenStore {
         try {
             jdbcTemplate.update(INSERT_TOKEN_SQL, tokenHash, type, userId, expiresAt);
         } catch (DataAccessException e) {
-            logger.error("SQL token store failed for userId={}", userId, e);
+            logger.error("SQL token store failed for userId={}", userId);
             throw e;
         }
         deleteExpiredTokens();
@@ -80,7 +79,7 @@ public class AuthTokenStore {
             Integer count = jdbcTemplate.queryForObject(EXISTS_SQL, Integer.class, tokenHash(token), type, userId);
             return count != null && count > 0;
         } catch (DataAccessException e) {
-            logger.error("SQL token lookup failed for userId={}", userId, e);
+            logger.error("SQL token lookup failed for userId={}", userId);
             return false;
         }
     }
@@ -92,14 +91,14 @@ public class AuthTokenStore {
         try {
             jdbcTemplate.update(REVOKE_SQL, tokenHash(token), type);
         } catch (DataAccessException e) {
-            logger.warn("SQL token revoke failed for type={}: {}", type, e.getMessage());
+            logger.warn("SQL token revoke failed for type={}: {}", type, e.getClass().getSimpleName());
         }
     }
 
-    public Optional<Long> findUserId(String token, String type) {
+    public Optional<Long> consume(String token, String type) {
         try {
             return jdbcTemplate.query(
-                    FIND_USER_ID_SQL,
+                    CONSUME_SQL,
                     resultSet -> resultSet.next()
                             ? Optional.of(resultSet.getLong("user_id"))
                             : Optional.empty(),
@@ -107,7 +106,7 @@ public class AuthTokenStore {
                     type
             );
         } catch (DataAccessException e) {
-            logger.error("SQL token lookup failed for type={}", type, e);
+            logger.error("SQL token consume failed for type={}", type);
             return Optional.empty();
         }
     }
@@ -119,7 +118,7 @@ public class AuthTokenStore {
         try {
             jdbcTemplate.update(REVOKE_ALL_SQL, userId);
         } catch (DataAccessException e) {
-            logger.warn("SQL revoke-all failed for userId={}: {}", userId, e.getMessage());
+            logger.warn("SQL revoke-all failed for userId={}: {}", userId, e.getClass().getSimpleName());
         }
     }
 
@@ -134,7 +133,7 @@ public class AuthTokenStore {
         try {
             jdbcTemplate.update(DELETE_EXPIRED_SQL);
         } catch (DataAccessException e) {
-            logger.warn("Expired auth token cleanup failed: {}", e.getMessage());
+            logger.warn("Expired auth token cleanup failed: {}", e.getClass().getSimpleName());
         }
     }
 

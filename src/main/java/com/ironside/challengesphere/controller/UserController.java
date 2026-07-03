@@ -13,6 +13,8 @@ import com.ironside.challengesphere.api.response.FollowersFollowingResponse;
 import com.ironside.challengesphere.api.response.UserRegistrationResponse;
 import com.ironside.challengesphere.api.response.UserSearchResponse;
 import com.ironside.challengesphere.api.response.PresignedUrlsResponse;
+import com.ironside.challengesphere.api.response.PublicUserResponse;
+import com.ironside.challengesphere.api.response.SelfUserResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.model.User;
 import com.ironside.challengesphere.security.SecurityAccess;
@@ -38,6 +40,8 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class UserController {
     private static final Logger logger = LogManager.getLogger(UserController.class);
+    private static final String GOOGLE_ONLY_AUTH_MESSAGE =
+            "Password authentication is disabled. Use Google Sign-In.";
 
     @Autowired
     private UserService userService;
@@ -54,13 +58,15 @@ public class UserController {
      */
     @PostMapping("/register")
     public ResponseEntity<UserRegistrationResponse> registerUser(@Valid @RequestBody UserRegistrationRequest request) throws ChallengeSphereException {
-        logger.info("Registration request received for username: {}", request.getUsername());
-        UserRegistrationResponse response = userService.registerUser(request);
-        return ResponseEntity.status(HttpStatus.CREATED).body(response);
+        throw new ChallengeSphereException(
+                GOOGLE_ONLY_AUTH_MESSAGE,
+                HttpStatus.GONE,
+                logger
+        );
     }
 
     @GetMapping
-    public ResponseEntity<User> getUser(
+    public ResponseEntity<PublicUserResponse> getUser(
             @AuthenticationPrincipal UserPrincipal principal,
             @RequestParam(required = false) Long userId,
             @RequestParam(required = false) Long currentUserId,
@@ -81,7 +87,7 @@ public class UserController {
         getUserPayload.setPhone(phone);
         getUserPayload.setUsername(username);
         User user = userService.getUser(getUserPayload);
-        return ResponseEntity.ok(user);
+        return ResponseEntity.ok(PublicUserResponse.from(user));
     }
 
     @GetMapping("/search")
@@ -112,17 +118,12 @@ public class UserController {
     }
 
     @PutMapping
-    public ResponseEntity<User> updateUserDetails(
+    public ResponseEntity<SelfUserResponse> updateUserDetails(
             @AuthenticationPrincipal UserPrincipal principal,
             @Valid @RequestBody UpdateUserRequest updateUserRequest) throws ChallengeSphereException {
         Long actorUserId = SecurityAccess.requireUserId(principal);
-        if (updateUserRequest.getUserId() != null) {
-            SecurityAccess.requireSelf(principal, updateUserRequest.getUserId());
-        }
-        updateUserRequest.setUserId(actorUserId);
-        scrubSelfProfileUpdate(updateUserRequest);
-        User updatedUser = userService.updateUserDetails(updateUserRequest);
-        return ResponseEntity.ok(updatedUser);
+        User updatedUser = userService.updateUserDetails(actorUserId, updateUserRequest);
+        return ResponseEntity.ok(SelfUserResponse.from(updatedUser));
     }
 
     /**
@@ -217,9 +218,8 @@ public class UserController {
         SecurityAccess.requireSelf(principal, userId);
         String profilePicUrl = body.getOrDefault("profilePicUrl", "");
         UpdateUserRequest request = new UpdateUserRequest();
-        request.setUserId(userId);
         request.setProfilePicUrl(profilePicUrl);
-        userService.updateUserDetails(request);
+        userService.updateUserDetails(userId, request);
         return ResponseEntity.ok(Map.of("success", true, "profilePicUrl", profilePicUrl));
     }
 
@@ -271,16 +271,11 @@ public class UserController {
             @PathVariable Long userId) throws ChallengeSphereException {
         SecurityAccess.requireSelf(principal, userId);
         List<User> users = userService.getBlockedUsers(userId);
-        return ResponseEntity.ok(Map.of("users", users, "totalCount", users.size(), "hasMore", false));
-    }
-
-    private void scrubSelfProfileUpdate(UpdateUserRequest request) {
-        request.setHashedPassword(null);
-        request.setGenuinenessScore(null);
-        request.setActive(null);
-        request.setChallengesCreated(null);
-        request.setChallengesAccepted(null);
-        request.setPremiumUser(null);
+        return ResponseEntity.ok(Map.of(
+                "users", PublicUserResponse.fromUsers(users),
+                "totalCount", users.size(),
+                "hasMore", false
+        ));
     }
 
     private Long extractTargetUserId(Map<String, Object> body) throws ChallengeSphereException {

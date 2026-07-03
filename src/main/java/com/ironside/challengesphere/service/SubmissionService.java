@@ -5,12 +5,15 @@ import org.springframework.stereotype.Service;
 import com.ironside.challengesphere.api.request.CreateSubmissionRequest;
 import com.ironside.challengesphere.api.request.GeneratePresignedUrlsRequest;
 import com.ironside.challengesphere.api.response.PresignedUrlsResponse;
+import com.ironside.challengesphere.api.response.ChallengeSubmissionPreviewResponse;
 import com.ironside.challengesphere.api.response.SubmissionResponse;
 import com.ironside.challengesphere.api.response.SubmissionsResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.model.Submission;
 import com.ironside.challengesphere.util.MediaTypes;
 import org.springframework.web.multipart.MultipartFile;
+
+import java.util.List;
 
 @Service
 public interface SubmissionService {
@@ -19,7 +22,12 @@ public interface SubmissionService {
     void deleteSubmission(Long submissionId, Long userId) throws ChallengeSphereException;
     SubmissionsResponse getSubmissionsByUserAndChallenge(Long userId, Long challengeId, int page, int pageSize, Long callerId) throws ChallengeSphereException;
     SubmissionsResponse getSubmissionsByChallenge(Long challengeId, int page, int pageSize, Long callerId) throws ChallengeSphereException;
-    SubmissionsResponse getRandomChallengeSubmissionsByDay(Long challengeId, Integer dayNumber, int page, int pageSize, Long callerId) throws ChallengeSphereException;
+    List<ChallengeSubmissionPreviewResponse> getSubmissionPreviews(
+            List<Long> challengeIds,
+            Long userId,
+            Long callerId
+    ) throws ChallengeSphereException;
+    SubmissionsResponse getRandomChallengeSubmissionsByDay(Long challengeId, Integer dayNumber, int page, int pageSize, Long callerId, String sortBy, String participantQuery) throws ChallengeSphereException;
     SubmissionsResponse getSubmissionsByUser(Long userId, int page, int pageSize, Long callerId) throws ChallengeSphereException;
     PresignedUrlsResponse generatePresignedUrls(GeneratePresignedUrlsRequest request) throws ChallengeSphereException;
     String uploadSubmissionMedia(

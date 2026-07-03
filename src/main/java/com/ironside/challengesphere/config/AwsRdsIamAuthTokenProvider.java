@@ -14,8 +14,8 @@ final class AwsRdsIamAuthTokenProvider implements RdsIamAuthTokenProvider {
     private final int port;
     private final RdsUtilities rdsUtilities;
 
-    AwsRdsIamAuthTokenProvider(String region, String hostname, int port, String profileName, String accessKeysCsvPath) {
-        this(region, hostname, port, AwsCredentialsProviderFactory.create(profileName, accessKeysCsvPath));
+    AwsRdsIamAuthTokenProvider(String region, String hostname, int port, String profileName) {
+        this(region, hostname, port, AwsCredentialsProviderFactory.create(profileName));
     }
 
     AwsRdsIamAuthTokenProvider(String region, String hostname, int port, AwsCredentialsProvider credentialsProvider) {
@@ -34,7 +34,7 @@ final class AwsRdsIamAuthTokenProvider implements RdsIamAuthTokenProvider {
                 .port(port)
                 .username(username)
                 .build());
-        logger.debug("Generated RDS IAM auth token for user '{}' at {}:{}", username, hostname, port);
+        logger.debug("Generated RDS IAM authentication token");
         return token;
     }
 

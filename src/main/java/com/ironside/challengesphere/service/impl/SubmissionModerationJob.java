@@ -6,6 +6,7 @@ import com.ironside.challengesphere.model.User;
 import com.ironside.challengesphere.repository.ModerationFlagRepository;
 import com.ironside.challengesphere.repository.SubmissionRepository;
 import com.ironside.challengesphere.repository.UserRepository;
+import com.ironside.challengesphere.security.AuthTokenStore;
 import com.ironside.challengesphere.service.ContentModerationService;
 import com.ironside.challengesphere.service.LeaderboardService;
 import org.apache.logging.log4j.LogManager;
@@ -43,6 +44,9 @@ public class SubmissionModerationJob {
 
     @Autowired
     private LeaderboardService leaderboardService;
+
+    @Autowired
+    private AuthTokenStore authTokenStore;
 
     @Async("cacheExecutor")
     @Transactional
@@ -83,7 +87,7 @@ public class SubmissionModerationJob {
             invalidateAfterRemoval(submission);
             logger.warn("Submission {} hidden and user {} banned after async moderation", submissionId, userId);
         } catch (Exception e) {
-            logger.error("Async moderation failed for submission {}; deleting uploaded media: {}", submissionId, e.getMessage());
+            logger.error("Async moderation failed for submission {}; deleting uploaded media: {}", submissionId, e.getClass().getSimpleName());
             mediaUrlService.deleteMediaObjects(urls);
             hideSubmission(submission);
             invalidateAfterRemoval(submission);
@@ -123,6 +127,7 @@ public class SubmissionModerationJob {
         user.setBannedAt(new Timestamp(System.currentTimeMillis()));
         user.setBanReason("Content policy violation: " + summarizeFindings(result));
         userRepository.save(user);
+        authTokenStore.revokeAllForUser(userId);
     }
 
     private void invalidateAfterRemoval(Submission submission) {
@@ -132,13 +137,13 @@ public class SubmissionModerationJob {
             cacheService.invalidateGloryCaches(submission.getId());
             cacheService.invalidateCommentsForSubmission(submission.getId());
         } catch (Exception e) {
-            logger.warn("Failed to invalidate caches for moderated submission {}: {}", submission.getId(), e.getMessage());
+            logger.warn("Failed to invalidate caches for moderated submission {}: {}", submission.getId(), e.getClass().getSimpleName());
         }
 
         try {
             leaderboardService.rebuildLeaderboard(submission.getChallengeId());
         } catch (Exception e) {
-            logger.warn("Failed to rebuild leaderboard after moderating submission {}: {}", submission.getId(), e.getMessage());
+            logger.warn("Failed to rebuild leaderboard after moderating submission {}: {}", submission.getId(), e.getClass().getSimpleName());
         }
     }
 

@@ -176,7 +176,7 @@ public class CacheAdminController {
             throws ChallengeSphereException {
         validateDirectKey(request.key());
         boolean deleted = cacheService.delete(request.key());
-        logger.warn("Manual cache key deletion requested: key={}, deleted={}", request.key(), deleted);
+        logger.warn("Manual cache key deletion requested; deleted={}", deleted);
         return ResponseEntity.ok(Map.of(
                 "status", deleted ? "deleted" : "not_found",
                 "key", request.key()
@@ -188,7 +188,7 @@ public class CacheAdminController {
             throws ChallengeSphereException {
         validatePattern(request.pattern());
         cacheService.deleteByPattern(request.pattern());
-        logger.warn("Manual cache pattern deletion requested: pattern={}", request.pattern());
+        logger.warn("Manual cache pattern deletion requested");
         return ResponseEntity.accepted().body(Map.of(
                 "status", "accepted",
                 "pattern", request.pattern()

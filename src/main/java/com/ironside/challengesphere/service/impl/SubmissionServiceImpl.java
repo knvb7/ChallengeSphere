@@ -4,9 +4,13 @@ import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
-import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 
@@ -27,7 +31,9 @@ import org.springframework.web.multipart.MultipartFile;
 
 import com.ironside.challengesphere.api.request.CreateSubmissionRequest;
 import com.ironside.challengesphere.api.request.GeneratePresignedUrlsRequest;
+import com.ironside.challengesphere.api.response.ChallengeSubmissionPreviewResponse;
 import com.ironside.challengesphere.api.response.PresignedUrlsResponse;
+import com.ironside.challengesphere.api.response.SubmissionPreviewItemResponse;
 import com.ironside.challengesphere.api.response.SubmissionResponse;
 import com.ironside.challengesphere.api.response.SubmissionsResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
@@ -42,6 +48,8 @@ import com.ironside.challengesphere.repository.SubmissionRepository;
 import com.ironside.challengesphere.repository.UserBlockRepository;
 import com.ironside.challengesphere.repository.UserChallengeRepository;
 import com.ironside.challengesphere.repository.UserRepository;
+import com.ironside.challengesphere.repository.projection.SubmissionPreviewProjection;
+import com.ironside.challengesphere.security.AuthTokenStore;
 import com.ironside.challengesphere.service.ContentModerationService;
 import com.ironside.challengesphere.service.LeaderboardService;
 import com.ironside.challengesphere.service.NotificationService;
@@ -89,6 +97,9 @@ public class SubmissionServiceImpl implements SubmissionService {
 
     @Autowired
     private SubmissionModerationJob submissionModerationJob;
+
+    @Autowired
+    private AuthTokenStore authTokenStore;
 
     @Value("${aws.s3.bucket.name}")
     private String bucketName;
@@ -190,6 +201,7 @@ public class SubmissionServiceImpl implements SubmissionService {
             long activeSubmissionCount = existingSubmissions.stream()
                     .filter(submission -> Boolean.TRUE.equals(submission.getActive()))
                     .count();
+            boolean shouldAwardLeaderboardSubmissionPoints = !oneOffChallenge && activeSubmissionCount == 0;
             if (oneOffChallenge && activeSubmissionCount >= 1) {
                 logger.warn("One-off submission already exists for user: {}, challenge: {}", userId, challengeId);
                 throw new ChallengeSphereException(
@@ -248,20 +260,24 @@ public class SubmissionServiceImpl implements SubmissionService {
                         request.getMediaUrls() == null ? List.of() : List.copyOf(request.getMediaUrls())
                 );
             } catch (Exception e) {
-                logger.warn("Failed to enqueue moderation for submission {}: {}", savedSubmission.getId(), e.getMessage());
+                logger.warn("Failed to enqueue moderation for submission {}: {}", savedSubmission.getId(), e.getClass().getSimpleName());
             }
 
             if (oneOffChallenge) {
                 markOneOffChallengeCompleted(userChallenge);
-            } else {
+            } else if (shouldAwardLeaderboardSubmissionPoints) {
                 try {
                     leaderboardService.incrementScore(challengeId, userId, 10, "New submission for day " + dayNumber);
                     logger.debug("Updated leaderboard score for user: {} in challenge: {}", userId, challengeId);
                 } catch (Exception e) {
                     // Don't fail the submission if leaderboard update fails
                     logger.warn("Failed to update leaderboard score for user: {} in challenge: {}: {}",
-                            userId, challengeId, e.getMessage());
+                            userId, challengeId, e.getClass().getSimpleName());
                 }
+            } else {
+                logger.debug(
+                        "Skipped leaderboard submission points for user: {} in challenge: {}, day: {} because the day was already counted",
+                        userId, challengeId, dayNumber);
             }
 
             if (Boolean.TRUE.equals(savedSubmission.getActive())) {
@@ -270,7 +286,7 @@ public class SubmissionServiceImpl implements SubmissionService {
                     notificationService.notifySubmission(savedSubmission, challenge, notificationRecipients);
                 } catch (Exception e) {
                     logger.warn("Failed to create submission notifications for submissionId={}: {}",
-                            savedSubmission.getId(), e.getMessage());
+                            savedSubmission.getId(), e.getClass().getSimpleName());
                 }
             }
 
@@ -279,7 +295,7 @@ public class SubmissionServiceImpl implements SubmissionService {
         } catch (ChallengeSphereException e) {
             throw e;
         } catch (Exception e) {
-            logger.error("Error creating submission for user: {}, challenge: {}: {}", userId, challengeId, e.getMessage(), e);
+            logger.error("Error creating submission for user: {}, challenge: {}: {}", userId, challengeId, e.getClass().getSimpleName());
             throw new ChallengeSphereException(
                     "Failed to create submission",
                     HttpStatus.INTERNAL_SERVER_ERROR,
@@ -295,18 +311,14 @@ public class SubmissionServiceImpl implements SubmissionService {
 
         try {
             if (userId.equals(callerId)) {
-                List<Submission> activeSubmissions = submissionRepository.findActiveByUserIdAndChallengeId(userId, challengeId);
-                int totalCount = activeSubmissions.size();
-                int offset = Math.max(0, page - 1) * pageSize;
-                List<Submission> paginatedSubmissions = activeSubmissions.stream()
-                        .skip(offset)
-                        .limit(pageSize)
-                        .toList();
+                Pageable pageable = PageRequest.of(Math.max(0, page - 1), pageSize);
+                Page<Submission> submissionPage = submissionRepository.findByUserIdAndChallengeId(userId, challengeId, pageable);
+                int totalCount = (int) submissionPage.getTotalElements();
 
                 logger.info("Found {} submissions for user: {}, challenge: {} (showing page {}/{})",
-                        totalCount, userId, challengeId, page, totalCount == 0 ? 0 : (int) Math.ceil((double) totalCount / pageSize));
+                        totalCount, userId, challengeId, page, submissionPage.getTotalPages());
 
-                return SubmissionsResponse.create(withReadableMediaUrls(paginatedSubmissions), page, pageSize, totalCount);
+                return SubmissionsResponse.create(withReadableMediaUrls(submissionPage.getContent()), page, pageSize, totalCount);
             }
 
             List<Submission> visibleSubmissions = submissionRepository.findActiveByUserIdAndChallengeId(userId, challengeId).stream()
@@ -324,7 +336,7 @@ public class SubmissionServiceImpl implements SubmissionService {
             return SubmissionsResponse.create(withReadableMediaUrls(paginatedSubmissions), page, pageSize, totalCount);
 
         } catch (Exception e) {
-            logger.error("Error getting submissions for user: {}, challenge: {}: {}", userId, challengeId, e.getMessage(), e);
+            logger.error("Error getting submissions for user: {}, challenge: {}: {}", userId, challengeId, e.getClass().getSimpleName());
             throw new ChallengeSphereException(
                     "Failed to get submissions",
                     HttpStatus.INTERNAL_SERVER_ERROR,
@@ -335,8 +347,19 @@ public class SubmissionServiceImpl implements SubmissionService {
 
     @Override
     @Transactional(readOnly = true)
-    public SubmissionsResponse getRandomChallengeSubmissionsByDay(Long challengeId, Integer dayNumber, int page, int pageSize, Long callerId) throws ChallengeSphereException {
-        logger.info("Getting random challenge submissions: challenge={}, day={}, page={}, pageSize={}", challengeId, dayNumber, page, pageSize);
+    public SubmissionsResponse getRandomChallengeSubmissionsByDay(
+            Long challengeId,
+            Integer dayNumber,
+            int page,
+            int pageSize,
+            Long callerId,
+            String sortBy,
+            String participantQuery
+    ) throws ChallengeSphereException {
+        String normalizedSort = normalizeGlobalSubmissionSort(sortBy);
+        String normalizedParticipantQuery = normalizeParticipantQuery(participantQuery);
+        logger.info("Getting global challenge submissions: challenge={}, day={}, page={}, pageSize={}, sortBy={}",
+                challengeId, dayNumber, page, pageSize, normalizedSort);
 
         if (dayNumber == null || dayNumber < 1) {
             throw new ChallengeSphereException(
@@ -348,19 +371,34 @@ public class SubmissionServiceImpl implements SubmissionService {
 
         try {
             Pageable pageable = PageRequest.of(Math.max(0, page - 1), pageSize);
-            Page<Submission> submissionPage = submissionRepository.findVisibleByChallengeIdAndDayNumber(
-                    challengeId,
-                    dayNumber,
-                    callerId,
-                    pageable
-            );
-            List<Submission> paginatedSubmissions = new ArrayList<>(submissionPage.getContent());
-            Collections.shuffle(paginatedSubmissions);
+            Page<Submission> submissionPage = switch (normalizedSort) {
+                case "oldest" -> submissionRepository.findVisibleByChallengeIdAndDayNumberOldest(
+                        challengeId,
+                        dayNumber,
+                        callerId,
+                        normalizedParticipantQuery,
+                        pageable
+                );
+                case "glories" -> submissionRepository.findVisibleByChallengeIdAndDayNumberMostGlories(
+                        challengeId,
+                        dayNumber,
+                        callerId,
+                        normalizedParticipantQuery,
+                        pageable
+                );
+                default -> submissionRepository.findVisibleByChallengeIdAndDayNumberNewest(
+                        challengeId,
+                        dayNumber,
+                        callerId,
+                        normalizedParticipantQuery,
+                        pageable
+                );
+            };
 
             logger.info("Found {} visible submissions for challenge: {}, day: {}", submissionPage.getTotalElements(), challengeId, dayNumber);
-            return SubmissionsResponse.create(withReadableMediaUrls(paginatedSubmissions), page, pageSize, (int) submissionPage.getTotalElements());
+            return SubmissionsResponse.create(withReadableMediaUrls(submissionPage.getContent()), page, pageSize, (int) submissionPage.getTotalElements());
         } catch (Exception e) {
-            logger.error("Error getting random submissions for challenge {}, day {}: {}", challengeId, dayNumber, e.getMessage(), e);
+            logger.error("Error getting random submissions for challenge {}, day {}: {}", challengeId, dayNumber, e.getClass().getSimpleName());
             throw new ChallengeSphereException(
                     "Failed to get submissions",
                     HttpStatus.INTERNAL_SERVER_ERROR,
@@ -410,6 +448,7 @@ public class SubmissionServiceImpl implements SubmissionService {
                     user.setBannedAt(new Timestamp(System.currentTimeMillis()));
                     user.setBanReason("Content policy violation: " + summarizeFindings(moderation));
                     userRepository.save(user);
+                    authTokenStore.revokeAllForUser(userId);
                 }
                 throw new ChallengeSphereException(
                         "Submission rejected for content policy violation. Your account has been suspended.",
@@ -435,7 +474,7 @@ public class SubmissionServiceImpl implements SubmissionService {
         } catch (ChallengeSphereException e) {
             throw e;
         } catch (Exception e) {
-            logger.error("Error reuploading submission: {} for user: {}: {}", submissionId, userId, e.getMessage(), e);
+            logger.error("Error reuploading submission: {} for user: {}: {}", submissionId, userId, e.getClass().getSimpleName());
             throw new ChallengeSphereException("Failed to reupload submission", HttpStatus.INTERNAL_SERVER_ERROR, logger, e);
         }
     }
@@ -469,13 +508,13 @@ public class SubmissionServiceImpl implements SubmissionService {
             try {
                 leaderboardService.rebuildLeaderboard(submission.getChallengeId());
             } catch (Exception e) {
-                logger.warn("Failed to rebuild leaderboard after deleting submission {}: {}", submissionId, e.getMessage());
+                logger.warn("Failed to rebuild leaderboard after deleting submission {}: {}", submissionId, e.getClass().getSimpleName());
             }
             logger.info("Successfully deleted submission: {} for user: {}", submissionId, userId);
         } catch (ChallengeSphereException e) {
             throw e;
         } catch (Exception e) {
-            logger.error("Error deleting submission: {} for user: {}: {}", submissionId, userId, e.getMessage(), e);
+            logger.error("Error deleting submission: {} for user: {}: {}", submissionId, userId, e.getClass().getSimpleName());
             throw new ChallengeSphereException("Failed to delete submission", HttpStatus.INTERNAL_SERVER_ERROR, logger, e);
         }
     }
@@ -501,13 +540,68 @@ public class SubmissionServiceImpl implements SubmissionService {
             return SubmissionsResponse.create(withReadableMediaUrls(paginatedSubmissions), page, pageSize, totalCount);
 
         } catch (Exception e) {
-            logger.error("Error getting submissions for challenge {}: {}", challengeId, e.getMessage(), e);
+            logger.error("Error getting submissions for challenge {}: {}", challengeId, e.getClass().getSimpleName());
             throw new ChallengeSphereException(
                     "Failed to get submissions",
                     HttpStatus.INTERNAL_SERVER_ERROR,
                     logger
             );
         }
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<ChallengeSubmissionPreviewResponse> getSubmissionPreviews(
+            List<Long> challengeIds,
+            Long userId,
+            Long callerId) throws ChallengeSphereException {
+        List<Long> ids = challengeIds == null ? List.of() : challengeIds.stream()
+                .filter(Objects::nonNull)
+                .distinct()
+                .sorted()
+                .limit(50)
+                .toList();
+        if (ids.isEmpty()) {
+            return List.of();
+        }
+        if (userId != null) {
+            ensureFollowAccess(userId, callerId, "submissions");
+        }
+
+        Map<Long, List<SubmissionPreviewItemResponse>> items = new LinkedHashMap<>();
+        Map<Long, Long> totals = new HashMap<>();
+        ids.forEach(id -> items.put(id, new ArrayList<>()));
+
+        for (SubmissionPreviewProjection row :
+                submissionRepository.findSubmissionPreviews(ids, userId, callerId)) {
+            List<SubmissionPreviewItemResponse> challengeItems = items.get(row.getChallengeId());
+            if (challengeItems == null || challengeItems.size() >= 4) {
+                continue;
+            }
+            String firstMedia = mediaUrlService.toReadableMediaUrlList(row.getMediaUrls())
+                    .stream()
+                    .filter(this::isImageMediaUrl)
+                    .findFirst()
+                    .orElse(null);
+            if (firstMedia == null) {
+                continue;
+            }
+            challengeItems.add(new SubmissionPreviewItemResponse(
+                    row.getSubmissionId(),
+                    row.getUserId(),
+                    firstMedia,
+                    Timestamp.from(row.getSubmissionTime())
+            ));
+            totals.put(row.getChallengeId(), row.getTotalCount());
+        }
+
+        return ids.stream()
+                .map(id -> new ChallengeSubmissionPreviewResponse(
+                        id,
+                        List.copyOf(items.get(id)),
+                        totals.getOrDefault(id, 0L)
+                ))
+                .toList();
     }
 
     @Override
@@ -543,7 +637,7 @@ public class SubmissionServiceImpl implements SubmissionService {
         } catch (ChallengeSphereException e) {
             throw e;
         } catch (Exception e) {
-            logger.error("Error getting submissions for user {}: {}", userId, e.getMessage(), e);
+            logger.error("Error getting submissions for user {}: {}", userId, e.getClass().getSimpleName());
             throw new ChallengeSphereException(
                     "Failed to get submissions",
                     HttpStatus.INTERNAL_SERVER_ERROR,
@@ -591,10 +685,10 @@ public class SubmissionServiceImpl implements SubmissionService {
                     PresignedUrlsResponse.PresignedUrlInfo urlInfo = getPresignedUrlInfo(mediaFile, fileKey, expirationTimeInSeconds);
 
                     presignedUrls.add(urlInfo);
-                    logger.debug("Generated presigned URL for file: {} with key: {}", mediaFile.getFileName(), fileKey);
+                    logger.debug("Generated submission upload URL");
 
                 } catch (Exception e) {
-                    logger.error("Error generating presigned URL for file: {}", mediaFile.getFileName(), e);
+                    logger.error("Failed to generate submission upload URL");
                     throw new ChallengeSphereException(
                             "Failed to generate presigned URL for file: " + mediaFile.getFileName(),
                             HttpStatus.INTERNAL_SERVER_ERROR,
@@ -609,7 +703,7 @@ public class SubmissionServiceImpl implements SubmissionService {
         } catch (ChallengeSphereException e) {
             throw e;
         } catch (Exception e) {
-            logger.error("Error generating presigned URLs for user: {}", userId, e);
+            logger.error("Error generating presigned URLs for user: {}", userId);
             throw new ChallengeSphereException(
                     "Failed to generate presigned URLs",
                     HttpStatus.INTERNAL_SERVER_ERROR,
@@ -671,10 +765,10 @@ public class SubmissionServiceImpl implements SubmissionService {
 
         try {
             mediaUrlService.uploadObject(fileKey, file.getBytes(), contentType.getMimeType());
-            logger.info("Uploaded submission media through backend fallback for user: {}, key: {}", userId, fileKey);
+            logger.info("Uploaded submission media through backend fallback for userId={}", userId);
             return fileKey;
         } catch (Exception e) {
-            logger.error("Backend media upload failed for user: {}, key: {}", userId, fileKey, e);
+            logger.error("Backend media upload failed for userId={}", userId);
             throw new ChallengeSphereException("Failed to upload submission media", HttpStatus.INTERNAL_SERVER_ERROR, logger, e);
         }
     }
@@ -782,6 +876,19 @@ public class SubmissionServiceImpl implements SubmissionService {
         }
     }
 
+    private boolean isImageMediaUrl(String value) {
+        if (value == null || value.isBlank()) {
+            return false;
+        }
+        String path = value.split("\\?", 2)[0].toLowerCase(Locale.ROOT);
+        return path.endsWith(".jpg")
+                || path.endsWith(".jpeg")
+                || path.endsWith(".png")
+                || path.endsWith(".webp")
+                || path.endsWith(".heic")
+                || path.endsWith(".heif");
+    }
+
     private boolean isOneOffChallenge(Challenge challenge) {
         return challenge != null && Challenge.isOneOffMode(challenge.getChallengeMode());
     }
@@ -859,6 +966,25 @@ public class SubmissionServiceImpl implements SubmissionService {
         }
     }
 
+    private String normalizeGlobalSubmissionSort(String sortBy) {
+        if (sortBy == null || sortBy.isBlank()) {
+            return "newest";
+        }
+        String normalized = sortBy.trim().toLowerCase(Locale.ROOT);
+        return switch (normalized) {
+            case "oldest", "glories" -> normalized;
+            default -> "newest";
+        };
+    }
+
+    private String normalizeParticipantQuery(String participantQuery) {
+        if (participantQuery == null) {
+            return null;
+        }
+        String normalized = participantQuery.trim();
+        return normalized.isEmpty() ? null : normalized;
+    }
+
     private void invalidateSubmissionCaches(Submission submission) {
         if (submission == null) {
             return;
@@ -869,7 +995,7 @@ public class SubmissionServiceImpl implements SubmissionService {
             cacheService.invalidateGloryCaches(submission.getId());
             cacheService.invalidateCommentsForSubmission(submission.getId());
         } catch (Exception e) {
-            logger.warn("Failed to invalidate caches for submission {}: {}", submission.getId(), e.getMessage());
+            logger.warn("Failed to invalidate caches for submission {}: {}", submission.getId(), e.getClass().getSimpleName());
         }
     }
 

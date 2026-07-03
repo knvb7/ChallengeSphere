@@ -1,5 +1,6 @@
 package com.ironside.challengesphere.service.impl;
 
+import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.model.Notification;
 import com.ironside.challengesphere.model.User;
 import com.ironside.challengesphere.service.EmailService;
@@ -12,6 +13,7 @@ import org.springframework.mail.MailException;
 import org.springframework.mail.SimpleMailMessage;
 import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.mail.javamail.MimeMessageHelper;
+import org.springframework.http.HttpStatus;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
@@ -30,9 +32,6 @@ public class EmailServiceImpl implements EmailService {
 
     @Value("${app.frontend.base-url:https://challengesphere.com}")
     private String frontendBaseUrl;
-
-    @Value("${app.password-reset.base-url:myapp://reset-password}")
-    private String passwordResetBaseUrl;
 
     @Value("${app.mail.enabled:true}")
     private boolean mailEnabled;
@@ -60,17 +59,17 @@ public class EmailServiceImpl implements EmailService {
 
     @Override
     @Async("cacheExecutor")
-    public void sendPasswordResetEmail(User user, String resetToken) {
+    public void sendPasswordResetEmail(User user, String resetCode) {
         if (user == null || user.getEmailId() == null || user.getEmailId().isBlank()) {
             logger.warn("Skipping password reset email, missing email address");
             return;
         }
-        String resetUrl = passwordResetBaseUrl + "?token=" + resetToken;
         String subject = "Reset your ChallengeSphere password";
         String html = "<div style=\"font-family:Arial,sans-serif;color:#222;\">"
                 + "<h2>Password reset requested</h2>"
-                + "<p>Hi " + escape(user.getUsername()) + ", click below to reset your password. This link expires in 30 minutes.</p>"
-                + "<p><a href=\"" + resetUrl + "\">Reset password</a></p>"
+                + "<p>Hi " + escape(user.getUsername()) + ", enter this one-time code in the ChallengeSphere app. It expires in 30 minutes.</p>"
+                + "<p style=\"font-size:24px;font-weight:700;letter-spacing:4px;\">"
+                + escape(resetCode) + "</p>"
                 + "<p>If you didn't request this, ignore this email.</p>"
                 + "</div>";
         sendHtml(user.getEmailId(), subject, html);
@@ -102,7 +101,7 @@ public class EmailServiceImpl implements EmailService {
     @Async("cacheExecutor")
     public void sendPlainEmail(String to, String subject, String body) {
         if (!mailEnabled) {
-            logger.info("Mail disabled, skipping plain email to={}, subject={}", to, subject);
+            logger.info("Mail disabled, skipping plain email");
             return;
         }
         try {
@@ -112,15 +111,20 @@ public class EmailServiceImpl implements EmailService {
             msg.setSubject(subject);
             msg.setText(body);
             mailSender.send(msg);
-            logger.info("Sent plain email to={}, subject={}", to, subject);
+            logger.info("Sent plain email");
         } catch (MailException e) {
-            logger.error("Failed to send plain email to={}: {}", to, e.getMessage());
+            logger.error("Failed to send plain email");
         }
+    }
+
+    @Override
+    public void sendHtmlEmail(String to, String subject, String html) throws ChallengeSphereException {
+        sendHtmlOrThrow(to, subject, html);
     }
 
     private void sendHtml(String to, String subject, String html) {
         if (!mailEnabled) {
-            logger.info("Mail disabled, skipping HTML email to={}, subject={}", to, subject);
+            logger.info("Mail disabled, skipping HTML email");
             return;
         }
         try {
@@ -131,9 +135,38 @@ public class EmailServiceImpl implements EmailService {
             helper.setSubject(subject);
             helper.setText(html, true);
             mailSender.send(message);
-            logger.info("Sent HTML email to={}, subject={}", to, subject);
+            logger.info("Sent HTML email");
         } catch (MessagingException | MailException e) {
-            logger.error("Failed to send HTML email to={}: {}", to, e.getMessage());
+            logger.error("Failed to send HTML email");
+        }
+    }
+
+    private void sendHtmlOrThrow(String to, String subject, String html) throws ChallengeSphereException {
+        if (!mailEnabled) {
+            logger.warn("Mail disabled, cannot send required HTML email");
+            throw new ChallengeSphereException(
+                    "Email delivery is not configured",
+                    HttpStatus.SERVICE_UNAVAILABLE,
+                    logger
+            );
+        }
+        try {
+            MimeMessage message = mailSender.createMimeMessage();
+            MimeMessageHelper helper = new MimeMessageHelper(message, true, "UTF-8");
+            helper.setFrom(fromAddress);
+            helper.setTo(to);
+            helper.setSubject(subject);
+            helper.setText(html, true);
+            mailSender.send(message);
+            logger.info("Sent required HTML email");
+        } catch (MessagingException | MailException e) {
+            logger.error("Failed to send required HTML email");
+            throw new ChallengeSphereException(
+                    "Failed to send email",
+                    HttpStatus.BAD_GATEWAY,
+                    logger,
+                    e
+            );
         }
     }
 

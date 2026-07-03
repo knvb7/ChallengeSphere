@@ -118,10 +118,10 @@ public class RedisCacheServiceImpl {
         try {
             String jsonValue = objectMapper.writeValueAsString(value);
             redisTemplate.opsForValue().set(key, jsonValue, ttl);
-            logger.debug("Saved to cache: key={}, ttl={}", key, ttl);
+            logger.debug("Saved value to cache with ttl={}", ttl);
             return true;
         } catch (JsonProcessingException e) {
-            logger.error("Error serializing value for cache: key={}", key, e);
+            logger.error("Error serializing value for cache");
             return false;
         } catch (Exception e) {
             markRedisUnavailable(e);
@@ -152,10 +152,10 @@ public class RedisCacheServiceImpl {
         try {
             Object value = redisTemplate.opsForValue().get(key);
             if (value == null) {
-                logger.debug("Cache miss: key={}", key);
+                logger.debug("Cache miss");
                 return null;
             }
-            logger.debug("Cache hit: key={}", key);
+            logger.debug("Cache hit");
 
             // Handle both JSON string values and direct object values
             if (value instanceof String stringValue) {
@@ -163,7 +163,7 @@ public class RedisCacheServiceImpl {
             }
             return type.isInstance(value) ? type.cast(value) : null;
         } catch (JsonProcessingException e) {
-            logger.error("Error deserializing value from cache: key={}", key, e);
+            logger.error("Error deserializing value from cache");
             return null;
         } catch (Exception e) {
             markRedisUnavailable(e);
@@ -192,7 +192,7 @@ public class RedisCacheServiceImpl {
         try {
             boolean deleted = redisTemplate.delete(key);
             if (deleted) {
-                logger.debug("Deleted from cache: key={}", key);
+                logger.debug("Deleted value from cache");
             }
             return deleted;
         } catch (Exception e) {
@@ -233,7 +233,7 @@ public class RedisCacheServiceImpl {
             Set<String> keys = redisTemplate.keys(pattern);
             if (!keys.isEmpty()) {
                 Long deleted = redisTemplate.delete(keys);
-                logger.debug("Deleted keys matching pattern '{}': count={}", pattern, deleted);
+                logger.debug("Deleted cache entries by pattern; count={}", deleted);
             }
         } catch (Exception e) {
             markRedisUnavailable(e);
@@ -305,7 +305,7 @@ public class RedisCacheServiceImpl {
         long previousRetryAfter = redisRetryAfterMillis.getAndUpdate(previous -> Math.max(previous, retryAfter));
         if (previousRetryAfter <= now) {
             logger.warn("Redis unavailable; bypassing cache for {} seconds: {}",
-                    REDIS_FAILURE_COOLDOWN.toSeconds(), exception.getMessage());
+                    REDIS_FAILURE_COOLDOWN.toSeconds(), exception.getClass().getSimpleName());
         }
     }
 
@@ -322,7 +322,7 @@ public class RedisCacheServiceImpl {
             try {
                 task.run();
             } catch (Exception e) {
-                logger.warn("Async cache operation failed: {}", e.getMessage());
+                logger.warn("Async cache operation failed: {}", e.getClass().getSimpleName());
             }
         });
     }
@@ -421,7 +421,7 @@ public class RedisCacheServiceImpl {
                 logger.debug("Added to leaderboard: challengeId={}, userId={}, score={}",
                         challengeId, userId, score);
             } catch (Exception e) {
-                logger.warn("Error adding to leaderboard: challengeId={}, userId={}", challengeId, userId, e);
+                logger.warn("Error adding to leaderboard: challengeId={}, userId={}", challengeId, userId);
             }
         });
     }
@@ -440,7 +440,7 @@ public class RedisCacheServiceImpl {
                 logger.debug("Incremented leaderboard score: challengeId={}, userId={}, delta={}, newScore={}",
                         challengeId, userId, delta, newScore);
             } catch (Exception e) {
-                logger.warn("Error incrementing leaderboard score", e);
+                logger.warn("Error incrementing leaderboard score");
             }
         });
     }
@@ -476,7 +476,7 @@ public class RedisCacheServiceImpl {
             }
             return entries;
         } catch (Exception e) {
-            logger.error("Error getting leaderboard: challengeId={}", challengeId, e);
+            logger.error("Error getting leaderboard: challengeId={}", challengeId);
             return List.of();
         }
     }
@@ -493,7 +493,7 @@ public class RedisCacheServiceImpl {
             Set<Object> result = redisTemplate.opsForZSet().reverseRange(key, 0, count - 1);
             return result != null ? result : Set.of();
         } catch (Exception e) {
-            logger.error("Error getting leaderboard: challengeId={}", challengeId, e);
+            logger.error("Error getting leaderboard: challengeId={}", challengeId);
             return Set.of();
         }
     }
@@ -510,7 +510,7 @@ public class RedisCacheServiceImpl {
             Long rank = redisTemplate.opsForZSet().reverseRank(key, userId.toString());
             return rank != null ? Optional.of(rank + 1) : Optional.empty();
         } catch (Exception e) {
-            logger.error("Error getting user rank: challengeId={}, userId={}", challengeId, userId, e);
+            logger.error("Error getting user rank: challengeId={}, userId={}", challengeId, userId);
             return Optional.empty();
         }
     }
@@ -527,7 +527,7 @@ public class RedisCacheServiceImpl {
             Double score = redisTemplate.opsForZSet().score(key, userId.toString());
             return Optional.ofNullable(score);
         } catch (Exception e) {
-            logger.error("Error getting user score: challengeId={}, userId={}", challengeId, userId, e);
+            logger.error("Error getting user score: challengeId={}, userId={}", challengeId, userId);
             return Optional.empty();
         }
     }
@@ -544,7 +544,7 @@ public class RedisCacheServiceImpl {
             Long size = redisTemplate.opsForZSet().zCard(key);
             return size != null ? size : 0;
         } catch (Exception e) {
-            logger.error("Error getting leaderboard size: challengeId={}", challengeId, e);
+            logger.error("Error getting leaderboard size: challengeId={}", challengeId);
             return 0;
         }
     }
@@ -562,7 +562,7 @@ public class RedisCacheServiceImpl {
                 redisTemplate.opsForZSet().remove(key, userId.toString());
                 logger.debug("Removed from leaderboard: challengeId={}, userId={}", challengeId, userId);
             } catch (Exception e) {
-                logger.warn("Error removing from leaderboard: challengeId={}, userId={}", challengeId, userId, e);
+                logger.warn("Error removing from leaderboard: challengeId={}, userId={}", challengeId, userId);
             }
         });
     }
@@ -746,7 +746,7 @@ public class RedisCacheServiceImpl {
                 redisTemplate.expire(CHALLENGE_VIEWS_KEY, ENGAGEMENT_TTL);
                 logger.debug("Incremented view count for challenge {}: new count={}", challengeId, newScore);
             } catch (Exception e) {
-                logger.warn("Failed to increment challenge views: challengeId={}, error={}", challengeId, e.getMessage());
+                logger.warn("Failed to increment challenge views: challengeId={}, error={}", challengeId, e.getClass().getSimpleName());
             }
         });
     }
@@ -762,7 +762,7 @@ public class RedisCacheServiceImpl {
             Double score = redisTemplate.opsForZSet().score(CHALLENGE_VIEWS_KEY, challengeId.toString());
             return score != null ? score.longValue() : 0;
         } catch (Exception e) {
-            logger.warn("Failed to get challenge views: challengeId={}, error={}", challengeId, e.getMessage());
+            logger.warn("Failed to get challenge views: challengeId={}, error={}", challengeId, e.getClass().getSimpleName());
             return 0;
         }
     }
@@ -785,7 +785,7 @@ public class RedisCacheServiceImpl {
                     .map(tuple -> Long.parseLong(tuple.getValue().toString()))
                     .toList();
         } catch (Exception e) {
-            logger.warn("Failed to get top viewed challenges: error={}", e.getMessage());
+            logger.warn("Failed to get top viewed challenges: error={}", e.getClass().getSimpleName());
             return List.of();
         }
     }
@@ -807,7 +807,7 @@ public class RedisCacheServiceImpl {
                 redisTemplate.expire(CHALLENGE_ENGAGEMENT_KEY, ENGAGEMENT_TTL);
                 logger.debug("Tracked engagement for challenge {}: +{} points", challengeId, engagementPoints);
             } catch (Exception e) {
-                logger.warn("Failed to track challenge engagement: challengeId={}, error={}", challengeId, e.getMessage());
+                logger.warn("Failed to track challenge engagement: challengeId={}, error={}", challengeId, e.getClass().getSimpleName());
             }
         });
     }
@@ -830,7 +830,7 @@ public class RedisCacheServiceImpl {
                     .map(tuple -> Long.parseLong(tuple.getValue().toString()))
                     .toList();
         } catch (Exception e) {
-            logger.warn("Failed to get top engaged challenges: error={}", e.getMessage());
+            logger.warn("Failed to get top engaged challenges: error={}", e.getClass().getSimpleName());
             return List.of();
         }
     }
@@ -846,7 +846,7 @@ public class RedisCacheServiceImpl {
             Double score = redisTemplate.opsForZSet().score(CHALLENGE_ENGAGEMENT_KEY, challengeId.toString());
             return score != null ? score.longValue() : 0;
         } catch (Exception e) {
-            logger.warn("Failed to get challenge engagement score: challengeId={}, error={}", challengeId, e.getMessage());
+            logger.warn("Failed to get challenge engagement score: challengeId={}, error={}", challengeId, e.getClass().getSimpleName());
             return 0;
         }
     }
@@ -861,7 +861,7 @@ public class RedisCacheServiceImpl {
                 delete(CHALLENGE_ENGAGEMENT_KEY);
                 logger.debug("Reset challenge engagement tracking");
             } catch (Exception e) {
-                logger.warn("Failed to reset engagement tracking: error={}", e.getMessage());
+                logger.warn("Failed to reset engagement tracking: error={}", e.getClass().getSimpleName());
             }
         });
     }
@@ -890,11 +890,11 @@ public class RedisCacheServiceImpl {
             }
             String keyEmailId = USER_PREFIX + "emailId:" + emailId;
             if (save(keyEmailId, userId, DEFAULT_USER_EMAILANDUSERNAME_PROFILE_TTL)) {
-                logger.debug("Cached user profile: emailId={}", emailId);
+                logger.debug("Cached user profile email lookup for userId={}", userId);
             }
             String keyUsername = USER_PREFIX + "username:" + username;
             if (save(keyUsername, userId, DEFAULT_USER_EMAILANDUSERNAME_PROFILE_TTL)) {
-                logger.debug("Cached user profile: username={}", username);
+                logger.debug("Cached user profile username lookup for userId={}", userId);
             }
         });
     }
@@ -979,7 +979,7 @@ public class RedisCacheServiceImpl {
                         FOLLOW_FOLLOWERS_PREFIX + followingId, followerId.toString(), score);
                 logger.debug("ZADD follow: {} → {}", followerId, followingId);
             } catch (Exception e) {
-                logger.warn("Failed to ZADD follow {}->{}: {}", followerId, followingId, e.getMessage());
+                logger.warn("Failed to ZADD follow {}->{}: {}", followerId, followingId, e.getClass().getSimpleName());
             }
         });
     }
@@ -998,7 +998,7 @@ public class RedisCacheServiceImpl {
                         FOLLOW_FOLLOWERS_PREFIX + followingId, followerId.toString());
                 logger.debug("ZREM follow: {} → {}", followerId, followingId);
             } catch (Exception e) {
-                logger.warn("Failed to ZREM follow {}->{}: {}", followerId, followingId, e.getMessage());
+                logger.warn("Failed to ZREM follow {}->{}: {}", followerId, followingId, e.getClass().getSimpleName());
             }
         });
     }
@@ -1022,7 +1022,7 @@ public class RedisCacheServiceImpl {
                     .map(m -> Long.parseLong(m.toString()))
                     .collect(Collectors.toList());
         } catch (Exception e) {
-            logger.warn("Failed to ZREVRANGE {}: {}", key, e.getMessage());
+            logger.warn("Failed to read cached sorted set: {}", e.getClass().getSimpleName());
             return List.of();
         }
     }
@@ -1037,7 +1037,7 @@ public class RedisCacheServiceImpl {
             Long size = redisTemplate.opsForZSet().zCard(key);
             return size != null ? size : -1;
         } catch (Exception e) {
-            logger.warn("Failed to ZCARD {}: {}", key, e.getMessage());
+            logger.warn("Failed to count cached sorted set: {}", e.getClass().getSimpleName());
             return -1;
         }
     }
@@ -1067,9 +1067,9 @@ public class RedisCacheServiceImpl {
                     tuples.add(ZSetOperations.TypedTuple.of(userIds.get(i).toString(), score));
                 }
                 redisTemplate.opsForZSet().add(key, tuples);
-                logger.debug("Backfilled {} members into {}", tuples.size(), key);
+                logger.debug("Backfilled {} cached members", tuples.size());
             } catch (Exception e) {
-                logger.warn("Failed to backfill {}: {}", key, e.getMessage());
+                logger.warn("Failed to backfill cache: {}", e.getClass().getSimpleName());
             }
         });
     }
@@ -1179,7 +1179,7 @@ public class RedisCacheServiceImpl {
         executeAsync(() -> {
             String key = VERIFICATION_PREFIX + identifier;
             if (save(key, code, DEFAULT_VERIFICATION_TTL)) {
-                logger.debug("Stored verification code: identifier={}", identifier);
+                logger.debug("Stored verification code");
             }
         });
     }
@@ -1194,7 +1194,7 @@ public class RedisCacheServiceImpl {
         executeAsync(() -> {
             String key = VERIFICATION_PREFIX + identifier;
             if (save(key, code, ttl)) {
-                logger.debug("Stored verification code: identifier={}, ttl={}", identifier, ttl);
+                logger.debug("Stored verification code with ttl={}", ttl);
             }
         });
     }
@@ -1212,10 +1212,10 @@ public class RedisCacheServiceImpl {
 
         if (storedCode != null && storedCode.equals(code)) {
             delete(key); // Consume the code (sync delete is fine here)
-            logger.debug("Verification successful: identifier={}", identifier);
+            logger.debug("Verification code consumed successfully");
             return true;
         }
-        logger.debug("Verification failed: identifier={}", identifier);
+        logger.debug("Verification code check failed");
         return false;
     }
 
@@ -1240,7 +1240,7 @@ public class RedisCacheServiceImpl {
         executeAsync(() -> {
             String key = VERIFICATION_PREFIX + identifier;
             delete(key);
-            logger.debug("Invalidated verification code: identifier={}", identifier);
+            logger.debug("Invalidated verification code");
         });
     }
 
@@ -1258,7 +1258,7 @@ public class RedisCacheServiceImpl {
             Long value = redisTemplate.opsForValue().increment(key);
             return value != null ? value : 0;
         } catch (Exception e) {
-            logger.error("Error incrementing counter: key={}", key, e);
+            logger.error("Error incrementing cache counter");
             return 0;
         }
     }
@@ -1275,7 +1275,7 @@ public class RedisCacheServiceImpl {
             Long value = redisTemplate.opsForValue().increment(key, delta);
             return value != null ? value : 0;
         } catch (Exception e) {
-            logger.error("Error incrementing counter: key={}, delta={}", key, delta, e);
+            logger.error("Error incrementing cache counter by delta={}", delta);
             return 0;
         }
     }
@@ -1292,7 +1292,7 @@ public class RedisCacheServiceImpl {
             Long value = redisTemplate.opsForValue().decrement(key);
             return value != null ? value : 0;
         } catch (Exception e) {
-            logger.error("Error decrementing counter: key={}", key, e);
+            logger.error("Error decrementing cache counter");
             return 0;
         }
     }
@@ -1309,7 +1309,7 @@ public class RedisCacheServiceImpl {
                 redisTemplate.opsForZSet().remove(CHALLENGE_VIEWS_KEY, challengeId.toString());
                 logger.debug("Reset views for challenge: {}", challengeId);
             } catch (Exception e) {
-                logger.warn("Failed to reset challenge views: challengeId={}, error={}", challengeId, e.getMessage());
+                logger.warn("Failed to reset challenge views: challengeId={}, error={}", challengeId, e.getClass().getSimpleName());
             }
         });
     }
@@ -1335,7 +1335,7 @@ public class RedisCacheServiceImpl {
                 redisTemplate.opsForZSet().remove(CHALLENGE_VIEWS_KEY, challengeId.toString());
                 redisTemplate.opsForZSet().remove(CHALLENGE_ENGAGEMENT_KEY, challengeId.toString());
             } catch (Exception e) {
-                logger.warn("Failed to remove challenge from sorted sets: {}", e.getMessage());
+                logger.warn("Failed to remove challenge from sorted sets: {}", e.getClass().getSimpleName());
             }
             
             logger.debug("Cleared all cache for challenge: id={}", challengeId);
@@ -1375,7 +1375,7 @@ public class RedisCacheServiceImpl {
                     logger.warn("Cleared ALL caches: count={}", keys.size());
                 }
             } catch (Exception e) {
-                logger.error("Error clearing all caches", e);
+                logger.error("Error clearing all caches");
             }
         });
     }
@@ -1400,7 +1400,7 @@ public class RedisCacheServiceImpl {
 
             logger.info("Cache stats retrieved: {}", stats);
         } catch (Exception e) {
-            logger.error("Error getting cache stats", e);
+            logger.error("Error getting cache stats");
             stats.put("error", e.getMessage());
         }
         return stats;
@@ -1414,7 +1414,7 @@ public class RedisCacheServiceImpl {
             Set<String> keys = redisTemplate.keys(pattern);
             return keys.size();
         } catch (Exception e) {
-            logger.error("Error counting keys: pattern={}", pattern, e);
+            logger.error("Error counting cache entries");
             return 0;
         }
     }
@@ -1618,7 +1618,7 @@ public class RedisCacheServiceImpl {
             String hashtagKey = String.join(",", hashtags.stream().sorted().toList());
             String key = HASHTAG_CHALLENGES_PREFIX + hashtagKey + ":page:" + page + ":size:" + pageSize;
             if (save(key, response, HASHTAG_CHALLENGES_TTL)) {
-                logger.debug("Cached hashtag challenges: hashtags={}, page={}", hashtags, page);
+                logger.debug("Cached hashtag challenge results for page={}", page);
             }
         });
     }
@@ -1856,7 +1856,7 @@ public class RedisCacheServiceImpl {
                     }
                 } catch (Exception e) {
                     logger.warn("Failed to push submission {} to timeline of user {}: {}",
-                            submissionId, followerId, e.getMessage());
+                            submissionId, followerId, e.getClass().getSimpleName());
                 }
             }
             logger.debug("Fan-out: pushed submission {} to {}/{} follower timelines",
@@ -1872,7 +1872,7 @@ public class RedisCacheServiceImpl {
         try {
             return Boolean.TRUE.equals(redisTemplate.hasKey(FEED_TIMELINE_PREFIX + userId));
         } catch (Exception e) {
-            logger.warn("Error checking timeline existence for userId={}: {}", userId, e.getMessage());
+            logger.warn("Error checking timeline existence for userId={}: {}", userId, e.getClass().getSimpleName());
             return false;
         }
     }
@@ -1890,7 +1890,7 @@ public class RedisCacheServiceImpl {
                     .map(o -> Long.parseLong(o.toString()))
                     .collect(Collectors.toList());
         } catch (Exception e) {
-            logger.error("Error reading timeline for userId={}: {}", userId, e.getMessage());
+            logger.error("Error reading timeline for userId={}: {}", userId, e.getClass().getSimpleName());
             return List.of();
         }
     }
@@ -1904,7 +1904,7 @@ public class RedisCacheServiceImpl {
             Long size = redisTemplate.opsForZSet().zCard(FEED_TIMELINE_PREFIX + userId);
             return size != null ? size : 0;
         } catch (Exception e) {
-            logger.warn("Error getting timeline size for userId={}: {}", userId, e.getMessage());
+            logger.warn("Error getting timeline size for userId={}: {}", userId, e.getClass().getSimpleName());
             return 0;
         }
     }
@@ -1926,7 +1926,7 @@ public class RedisCacheServiceImpl {
             redisTemplate.expire(key, FEED_TIMELINE_TTL);
             logger.debug("Rebuilt timeline for userId={} with {} entries", userId, submissionIds.size());
         } catch (Exception e) {
-            logger.error("Error rebuilding timeline for userId={}: {}", userId, e.getMessage());
+            logger.error("Error rebuilding timeline for userId={}: {}", userId, e.getClass().getSimpleName());
         }
     }
 
@@ -1955,7 +1955,7 @@ public class RedisCacheServiceImpl {
                     .map(o -> Long.parseLong(o.toString()))
                     .collect(Collectors.toSet());
         } catch (Exception e) {
-            logger.warn("Error getting cached follower IDs for userId={}: {}", userId, e.getMessage());
+            logger.warn("Error getting cached follower IDs for userId={}: {}", userId, e.getClass().getSimpleName());
             return Set.of();
         }
     }
@@ -1974,7 +1974,7 @@ public class RedisCacheServiceImpl {
                 redisTemplate.opsForSet().add(DIRTY_LOGIN_SET_KEY, userId.toString());
                 logger.debug("Marked userId={} as dirty-login", userId);
             } catch (Exception e) {
-                logger.warn("Failed to mark dirty login for userId={}: {}", userId, e.getMessage());
+                logger.warn("Failed to mark dirty login for userId={}: {}", userId, e.getClass().getSimpleName());
             }
         });
     }
@@ -1995,7 +1995,7 @@ public class RedisCacheServiceImpl {
             }
             logger.debug("Drained {} dirty-login user IDs from Redis", ids.size());
         } catch (Exception e) {
-            logger.warn("Failed to drain dirty logins: {}", e.getMessage());
+            logger.warn("Failed to drain dirty logins: {}", e.getClass().getSimpleName());
         }
         return ids;
     }
