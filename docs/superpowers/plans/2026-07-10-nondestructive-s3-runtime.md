@@ -188,6 +188,7 @@ public class SubmissionMediaKeyPolicy {
             UUID uniqueId) throws ChallengeSphereException {
         if (userId == null || mediaType == null || contentType == null || uniqueId == null
                 || epochMillis < 1_000_000_000_000L
+                || epochMillis > 9_999_999_999_999L
                 || (mediaType == MediaTypes.SUBMISSION_PHOTO
                     && contentType == GeneratePresignedUrlsRequest.ContentType.VIDEO_MP4)
                 || (mediaType == MediaTypes.SUBMISSION_VIDEO
