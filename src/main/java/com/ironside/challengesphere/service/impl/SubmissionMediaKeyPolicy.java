@@ -1,0 +1,92 @@
+package com.ironside.challengesphere.service.impl;
+
+import com.ironside.challengesphere.api.request.GeneratePresignedUrlsRequest;
+import com.ironside.challengesphere.exception.ChallengeSphereException;
+import com.ironside.challengesphere.util.MediaTypes;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+import org.springframework.http.HttpStatus;
+import org.springframework.stereotype.Component;
+
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+import java.util.UUID;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+@Component
+public class SubmissionMediaKeyPolicy {
+
+    private static final Logger logger = LogManager.getLogger(SubmissionMediaKeyPolicy.class);
+    private static final int MAX_MEDIA_KEYS = 5;
+    private static final Pattern KEY_PATTERN = Pattern.compile(
+            "^submissions/user_(\\d+)/(SUBMISSION_PHOTO|SUBMISSION_VIDEO)/"
+                    + "\\d{13}_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+                    + "[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\\.(jpg|jpeg|png|gif|mp4)$");
+
+    public List<String> validateAndNormalize(Long userId, List<String> mediaKeys)
+            throws ChallengeSphereException {
+        if (mediaKeys == null || mediaKeys.isEmpty()) {
+            return List.of();
+        }
+        if (userId == null || mediaKeys.size() > MAX_MEDIA_KEYS) {
+            throw invalid();
+        }
+
+        Set<String> seen = new HashSet<>();
+        List<String> normalized = new ArrayList<>(mediaKeys.size());
+        for (String raw : mediaKeys) {
+            String key = raw == null ? "" : raw.trim();
+            Matcher matcher = KEY_PATTERN.matcher(key);
+            if (!matcher.matches()
+                    || !Long.toString(userId).equals(matcher.group(1))
+                    || !extensionMatchesType(matcher.group(2), matcher.group(3))
+                    || !seen.add(key)) {
+                throw invalid();
+            }
+            normalized.add(key);
+        }
+        return List.copyOf(normalized);
+    }
+
+    private boolean extensionMatchesType(String type, String extension) {
+        return "SUBMISSION_VIDEO".equals(type)
+                ? "mp4".equals(extension)
+                : !"mp4".equals(extension);
+    }
+
+    public String createKey(
+            Long userId,
+            MediaTypes mediaType,
+            GeneratePresignedUrlsRequest.ContentType contentType,
+            long epochMillis,
+            UUID uniqueId) throws ChallengeSphereException {
+        if (userId == null || mediaType == null || contentType == null || uniqueId == null
+                || epochMillis < 1_000_000_000_000L
+                || epochMillis > 9_999_999_999_999L
+                || (mediaType == MediaTypes.SUBMISSION_PHOTO
+                    && contentType == GeneratePresignedUrlsRequest.ContentType.VIDEO_MP4)
+                || (mediaType == MediaTypes.SUBMISSION_VIDEO
+                    && contentType != GeneratePresignedUrlsRequest.ContentType.VIDEO_MP4)
+                || (mediaType != MediaTypes.SUBMISSION_PHOTO
+                    && mediaType != MediaTypes.SUBMISSION_VIDEO)) {
+            throw invalid();
+        }
+
+        String extension = switch (contentType) {
+            case IMAGE_JPEG -> ".jpg";
+            case IMAGE_PNG -> ".png";
+            case IMAGE_GIF -> ".gif";
+            case VIDEO_MP4 -> ".mp4";
+        };
+        return "submissions/user_%d/%s/%d_%s%s".formatted(
+                userId, mediaType.name(), epochMillis, uniqueId, extension);
+    }
+
+    private ChallengeSphereException invalid() {
+        return new ChallengeSphereException(
+                "Invalid submission media reference", HttpStatus.BAD_REQUEST, logger);
+    }
+}
