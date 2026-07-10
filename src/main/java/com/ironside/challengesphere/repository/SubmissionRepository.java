@@ -111,6 +111,7 @@ public interface SubmissionRepository extends JpaRepository<Submission, Long> {
             "JOIN challengesphere.challenges c ON c.id = s.challenge_id " +
             "WHERE s.active = true " +
             "AND c.active = true " +
+            "AND c.private = false " +
             "AND s.is_private = false " +
             "AND s.created_at > NOW() - INTERVAL '7 days' " +
             "AND (s.user_id = :viewerId OR (" +
@@ -122,6 +123,7 @@ public interface SubmissionRepository extends JpaRepository<Submission, Long> {
                     "JOIN challengesphere.challenges c ON c.id = s.challenge_id " +
                     "WHERE s.active = true " +
                     "AND c.active = true " +
+                    "AND c.private = false " +
                     "AND s.is_private = false " +
                     "AND s.created_at > NOW() - INTERVAL '7 days' " +
                     "AND (s.user_id = :viewerId OR (" +
@@ -468,7 +470,8 @@ public interface SubmissionRepository extends JpaRepository<Submission, Long> {
     // Find all public submissions by user
     @Query(value = "SELECT s.* FROM challengesphere.submissions s " +
             "JOIN challengesphere.challenges c ON c.id = s.challenge_id " +
-            "WHERE s.user_id = :userId AND s.is_private = false AND s.active = true AND c.active = true " +
+            "WHERE s.user_id = :userId AND s.is_private = false AND s.active = true " +
+            "AND c.active = true AND c.private = false " +
             "ORDER BY s.created_at DESC", nativeQuery = true)
     List<Submission> findPublicByUserId(@Param("userId") Long userId);
 

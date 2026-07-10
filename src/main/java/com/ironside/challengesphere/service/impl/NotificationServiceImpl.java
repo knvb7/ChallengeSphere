@@ -19,6 +19,8 @@ import com.ironside.challengesphere.service.PushNotificationService;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
@@ -27,10 +29,15 @@ import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.sql.Timestamp;
+import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -52,6 +59,33 @@ public class NotificationServiceImpl implements NotificationService {
     private static final String TYPE_COMMENT = "COMMENT";
     private static final String TYPE_CHALLENGE_INVITE = "CHALLENGE_INVITE";
     private static final String TYPE_CHALLENGE_UPDATE = "CHALLENGE_UPDATE";
+    private static final int MAX_CHALLENGE_INVITES_PER_REQUEST = 20;
+    private static final int MAX_CHALLENGE_INVITES_PER_UTC_DAY = 50;
+    private static final long INVITE_DELIVERY_RESERVED = 1L;
+    private static final long INVITE_DELIVERY_QUOTA_EXHAUSTED = -1L;
+    private static final DefaultRedisScript<Long> RESERVE_CHALLENGE_INVITE_SCRIPT;
+
+    static {
+        RESERVE_CHALLENGE_INVITE_SCRIPT = new DefaultRedisScript<>();
+        RESERVE_CHALLENGE_INVITE_SCRIPT.setResultType(Long.class);
+        RESERVE_CHALLENGE_INVITE_SCRIPT.setScriptText("""
+                if redis.call('EXISTS', KEYS[2]) == 1 then
+                    return 0
+                end
+                local current = tonumber(redis.call('GET', KEYS[1]) or '0')
+                local maxInvites = tonumber(ARGV[1])
+                if current >= maxInvites then
+                    return -1
+                end
+                local updated = redis.call('INCR', KEYS[1])
+                local ttl = redis.call('PTTL', KEYS[1])
+                if updated == 1 or ttl < 0 then
+                    redis.call('PEXPIRE', KEYS[1], ARGV[2])
+                end
+                redis.call('SET', KEYS[2], '1', 'PX', ARGV[3])
+                return 1
+                """);
+    }
 
     private final NotificationRepository notificationRepository;
     private final UserRepository userRepository;
@@ -65,6 +99,9 @@ public class NotificationServiceImpl implements NotificationService {
 
     @Autowired
     private MediaUrlService mediaUrlService;
+
+    @Autowired
+    private StringRedisTemplate redisTemplate;
 
     private record PushDispatch(Long userId, String type, String message, String actionObject) {
     }
@@ -202,7 +239,7 @@ public class NotificationServiceImpl implements NotificationService {
                 return;
 
             User actor = userRepository.findById(actorUserId).orElse(null);
-            if (actor == null) {
+            if (actor == null || !Boolean.TRUE.equals(actor.getActive())) {
                 logger.warn("Skipping challenge invite notifications; actor userId={} not found", actorUserId);
                 return;
             }
@@ -211,8 +248,25 @@ public class NotificationServiceImpl implements NotificationService {
                     .filter(Objects::nonNull)
                     .filter(userId -> userId > 0)
                     .filter(userId -> !Objects.equals(userId, actorUserId))
-                    .collect(Collectors.toSet());
+                    .distinct()
+                    .limit(MAX_CHALLENGE_INVITES_PER_REQUEST)
+                    .collect(Collectors.toCollection(LinkedHashSet::new));
             if (requestedRecipients.isEmpty()) {
+                return;
+            }
+
+            Set<Long> socialGraphUserIds = new HashSet<>();
+            followRepository.findActiveFollowsByFollowerId(actorUserId).stream()
+                    .map(follow -> follow.getFollowingId())
+                    .filter(Objects::nonNull)
+                    .forEach(socialGraphUserIds::add);
+            followRepository.findActiveFollowsByFollowingId(actorUserId).stream()
+                    .map(follow -> follow.getFollowerId())
+                    .filter(Objects::nonNull)
+                    .forEach(socialGraphUserIds::add);
+            requestedRecipients.retainAll(socialGraphUserIds);
+            if (requestedRecipients.isEmpty()) {
+                logger.info("Skipped challenge invite notifications outside actor userId={} social graph", actorUserId);
                 return;
             }
 
@@ -227,8 +281,20 @@ public class NotificationServiceImpl implements NotificationService {
                     + (challengeTitle.isBlank() ? " a challenge" : " " + challengeTitle);
 
             for (User recipient : recipients) {
+                if (!Boolean.TRUE.equals(recipient.getActive())
+                        || userBlockRepository.existsActiveBlockBetween(recipient.getId(), actorUserId)) {
+                    continue;
+                }
                 UserPreferences prefs = prefsByUserId.get(recipient.getId());
                 if (!allowsChallengeInvites(prefs))
+                    continue;
+                long reservation = reserveChallengeInviteDelivery(
+                        actorUserId, challenge.getId(), recipient.getId());
+                if (reservation == INVITE_DELIVERY_QUOTA_EXHAUSTED) {
+                    logger.warn("Daily challenge invite quota exhausted for actor userId={}", actorUserId);
+                    break;
+                }
+                if (reservation != INVITE_DELIVERY_RESERVED)
                     continue;
 
                 String actionObject = toJson(baseChallengeInvitePayload(actor, recipient, challenge));
@@ -356,7 +422,8 @@ public class NotificationServiceImpl implements NotificationService {
                 .ifPresent(title -> data.put("challengeTitle", title));
         data.put("targetUserId", submission.getUserId());
         data.put("targetUsername", recipient.get().getUsername());
-        data.put("targetProfilePicUrl", readableProfilePic(recipient.get().getProfilePicUrl()));
+        data.put("targetProfilePicUrl", readableProfilePic(
+                recipient.get().getId(), recipient.get().getProfilePicUrl()));
         data.put("dayNumber", submission.getDayNumber());
         data.put("mediaUrl", firstMediaUrl(submission.getMediaUrls()));
         if (commentId != null) {
@@ -473,7 +540,7 @@ public class NotificationServiceImpl implements NotificationService {
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("actorUserId", actor.getId());
         data.put("actorUsername", actor.getUsername());
-        data.put("actorProfilePicUrl", readableProfilePic(actor.getProfilePicUrl()));
+        data.put("actorProfilePicUrl", readableProfilePic(actor.getId(), actor.getProfilePicUrl()));
         return data;
     }
 
@@ -496,9 +563,37 @@ public class NotificationServiceImpl implements NotificationService {
         data.put("creatorUserId", challenge.getCreatorId());
         data.put("targetUserId", recipient.getId());
         data.put("targetUsername", recipient.getUsername());
-        data.put("targetProfilePicUrl", readableProfilePic(recipient.getProfilePicUrl()));
+        data.put("targetProfilePicUrl", readableProfilePic(
+                recipient.getId(), recipient.getProfilePicUrl()));
         data.put("isPrivate", challenge.getIsPrivate());
         return data;
+    }
+
+    private long reserveChallengeInviteDelivery(
+            Long actorUserId,
+            Long challengeId,
+            Long recipientUserId
+    ) {
+        if (actorUserId == null || challengeId == null || recipientUserId == null) {
+            return INVITE_DELIVERY_QUOTA_EXHAUSTED;
+        }
+
+        Instant now = Instant.now();
+        LocalDate utcDate = now.atZone(ZoneOffset.UTC).toLocalDate();
+        Instant nextUtcDay = utcDate.plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant();
+        long quotaTtlMillis = Math.max(1_000L, Duration.between(now, nextUtcDay).toMillis());
+        Long result = redisTemplate.execute(
+                RESERVE_CHALLENGE_INVITE_SCRIPT,
+                List.of(
+                        "notification-quota:challenge-invite:{" + actorUserId + "}:" + utcDate,
+                        "notification-dedupe:challenge-invite:{" + actorUserId + "}:"
+                                + challengeId + ":" + recipientUserId
+                ),
+                Integer.toString(MAX_CHALLENGE_INVITES_PER_UTC_DAY),
+                Long.toString(quotaTtlMillis),
+                Long.toString(Duration.ofHours(24).toMillis())
+        );
+        return result == null ? INVITE_DELIVERY_QUOTA_EXHAUSTED : result;
     }
 
     private Map<String, Object> baseChallengeJoinedPayload(User actor, User recipient, Challenge challenge) {
@@ -509,7 +604,8 @@ public class NotificationServiceImpl implements NotificationService {
         data.put("creatorUserId", challenge.getCreatorId());
         data.put("targetUserId", recipient.getId());
         data.put("targetUsername", recipient.getUsername());
-        data.put("targetProfilePicUrl", readableProfilePic(recipient.getProfilePicUrl()));
+        data.put("targetProfilePicUrl", readableProfilePic(
+                recipient.getId(), recipient.getProfilePicUrl()));
         data.put("isPrivate", challenge.getIsPrivate());
         return data;
     }
@@ -531,10 +627,10 @@ public class NotificationServiceImpl implements NotificationService {
         return parts.length == 0 ? null : parts[0].trim();
     }
 
-    private String readableProfilePic(String value) {
+    private String readableProfilePic(Long userId, String value) {
         return value == null || value.isBlank() || mediaUrlService == null
                 ? value
-                : mediaUrlService.toReadableMediaUrl(value);
+                : mediaUrlService.toReadableProfilePhoto(userId, value);
     }
 
     private String displayName(User user) {

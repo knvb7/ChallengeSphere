@@ -21,11 +21,13 @@ import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.model.Challenge;
 import com.ironside.challengesphere.model.Submission;
 import com.ironside.challengesphere.model.User;
+import com.ironside.challengesphere.model.UserChallenge;
 import com.ironside.challengesphere.repository.ChallengeRepository;
 import com.ironside.challengesphere.repository.FollowRepository;
 import com.ironside.challengesphere.repository.GloryRepository;
 import com.ironside.challengesphere.repository.SubmissionRepository;
 import com.ironside.challengesphere.repository.UserBlockRepository;
+import com.ironside.challengesphere.repository.UserChallengeRepository;
 import com.ironside.challengesphere.repository.UserRepository;
 import com.ironside.challengesphere.service.FeedService;
 
@@ -38,10 +40,6 @@ public class FeedServiceImpl implements FeedService {
 
     private static final Logger logger = LogManager.getLogger(FeedServiceImpl.class);
     private static final int TIMELINE_REBUILD_SIZE = 500;
-    private static final String TRENDING_FEED_CACHE_KEY = "TRENDING:READABLE_AVATARS_V2";
-    private static final String EXPLORE_FEED_CACHE_KEY = "EXPLORE:READABLE_AVATARS_V3";
-    private static final String CHALLENGE_FEED_CACHE_PREFIX = "CHALLENGE:READABLE_AVATARS_V2:";
-    private static final String USER_FEED_CACHE_PREFIX = "USER:READABLE_AVATARS_V2:";
 
     @Autowired
     private SubmissionRepository submissionRepository;
@@ -65,7 +63,13 @@ public class FeedServiceImpl implements FeedService {
     private UserBlockRepository userBlockRepository;
 
     @Autowired
+    private UserChallengeRepository userChallengeRepository;
+
+    @Autowired
     private MediaUrlService mediaUrlService;
+
+    @Autowired
+    private SubmissionMediaKeyPolicy submissionMediaKeyPolicy;
 
     @Override
     @Transactional(readOnly = true)
@@ -156,11 +160,6 @@ public class FeedServiceImpl implements FeedService {
                 return FeedResponse.empty(page, pageSize, "TRENDING");
             }
 
-            Optional<FeedResponse> cached = cacheService.getCachedFeed(TRENDING_FEED_CACHE_KEY, currentUserId, page, pageSize, FeedResponse.class);
-            if (cached.isPresent()) {
-                return cached.get();
-            }
-
             Pageable pageable = PageRequest.of(page - 1, pageSize);
             Page<Submission> submissionsPage = submissionRepository.findTrendingSubmissions(currentUserId, pageable);
 
@@ -176,7 +175,6 @@ public class FeedServiceImpl implements FeedService {
 
             FeedResponse response = FeedResponse.create(feedItems, page, pageSize,
                     submissionsPage.getTotalElements(), "TRENDING");
-            cacheService.cacheFeed(TRENDING_FEED_CACHE_KEY, currentUserId, page, pageSize, response);
 
             return response;
 
@@ -196,11 +194,6 @@ public class FeedServiceImpl implements FeedService {
                 return FeedResponse.empty(page, pageSize, "EXPLORE");
             }
 
-            Optional<FeedResponse> cached = cacheService.getCachedFeed(EXPLORE_FEED_CACHE_KEY, currentUserId, page, pageSize, FeedResponse.class);
-            if (cached.isPresent()) {
-                return cached.get();
-            }
-
             Pageable pageable = PageRequest.of(page - 1, pageSize);
             Page<Submission> submissionsPage = submissionRepository.findPublicSubmissions(currentUserId, pageable);
 
@@ -216,7 +209,6 @@ public class FeedServiceImpl implements FeedService {
 
             FeedResponse response = FeedResponse.create(feedItems, page, pageSize,
                     submissionsPage.getTotalElements(), "EXPLORE");
-            cacheService.cacheFeed(EXPLORE_FEED_CACHE_KEY, currentUserId, page, pageSize, response);
 
             return response;
 
@@ -237,11 +229,6 @@ public class FeedServiceImpl implements FeedService {
         }
 
         try {
-            Optional<FeedResponse> cached = cacheService.getCachedFeed(CHALLENGE_FEED_CACHE_PREFIX + challengeId, currentUserId, page, pageSize, FeedResponse.class);
-            if (cached.isPresent()) {
-                return cached.get();
-            }
-
             // Validate challenge exists
             if (!challengeRepository.existsById(challengeId)) {
                 throw new ChallengeSphereException("Challenge not found: " + challengeId, HttpStatus.NOT_FOUND, logger);
@@ -269,7 +256,6 @@ public class FeedServiceImpl implements FeedService {
             List<FeedItemResponse> feedItems = enrichSubmissions(paginatedSubmissions, currentUserId);
 
             FeedResponse response = FeedResponse.create(feedItems, page, pageSize, totalItems, "CHALLENGE");
-            cacheService.cacheFeed(CHALLENGE_FEED_CACHE_PREFIX + challengeId, currentUserId, page, pageSize, response);
 
             return response;
 
@@ -292,11 +278,6 @@ public class FeedServiceImpl implements FeedService {
         }
 
         try {
-            Optional<FeedResponse> cached = cacheService.getCachedFeed(USER_FEED_CACHE_PREFIX + targetUserId, currentUserId, page, pageSize, FeedResponse.class);
-            if (cached.isPresent()) {
-                return cached.get();
-            }
-
             boolean isOwnProfile = targetUserId.equals(currentUserId);
 
             // Validate user exists
@@ -345,7 +326,6 @@ public class FeedServiceImpl implements FeedService {
             List<FeedItemResponse> feedItems = enrichSubmissions(paginatedSubmissions, currentUserId);
 
             FeedResponse response = FeedResponse.create(feedItems, page, pageSize, totalItems, "USER");
-            cacheService.cacheFeed(USER_FEED_CACHE_PREFIX + targetUserId, currentUserId, page, pageSize, response);
 
             return response;
 
@@ -396,6 +376,11 @@ public class FeedServiceImpl implements FeedService {
                 .collect(Collectors.toMap(User::getId, u -> u));
         Map<Long, Challenge> challengeMap = challengeRepository.findAllById(challengeIds).stream()
                 .collect(Collectors.toMap(Challenge::getId, c -> c));
+        Set<Long> activeChallengeMemberships = currentUserId == null
+                ? Set.of()
+                : userChallengeRepository.findActiveByUserId(currentUserId).stream()
+                .map(UserChallenge::getChallengeId)
+                .collect(Collectors.toSet());
 
         // Batch check if current user has gloried these submissions
         Map<Long, Boolean> gloryMap = new HashMap<>();
@@ -420,6 +405,18 @@ public class FeedServiceImpl implements FeedService {
             if (!Boolean.TRUE.equals(challenge.getActive())) {
                 continue;
             }
+            if (!Boolean.TRUE.equals(submission.getActive())) {
+                continue;
+            }
+            boolean isAuthor = currentUserId != null && currentUserId.equals(submission.getUserId());
+            if (!isAuthor && Boolean.TRUE.equals(challenge.getIsPrivate())
+                    && !activeChallengeMemberships.contains(challenge.getId())) {
+                continue;
+            }
+            if (!isAuthor && !Boolean.TRUE.equals(challenge.getIsPrivate())
+                    && Boolean.TRUE.equals(submission.getIsPrivate())) {
+                continue;
+            }
             if (currentUserId != null && !currentUserId.equals(user.getId())
                     && userBlockRepository.existsActiveBlockBetween(currentUserId, user.getId())) {
                 continue;
@@ -431,12 +428,15 @@ public class FeedServiceImpl implements FeedService {
             FeedItemResponse item = FeedItemResponse.fromSubmission(
                     submission,
                     user.getUsername(),
-                    mediaUrlService.toReadableMediaUrl(user.getProfilePicUrl()),
+                    mediaUrlService.toReadableProfilePhoto(user.getId(), user.getProfilePicUrl()),
                     challenge.getTitle(),
                     isGloried,
                     isUngloried
             );
-            item.setMediaUrls(mediaUrlService.toReadableMediaUrlList(submission.getMediaUrls()));
+            List<String> safeMediaKeys = submissionMediaKeyPolicy.filterOwnedKeysForRead(
+                    submission.getUserId(), submission.getMediaUrls());
+            item.setMediaUrls(mediaUrlService.toReadableMediaUrlList(
+                    String.join(",", safeMediaKeys)));
             feedItems.add(item);
         }
 

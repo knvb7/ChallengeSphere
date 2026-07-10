@@ -65,7 +65,8 @@ public class CommentServiceImpl implements CommentService {
     private CommentResponse toCommentResponse(Comment comment, User user) {
         CommentResponse response = CommentResponse.from(comment, user);
         if (response.getProfilePicUrl() != null && !response.getProfilePicUrl().isBlank()) {
-            response.setProfilePicUrl(mediaUrlService.toReadableMediaUrl(response.getProfilePicUrl()));
+            response.setProfilePicUrl(
+                    mediaUrlService.toReadableProfilePhoto(user.getId(), response.getProfilePicUrl()));
         }
         return response;
     }

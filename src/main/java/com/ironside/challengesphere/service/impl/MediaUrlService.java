@@ -12,9 +12,14 @@ import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @Service
 public class MediaUrlService {
@@ -22,12 +27,23 @@ public class MediaUrlService {
     private static final Logger logger = LogManager.getLogger(MediaUrlService.class);
     private static final long READ_SIGNED_URL_TTL_SECONDS = 6 * 60 * 60;
     private static final long READ_SIGNED_URL_CACHE_SAFETY_SECONDS = 5 * 60;
-    private static final String PRIVATE_IMAGE_CACHE_CONTROL = "private, max-age=3600";
+    private static final int MAX_READ_URL_CACHE_ENTRIES = 10_000;
+    private static final Pattern PROFILE_OBJECT_KEY = Pattern.compile(
+            "^profiles/user_(\\d+)/\\d{10,17}_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-"
+                    + "[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\\.(?:jpg|png|gif)$"
+    );
+    private static final Set<String> GOOGLE_AVATAR_HOSTS = Set.of(
+            "lh3.googleusercontent.com",
+            "lh4.googleusercontent.com",
+            "lh5.googleusercontent.com",
+            "lh6.googleusercontent.com"
+    );
 
     @Value("${aws.s3.bucket.name}")
     private String bucketName;
 
-    private final Map<String, CachedSignedUrl> readUrlCache = new ConcurrentHashMap<>();
+    private final Object readUrlCacheLock = new Object();
+    private final Map<String, CachedSignedUrl> readUrlCache = new LinkedHashMap<>(256, 0.75f, true);
 
     public String toReadableMediaUrls(String mediaUrls) {
         if (mediaUrls == null || mediaUrls.isBlank()) {
@@ -62,27 +78,32 @@ public class MediaUrlService {
         try {
             String cacheKey = cacheKey(objectName);
             Instant now = Instant.now();
-            CachedSignedUrl cached = readUrlCache.get(cacheKey);
+            CachedSignedUrl cached;
+            synchronized (readUrlCacheLock) {
+                cached = readUrlCache.get(cacheKey);
+            }
             if (cached != null && cached.refreshAfter().isAfter(now)) {
                 return cached.url();
             }
 
-            CachedSignedUrl resolved = readUrlCache.compute(cacheKey, (key, localValue) -> {
-                Instant computeNow = Instant.now();
-                if (localValue != null && localValue.refreshAfter().isAfter(computeNow)) {
-                    return localValue;
-                }
-
-                String signedUrl = GetSignedUrlForS3.generateV4GetObjectSignedUrl(
-                        bucketName,
-                        objectName,
-                        READ_SIGNED_URL_TTL_SECONDS
-                );
-                return new CachedSignedUrl(
-                        signedUrl,
-                        computeNow.plusSeconds(READ_SIGNED_URL_TTL_SECONDS - READ_SIGNED_URL_CACHE_SAFETY_SECONDS)
-                );
-            });
+            Instant computeNow = Instant.now();
+            CachedSignedUrl generated = new CachedSignedUrl(
+                    GetSignedUrlForS3.generateV4GetObjectSignedUrl(
+                            bucketName,
+                            objectName,
+                            READ_SIGNED_URL_TTL_SECONDS
+                    ),
+                    computeNow.plusSeconds(READ_SIGNED_URL_TTL_SECONDS - READ_SIGNED_URL_CACHE_SAFETY_SECONDS)
+            );
+            CachedSignedUrl resolved;
+            synchronized (readUrlCacheLock) {
+                CachedSignedUrl concurrent = readUrlCache.get(cacheKey);
+                resolved = concurrent != null && concurrent.refreshAfter().isAfter(Instant.now())
+                        ? concurrent
+                        : generated;
+                readUrlCache.put(cacheKey, resolved);
+                evictReadUrlCacheEntries();
+            }
             return resolved.url();
         } catch (Exception e) {
             logger.warn("Failed to sign readable media URL");
@@ -90,39 +111,63 @@ public class MediaUrlService {
         }
     }
 
+    public String toReadableProfilePhoto(Long ownerUserId, String profilePhotoValue) {
+        if (ownerUserId == null || profilePhotoValue == null || profilePhotoValue.isBlank()) {
+            return null;
+        }
+
+        String trimmed = profilePhotoValue.trim();
+        if (trimmed.startsWith("https://")) {
+            try {
+                URI uri = URI.create(trimmed);
+                String host = uri.getHost();
+                if (host != null
+                        && GOOGLE_AVATAR_HOSTS.contains(host.toLowerCase(Locale.ROOT))) {
+                    return trimmed;
+                }
+            } catch (Exception ignored) {
+                return null;
+            }
+        }
+
+        String objectKey = extractS3ObjectName(trimmed);
+        Matcher matcher = objectKey == null
+                ? PROFILE_OBJECT_KEY.matcher("")
+                : PROFILE_OBJECT_KEY.matcher(objectKey);
+        if (!matcher.matches() || !Long.toString(ownerUserId).equals(matcher.group(1))) {
+            return null;
+        }
+        return toReadableMediaUrl(objectKey);
+    }
+
     public String createUploadUrl(
             String objectName,
             long expiresInSeconds,
-            GeneratePresignedUrlsRequest.ContentType contentType) {
+            GeneratePresignedUrlsRequest.ContentType contentType,
+            Long contentLength) {
         return GetSignedUrlForS3.generatePutObjectSignedUrl(
                 bucketName,
                 objectName,
                 expiresInSeconds,
-                contentType
+                contentType,
+                contentLength
         );
     }
 
-    public void applyPrivateImageCacheHeaders(List<String> mediaUrls) {
-        if (mediaUrls == null || mediaUrls.isEmpty()) {
-            return;
-        }
-
-        for (String mediaUrl : mediaUrls) {
-            String objectName = extractS3ObjectName(mediaUrl);
-            if (objectName == null || objectName.isBlank()) {
-                continue;
-            }
-
-            try {
-                GetSignedUrlForS3.updateObjectCacheControl(bucketName, objectName, PRIVATE_IMAGE_CACHE_CONTROL);
-            } catch (Exception e) {
-                logger.warn("Failed to set cache headers for S3 object");
-            }
+    private void evictReadUrlCacheEntries() {
+        Iterator<Map.Entry<String, CachedSignedUrl>> iterator = readUrlCache.entrySet().iterator();
+        while (readUrlCache.size() > MAX_READ_URL_CACHE_ENTRIES && iterator.hasNext()) {
+            iterator.next();
+            iterator.remove();
         }
     }
 
     public void uploadObject(String objectName, byte[] content, String contentType) {
         GetSignedUrlForS3.uploadObject(bucketName, objectName, content, contentType);
+    }
+
+    public boolean objectExists(String objectName) {
+        return GetSignedUrlForS3.objectExists(bucketName, objectName);
     }
 
     public List<String> toStoredMediaUrls(List<String> mediaUrls) {

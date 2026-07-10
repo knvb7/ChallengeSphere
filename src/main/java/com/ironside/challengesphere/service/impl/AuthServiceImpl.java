@@ -567,7 +567,8 @@ public class AuthServiceImpl implements AuthService {
     private User toReadableAuthUser(User user) {
         User readableUser = new User();
         BeanUtils.copyProperties(user, readableUser);
-        readableUser.setProfilePicUrl(mediaUrlService.toReadableMediaUrl(user.getProfilePicUrl()));
+        readableUser.setProfilePicUrl(
+                mediaUrlService.toReadableProfilePhoto(user.getId(), user.getProfilePicUrl()));
         return readableUser;
     }
 

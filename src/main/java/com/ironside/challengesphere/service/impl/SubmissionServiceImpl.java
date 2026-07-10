@@ -27,8 +27,6 @@ import org.springframework.data.domain.Sort;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.transaction.support.TransactionSynchronization;
-import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.multipart.MultipartFile;
 
 import com.ironside.challengesphere.api.request.CreateSubmissionRequest;
@@ -51,7 +49,8 @@ import com.ironside.challengesphere.repository.UserBlockRepository;
 import com.ironside.challengesphere.repository.UserChallengeRepository;
 import com.ironside.challengesphere.repository.UserRepository;
 import com.ironside.challengesphere.repository.projection.SubmissionPreviewProjection;
-import com.ironside.challengesphere.security.AuthTokenStore;
+import com.ironside.challengesphere.security.IssuedUploadService;
+import com.ironside.challengesphere.security.UploadQuotaService;
 import com.ironside.challengesphere.service.ContentModerationService;
 import com.ironside.challengesphere.service.LeaderboardService;
 import com.ironside.challengesphere.service.NotificationService;
@@ -101,21 +100,25 @@ public class SubmissionServiceImpl implements SubmissionService {
     private SubmissionMediaKeyPolicy submissionMediaKeyPolicy;
 
     @Autowired
-    private SubmissionModerationJob submissionModerationJob;
+    private UploadQuotaService uploadQuotaService;
 
     @Autowired
-    private AuthTokenStore authTokenStore;
+    private IssuedUploadService issuedUploadService;
+
+    @Autowired
+    private ModerationEnforcementService moderationEnforcementService;
 
     @Value("${aws.s3.bucket.name}")
     private String bucketName;
 
     @Override
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public SubmissionResponse createSubmission(CreateSubmissionRequest request) throws ChallengeSphereException {
         Long userId = request.getUserId();
         Long challengeId = request.getChallengeId();
         Integer dayNumber = request.getDayNumber();
         List<String> mediaKeys = submissionMediaKeyPolicy.validateAndNormalize(userId, request.getMediaUrls());
+        requireSubmissionMedia(mediaKeys);
 
         logger.info("Creating submission for user: {}, challenge: {}, day: {}", userId, challengeId, dayNumber);
 
@@ -192,8 +195,8 @@ public class SubmissionServiceImpl implements SubmissionService {
                             logger
                     );
                 }
-                ensureSubmissionDayAcceptsUpload(challenge, dayNumber);
             }
+            ensureSubmissionDayAcceptsUpload(challenge, dayNumber);
 
             // Serialize concurrent writers for the same (user, challenge, day) tuple so the
             // 5-per-day cap is atomic. The lock is scoped to this transaction — two requests
@@ -225,7 +228,26 @@ public class SubmissionServiceImpl implements SubmissionService {
                 );
             }
 
-            mediaUrlService.applyPrivateImageCacheHeaders(mediaKeys);
+            issuedUploadService.consume(
+                    userId, mediaKeys, IssuedUploadService.Purpose.SUBMISSION_PHOTO);
+            ContentModerationService.Result moderation = contentModerationService.scanStrict(mediaKeys);
+            if (moderation.verdict() == ContentModerationService.Verdict.BLOCK_AND_BAN) {
+                moderationEnforcementService.banUser(
+                        userId,
+                        "Content policy violation: " + summarizeFindings(moderation));
+                throw new ChallengeSphereException(
+                        "Submission rejected for content policy violation. Your account has been suspended.",
+                        HttpStatus.FORBIDDEN,
+                        logger
+                );
+            }
+            if (moderation.verdict() != ContentModerationService.Verdict.CLEAN) {
+                throw new ChallengeSphereException(
+                        "Submission photo rejected by content safety review",
+                        HttpStatus.BAD_REQUEST,
+                        logger
+                );
+            }
 
             // Create submission
             Submission submission = new Submission();
@@ -244,8 +266,8 @@ public class SubmissionServiceImpl implements SubmissionService {
                 submission.setIsPrivate(request.getIsPrivate() != null ? request.getIsPrivate() : false);
             }
 
-            // Set submission date - defaults to today if not provided
-            Timestamp submissionTime = request.getSubmissionDate() != null ? request.getSubmissionDate() : Timestamp.from(Instant.now());
+            // Submission time is server-authoritative; clients cannot backdate or future-date activity.
+            Timestamp submissionTime = Timestamp.from(Instant.now());
             submission.setSubmissionTime(submissionTime);
             submission.setCreatedAt(new Timestamp(System.currentTimeMillis()));
             submission.setActive(true);
@@ -257,8 +279,6 @@ public class SubmissionServiceImpl implements SubmissionService {
 
             logger.info("Successfully created submission with id: {} for user: {}, challenge: {}, day: {}",
                     savedSubmission.getId(), userId, challengeId, dayNumber);
-
-            scheduleSubmissionModerationAfterCommit(savedSubmission.getId());
 
             if (oneOffChallenge) {
                 markOneOffChallengeCompleted(userChallenge);
@@ -405,13 +425,14 @@ public class SubmissionServiceImpl implements SubmissionService {
     }
 
     @Override
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public SubmissionResponse reuploadSubmission(Long submissionId, CreateSubmissionRequest request) throws ChallengeSphereException {
         if (submissionId == null) {
             throw new ChallengeSphereException("Submission ID is required", HttpStatus.BAD_REQUEST, logger);
         }
         Long userId = request.getUserId();
         List<String> mediaKeys = submissionMediaKeyPolicy.validateAndNormalize(userId, request.getMediaUrls());
+        requireSubmissionMedia(mediaKeys);
         logger.info("Reuploading submission: {} for user: {}", submissionId, userId);
 
         try {
@@ -438,16 +459,27 @@ public class SubmissionServiceImpl implements SubmissionService {
                     ));
             ensureSubmissionDayAcceptsUpload(challenge, submission.getDayNumber());
 
-            ContentModerationService.Result moderation = contentModerationService.scanStrict(mediaKeys);
+            String storedMediaKeys = mediaUrlService.toStoredMediaUrlsString(mediaKeys);
+            Set<String> existingMediaKeys = submission.getMediaUrls() == null
+                    ? Set.of()
+                    : new HashSet<>(List.of(submission.getMediaUrls().split(",")));
+            List<String> newlyAttachedMediaKeys = mediaKeys.stream()
+                    .filter(key -> !existingMediaKeys.contains(key))
+                    .toList();
+            if (!newlyAttachedMediaKeys.isEmpty()) {
+                issuedUploadService.consume(
+                        userId,
+                        newlyAttachedMediaKeys,
+                        IssuedUploadService.Purpose.SUBMISSION_PHOTO);
+            }
+            ContentModerationService.Result moderation = !newlyAttachedMediaKeys.isEmpty()
+                    ? contentModerationService.scanStrict(newlyAttachedMediaKeys)
+                    : new ContentModerationService.Result(
+                            ContentModerationService.Verdict.CLEAN, List.of());
             if (moderation.verdict() == ContentModerationService.Verdict.BLOCK_AND_BAN) {
-                User user = userRepository.findById(userId).orElse(null);
-                if (user != null) {
-                    user.setActive(false);
-                    user.setBannedAt(new Timestamp(System.currentTimeMillis()));
-                    user.setBanReason("Content policy violation: " + summarizeFindings(moderation));
-                    userRepository.save(user);
-                    authTokenStore.revokeAllForUser(userId);
-                }
+                moderationEnforcementService.banUser(
+                        userId,
+                        "Content policy violation: " + summarizeFindings(moderation));
                 throw new ChallengeSphereException(
                         "Submission rejected for content policy violation. Your account has been suspended.",
                         HttpStatus.FORBIDDEN,
@@ -455,13 +487,15 @@ public class SubmissionServiceImpl implements SubmissionService {
                 );
             }
 
-            mediaUrlService.applyPrivateImageCacheHeaders(mediaKeys);
             submission.setDescription(request.getDescription());
-            submission.setMediaUrls(mediaUrlService.toStoredMediaUrlsString(mediaKeys));
-            if (request.getIsPrivate() != null) {
+            submission.setMediaUrls(storedMediaKeys);
+            if (Boolean.TRUE.equals(challenge.getIsPrivate())) {
+                // A submission can never be made public while its parent challenge is private.
+                submission.setIsPrivate(true);
+            } else if (request.getIsPrivate() != null) {
                 submission.setIsPrivate(request.getIsPrivate());
             }
-            submission.setSubmissionTime(request.getSubmissionDate() != null ? request.getSubmissionDate() : Timestamp.from(Instant.now()));
+            submission.setSubmissionTime(Timestamp.from(Instant.now()));
             submission.setUpdatedAt(new Timestamp(System.currentTimeMillis()));
             submission.setActive(moderation.verdict() != ContentModerationService.Verdict.FLAG_FOR_REVIEW);
 
@@ -603,7 +637,9 @@ public class SubmissionServiceImpl implements SubmissionService {
             if (challengeItems == null || challengeItems.size() >= 4) {
                 continue;
             }
-            String firstMedia = mediaUrlService.toReadableMediaUrlList(row.getMediaUrls())
+            List<String> safeMediaKeys = submissionMediaKeyPolicy.filterOwnedKeysForRead(
+                    row.getUserId(), row.getMediaUrls());
+            String firstMedia = mediaUrlService.toReadableMediaUrlList(String.join(",", safeMediaKeys))
                     .stream()
                     .filter(this::isImageMediaUrl)
                     .findFirst()
@@ -689,6 +725,8 @@ public class SubmissionServiceImpl implements SubmissionService {
                 );
             }
 
+            uploadQuotaService.reserve(userId, mediaFiles);
+
             // Generate presigned URLs for each media file
             List<PresignedUrlsResponse.PresignedUrlInfo> presignedUrls = new ArrayList<>();
             long expirationTimeInSeconds = 3600; // 1 hour expiration
@@ -703,12 +741,17 @@ public class SubmissionServiceImpl implements SubmissionService {
                             System.currentTimeMillis(),
                             UUID.randomUUID());
 
+                    issuedUploadService.issue(
+                            userId, fileKey, IssuedUploadService.Purpose.SUBMISSION_PHOTO);
+
                     // Generate presigned URL using S3
                     PresignedUrlsResponse.PresignedUrlInfo urlInfo = getPresignedUrlInfo(mediaFile, fileKey, expirationTimeInSeconds);
 
                     presignedUrls.add(urlInfo);
                     logger.debug("Generated submission upload URL");
 
+                } catch (ChallengeSphereException e) {
+                    throw e;
                 } catch (Exception e) {
                     logger.error("Failed to generate submission upload URL");
                     throw new ChallengeSphereException(
@@ -743,7 +786,8 @@ public class SubmissionServiceImpl implements SubmissionService {
                         bucketName,
                         fileKey,
                         expirationTimeInSeconds,
-                        mediaFile.getContentType()),
+                        mediaFile.getContentType(),
+                        mediaFile.getFileSizeBytes()),
                 fileKey,
                 expirationTimeInSeconds
         );
@@ -777,6 +821,8 @@ public class SubmissionServiceImpl implements SubmissionService {
             throw new ChallengeSphereException("User not found with id: " + userId, HttpStatus.NOT_FOUND, logger);
         }
 
+        uploadQuotaService.reserve(userId, 1, file.getSize());
+
         String fileKey = submissionMediaKeyPolicy.createKey(
                 userId,
                 mediaType,
@@ -786,8 +832,12 @@ public class SubmissionServiceImpl implements SubmissionService {
 
         try {
             mediaUrlService.uploadObject(fileKey, file.getBytes(), contentType.getMimeType());
+            issuedUploadService.issue(
+                    userId, fileKey, IssuedUploadService.Purpose.SUBMISSION_PHOTO);
             logger.info("Uploaded submission media through backend fallback for userId={}", userId);
             return fileKey;
+        } catch (ChallengeSphereException e) {
+            throw e;
         } catch (Exception e) {
             logger.error("Backend media upload failed for userId={}", userId);
             throw new ChallengeSphereException("Failed to upload submission media", HttpStatus.INTERNAL_SERVER_ERROR, logger, e);
@@ -818,14 +868,11 @@ public class SubmissionServiceImpl implements SubmissionService {
     private void validateSubmissionMedia(
             MediaTypes mediaType,
             GeneratePresignedUrlsRequest.ContentType contentType) throws ChallengeSphereException {
-        if (mediaType != MediaTypes.SUBMISSION_PHOTO && mediaType != MediaTypes.SUBMISSION_VIDEO) {
+        if (mediaType != MediaTypes.SUBMISSION_PHOTO) {
             throw new ChallengeSphereException("Unsupported submission media type", HttpStatus.BAD_REQUEST, logger);
         }
-        if (mediaType == MediaTypes.SUBMISSION_PHOTO && contentType == GeneratePresignedUrlsRequest.ContentType.VIDEO_MP4) {
+        if (contentType == GeneratePresignedUrlsRequest.ContentType.VIDEO_MP4) {
             throw new ChallengeSphereException("Content type does not match submission photo media type", HttpStatus.BAD_REQUEST, logger);
-        }
-        if (mediaType == MediaTypes.SUBMISSION_VIDEO && contentType != GeneratePresignedUrlsRequest.ContentType.VIDEO_MP4) {
-            throw new ChallengeSphereException("Content type does not match submission video media type", HttpStatus.BAD_REQUEST, logger);
         }
     }
 
@@ -865,7 +912,11 @@ public class SubmissionServiceImpl implements SubmissionService {
         copy.setChallengeId(submission.getChallengeId());
         copy.setDayNumber(submission.getDayNumber());
         copy.setDescription(submission.getDescription());
-        copy.setMediaUrls(mediaUrlService.toReadableMediaUrls(submission.getMediaUrls()));
+        List<String> safeMediaKeys = submissionMediaKeyPolicy.filterOwnedKeysForRead(
+                submission.getUserId(), submission.getMediaUrls());
+        copy.setMediaUrls(safeMediaKeys.isEmpty()
+                ? null
+                : mediaUrlService.toReadableMediaUrls(String.join(",", safeMediaKeys)));
         copy.setIsPrivate(submission.getIsPrivate());
         copy.setSubmissionTime(submission.getSubmissionTime());
         copy.setCreatedAt(submission.getCreatedAt());
@@ -887,29 +938,14 @@ public class SubmissionServiceImpl implements SubmissionService {
         }
     }
 
-    private void scheduleSubmissionModerationAfterCommit(Long submissionId) {
-        Runnable dispatch = () -> {
-            try {
-                submissionModerationJob.moderateSubmissionAsync(submissionId);
-            } catch (Exception e) {
-                logger.warn(
-                        "Failed to enqueue moderation for submission {}: {}",
-                        submissionId,
-                        e.getClass().getSimpleName());
-            }
-        };
-
-        if (TransactionSynchronizationManager.isSynchronizationActive()) {
-            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-                @Override
-                public void afterCommit() {
-                    dispatch.run();
-                }
-            });
-            return;
+    private void requireSubmissionMedia(List<String> mediaKeys) throws ChallengeSphereException {
+        if (mediaKeys == null || mediaKeys.isEmpty()) {
+            throw new ChallengeSphereException(
+                    "At least one submission photo is required",
+                    HttpStatus.BAD_REQUEST,
+                    logger
+            );
         }
-
-        dispatch.run();
     }
 
     private boolean isImageMediaUrl(String value) {
@@ -971,6 +1007,22 @@ public class SubmissionServiceImpl implements SubmissionService {
                     logger
             );
         }
+        if (challenge.getStartDate() == null) {
+            throw new ChallengeSphereException(
+                    "Challenge start date is required for submissions",
+                    HttpStatus.BAD_REQUEST,
+                    logger
+            );
+        }
+
+        LocalDate today = LocalDate.now();
+        if (today.isBefore(challenge.getStartDate())) {
+            throw new ChallengeSphereException(
+                    "Submissions are not allowed before the challenge starts",
+                    HttpStatus.BAD_REQUEST,
+                    logger
+            );
+        }
         if (isOneOffChallenge(challenge)) {
             normalizeOneOffSubmissionDay(dayNumber);
             return;
@@ -982,16 +1034,15 @@ public class SubmissionServiceImpl implements SubmissionService {
                     logger
             );
         }
-        if (challenge.getStartDate() == null) {
+
+        LocalDate challengeDay = challenge.getStartDate().plusDays(dayNumber - 1L);
+        if (today.isBefore(challengeDay)) {
             throw new ChallengeSphereException(
-                    "Challenge start date is required for submissions",
+                    "Uploads for a future challenge day are not allowed",
                     HttpStatus.BAD_REQUEST,
                     logger
             );
         }
-
-        LocalDate challengeDay = challenge.getStartDate().plusDays(dayNumber - 1L);
-        LocalDate today = LocalDate.now();
         LocalDate lastAllowedDate = challengeDay.plusDays(SUBMISSION_GRACE_DAYS);
         if (today.isAfter(lastAllowedDate)) {
             throw new ChallengeSphereException(

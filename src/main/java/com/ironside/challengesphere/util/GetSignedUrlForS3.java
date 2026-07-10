@@ -12,11 +12,8 @@ import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.S3Client;
-import software.amazon.awssdk.services.s3.model.CopyObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
-import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
-import software.amazon.awssdk.services.s3.model.MetadataDirective;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.S3Exception;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
@@ -75,11 +72,18 @@ public class GetSignedUrlForS3 {
             String bucketName,
             String objectName,
             Long expirationTime,
-            GeneratePresignedUrlsRequest.ContentType contentType
+            GeneratePresignedUrlsRequest.ContentType contentType,
+            Long contentLength
     ) {
+        if (contentLength == null || contentLength <= 0 || contentLength > 15L * 1024 * 1024) {
+            throw new IllegalArgumentException("Upload content length must be between 1 byte and 15 MB");
+        }
         PutObjectRequest.Builder objectRequest = PutObjectRequest.builder()
                 .bucket(bucketName)
-                .key(objectName);
+                .key(objectName)
+                .contentLength(contentLength)
+                .cacheControl("private, max-age=3600")
+                .ifNoneMatch("*");
         if (contentType != null) {
             objectRequest.contentType(contentType.getMimeType());
         }
@@ -114,37 +118,19 @@ public class GetSignedUrlForS3 {
         return signedUrl;
     }
 
-    public static void updateObjectCacheControl(String bucketName, String objectName, String cacheControl) {
-        HeadObjectResponse headObject;
+    public static boolean objectExists(String bucketName, String objectName) {
         try {
-            headObject = s3Client().headObject(HeadObjectRequest.builder()
+            s3Client().headObject(HeadObjectRequest.builder()
                     .bucket(bucketName)
                     .key(objectName)
                     .build());
+            return true;
         } catch (S3Exception e) {
             if (e.statusCode() == 404) {
-                logger.warn("Skipping cache-control update; S3 object not found");
-                return;
+                return false;
             }
             throw e;
         }
-
-        CopyObjectRequest.Builder copyRequest = CopyObjectRequest.builder()
-                .sourceBucket(bucketName)
-                .sourceKey(objectName)
-                .destinationBucket(bucketName)
-                .destinationKey(objectName)
-                .metadataDirective(MetadataDirective.REPLACE)
-                .cacheControl(cacheControl);
-        if (headObject.contentType() != null) {
-            copyRequest.contentType(headObject.contentType());
-        }
-        if (headObject.metadata() != null && !headObject.metadata().isEmpty()) {
-            copyRequest.metadata(headObject.metadata());
-        }
-
-        s3Client().copyObject(copyRequest.build());
-        logger.debug("Updated cache-control for S3 object");
     }
 
     public static void uploadObject(String bucketName, String objectName, byte[] content, String contentType) {

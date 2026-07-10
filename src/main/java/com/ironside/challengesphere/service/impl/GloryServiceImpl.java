@@ -69,7 +69,8 @@ public class GloryServiceImpl implements GloryService {
     private GloryUserResponse toGloryUserResponse(Glory glory, User user) {
         GloryUserResponse response = GloryUserResponse.from(glory, user);
         if (response.getProfilePicUrl() != null && !response.getProfilePicUrl().isBlank()) {
-            response.setProfilePicUrl(mediaUrlService.toReadableMediaUrl(response.getProfilePicUrl()));
+            response.setProfilePicUrl(
+                    mediaUrlService.toReadableProfilePhoto(user.getId(), response.getProfilePicUrl()));
         }
         return response;
     }

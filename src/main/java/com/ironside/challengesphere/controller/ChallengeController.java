@@ -8,6 +8,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
@@ -51,11 +52,13 @@ import com.ironside.challengesphere.security.UserPrincipal;
 import com.ironside.challengesphere.service.ChallengeService;
 
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Size;
 import lombok.RequiredArgsConstructor;
 
 @RestController
 @RequestMapping("/api/v1/challenges")
 @RequiredArgsConstructor
+@Validated
 public class ChallengeController {
     private static final Logger logger = LogManager.getLogger(ChallengeController.class);
 
@@ -109,7 +112,8 @@ public class ChallengeController {
     @PostMapping("/batch")
     public ResponseEntity<List<Challenge>> getChallengesByIds(
             @AuthenticationPrincipal UserPrincipal principal,
-            @RequestBody List<Long> ids) throws ChallengeSphereException {
+            @RequestBody @Size(max = 100, message = "A batch can contain at most 100 challenge ids") List<Long> ids)
+            throws ChallengeSphereException {
         List<Challenge> challenges = challengeService.getChallengeByIds(ids, SecurityAccess.requireUserId(principal));
         return ResponseEntity.ok(challenges);
     }
@@ -179,7 +183,7 @@ public class ChallengeController {
     @GetMapping("/by-hashtags")
     public ResponseEntity<ChallengesByHashtagResponse> getChallengesByHashtag(
             @AuthenticationPrincipal UserPrincipal principal,
-            @RequestParam List<String> hashtags,
+            @RequestParam @Size(max = 20, message = "At most 20 hashtags may be requested") List<String> hashtags,
             @RequestParam(required = false) Long currentUserId,
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "10") int pageSize) throws ChallengeSphereException {
@@ -247,7 +251,7 @@ public class ChallengeController {
     public ResponseEntity<Challenge> updateChallenge(
             @AuthenticationPrincipal UserPrincipal principal,
             @PathVariable Long id,
-            @RequestBody ChallengeUpdateRequest request) throws ChallengeSphereException {
+            @Valid @RequestBody ChallengeUpdateRequest request) throws ChallengeSphereException {
         logger.info("PUT /api/v1/challenges/{}", id);
         Long actorUserId = SecurityAccess.requireUserId(principal);
         Challenge updated = challengeService.updateChallenge(id, request, actorUserId, false);

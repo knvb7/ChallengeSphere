@@ -1949,15 +1949,14 @@ public class RedisCacheServiceImpl {
     }
 
     /**
-     * Invalidate a user's timeline sorted set (ASYNC).
-     * Call on follow/unfollow so the next read rebuilds from DB.
+     * Invalidate a user's timeline sorted set synchronously.
+     * Access-revocation paths call this before returning; live feed hydration
+     * still revalidates visibility if Redis is unavailable.
      */
     public void invalidateTimeline(Long userId) {
         if (userId == null) return;
-        executeAsync(() -> {
-            delete(FEED_TIMELINE_PREFIX + userId);
-            logger.debug("Invalidated timeline for userId={}", userId);
-        });
+        delete(FEED_TIMELINE_PREFIX + userId);
+        logger.debug("Invalidated timeline for userId={}", userId);
     }
 
     /**

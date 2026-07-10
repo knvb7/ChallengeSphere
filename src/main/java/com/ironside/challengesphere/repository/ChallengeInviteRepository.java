@@ -15,6 +15,9 @@ public interface ChallengeInviteRepository extends JpaRepository<ChallengeInvite
     @Query(value = "SELECT * FROM challengesphere.challenge_invites WHERE invite_code = :inviteCode", nativeQuery = true)
     Optional<ChallengeInvite> findByInviteCode(@Param("inviteCode") String inviteCode);
 
+    @Query(value = "SELECT * FROM challengesphere.challenge_invites WHERE invite_code = :inviteCode FOR UPDATE", nativeQuery = true)
+    Optional<ChallengeInvite> findByInviteCodeForUpdate(@Param("inviteCode") String inviteCode);
+
     @Query(value = "SELECT * FROM challengesphere.challenge_invites WHERE challenge_id = :challengeId AND active = true ORDER BY created_at DESC", nativeQuery = true)
     List<ChallengeInvite> findActiveByChallengeId(@Param("challengeId") Long challengeId);
 
@@ -24,4 +27,3 @@ public interface ChallengeInviteRepository extends JpaRepository<ChallengeInvite
     @Query(value = "SELECT * FROM challengesphere.challenge_invites WHERE created_by = :userId ORDER BY created_at DESC", nativeQuery = true)
     List<ChallengeInvite> findByCreatedBy(@Param("userId") Long userId);
 }
-

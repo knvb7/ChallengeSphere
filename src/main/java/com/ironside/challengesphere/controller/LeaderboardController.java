@@ -61,6 +61,7 @@ public class LeaderboardController {
         Long actorUserId = SecurityAccess.requireUserId(principal);
         GetLeaderboardRequest request = GetLeaderboardRequest.builder()
                 .challengeId(challengeId)
+                .viewerUserId(actorUserId)
                 .limit(Math.min(limit, 100)) // Cap at 100
                 .userId(userId == null ? actorUserId : userId)
                 .type(GetLeaderboardRequest.LeaderboardType.valueOf(type.toUpperCase()))
@@ -77,12 +78,15 @@ public class LeaderboardController {
     @Operation(summary = "Get user's rank in a challenge leaderboard", 
                description = "Returns the user's current rank, score, and percentile")
     public ResponseEntity<LeaderboardResponse.UserRankDTO> getUserRank(
+            @AuthenticationPrincipal UserPrincipal principal,
             @PathVariable @Parameter(description = "Challenge ID") Long challengeId,
             @PathVariable @Parameter(description = "User ID") Long userId) throws ChallengeSphereException {
         
         logger.info("GET /api/v1/leaderboard/challenge/{}/user/{}/rank", challengeId, userId);
         
-        LeaderboardResponse.UserRankDTO rank = leaderboardService.getUserRank(challengeId, userId);
+        Long actorUserId = SecurityAccess.requireUserId(principal);
+        LeaderboardResponse.UserRankDTO rank = leaderboardService.getUserRank(
+                challengeId, userId, actorUserId);
         return ResponseEntity.ok(rank);
     }
 

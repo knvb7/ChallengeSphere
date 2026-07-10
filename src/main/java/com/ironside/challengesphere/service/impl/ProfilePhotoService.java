@@ -4,6 +4,9 @@ import com.ironside.challengesphere.api.request.GeneratePresignedUrlsRequest;
 import com.ironside.challengesphere.api.response.PresignedUrlsResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.repository.UserRepository;
+import com.ironside.challengesphere.security.IssuedUploadService;
+import com.ironside.challengesphere.security.UploadQuotaService;
+import com.ironside.challengesphere.service.ContentModerationService;
 import com.ironside.challengesphere.util.MediaTypes;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -25,10 +28,21 @@ public class ProfilePhotoService {
 
     private final UserRepository userRepository;
     private final MediaUrlService mediaUrlService;
+    private final ContentModerationService contentModerationService;
+    private final UploadQuotaService uploadQuotaService;
+    private final IssuedUploadService issuedUploadService;
 
-    public ProfilePhotoService(UserRepository userRepository, MediaUrlService mediaUrlService) {
+    public ProfilePhotoService(
+            UserRepository userRepository,
+            MediaUrlService mediaUrlService,
+            ContentModerationService contentModerationService,
+            UploadQuotaService uploadQuotaService,
+            IssuedUploadService issuedUploadService) {
         this.userRepository = userRepository;
         this.mediaUrlService = mediaUrlService;
+        this.contentModerationService = contentModerationService;
+        this.uploadQuotaService = uploadQuotaService;
+        this.issuedUploadService = issuedUploadService;
     }
 
     public PresignedUrlsResponse generateUpload(
@@ -45,6 +59,8 @@ public class ProfilePhotoService {
             );
         }
 
+        uploadQuotaService.reserve(userId, List.of(file));
+
         String extension = extensionFor(file.getContentType());
         String objectName = "profiles/user_%d/%d_%s%s".formatted(
                 userId,
@@ -52,10 +68,13 @@ public class ProfilePhotoService {
                 UUID.randomUUID(),
                 extension
         );
+        issuedUploadService.issue(
+                userId, objectName, IssuedUploadService.Purpose.PROFILE_PHOTO);
         String uploadUrl = mediaUrlService.createUploadUrl(
                 objectName,
                 UPLOAD_URL_TTL_SECONDS,
-                file.getContentType()
+                file.getContentType(),
+                file.getFileSizeBytes()
         );
 
         PresignedUrlsResponse.PresignedUrlInfo upload = new PresignedUrlsResponse.PresignedUrlInfo(
@@ -78,6 +97,30 @@ public class ProfilePhotoService {
                 || !Long.toString(userId).equals(matcher.group(1))) {
             throw new ChallengeSphereException(
                     "Invalid profile photo upload key",
+                    HttpStatus.BAD_REQUEST,
+                    logger
+            );
+        }
+
+        issuedUploadService.consume(
+                userId, List.of(normalizedKey), IssuedUploadService.Purpose.PROFILE_PHOTO);
+
+        ContentModerationService.Result moderation;
+        try {
+            moderation = contentModerationService.scanStrict(List.of(normalizedKey));
+        } catch (Exception e) {
+            logger.error("Profile photo moderation failed closed for userId={}: {}",
+                    userId, e.getClass().getSimpleName());
+            throw new ChallengeSphereException(
+                    "Profile photo could not be verified for safety. Please try again.",
+                    HttpStatus.SERVICE_UNAVAILABLE,
+                    logger,
+                    e
+            );
+        }
+        if (moderation == null || moderation.verdict() != ContentModerationService.Verdict.CLEAN) {
+            throw new ChallengeSphereException(
+                    "Profile photo rejected by content safety review",
                     HttpStatus.BAD_REQUEST,
                     logger
             );

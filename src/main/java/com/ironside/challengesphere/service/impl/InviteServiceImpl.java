@@ -155,14 +155,14 @@ public class InviteServiceImpl implements InviteService {
     }
 
     @Override
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public RedeemInviteResponse redeemInvite(RedeemInviteRequest request) throws ChallengeSphereException {
         String inviteCode = request.getInviteCode();
         Long userId = request.getUserId();
 
         logger.info("Redeeming invite for user {}", userId);
 
-        ChallengeInvite invite = findAvailableInvite(inviteCode);
+        ChallengeInvite invite = findAvailableInvite(inviteCode, true);
 
         // Validate user exists
         if (!userRepository.existsById(userId)) {
@@ -206,7 +206,7 @@ public class InviteServiceImpl implements InviteService {
         joinRequest.setChallengeId(invite.getChallengeId());
         joinRequest.setUserIds(List.of(userId));
 
-        JoinChallengeResponse joinResponse = challengeService.joinChallenge(joinRequest);
+        JoinChallengeResponse joinResponse = challengeService.joinChallengeFromVerifiedInvite(joinRequest);
 
         if (!joinResponse.isSuccess() || joinResponse.getSuccessfulUserIds().isEmpty()) {
             throw new ChallengeSphereException(
@@ -243,7 +243,7 @@ public class InviteServiceImpl implements InviteService {
     public InviteLinkResponse getInviteDetails(String inviteCode) throws ChallengeSphereException {
         logger.debug("Getting invite preview");
 
-        ChallengeInvite invite = findAvailableInvite(inviteCode);
+        ChallengeInvite invite = findAvailableInvite(inviteCode, false);
         Challenge challenge = challengeRepository.findById(invite.getChallengeId())
                 .orElseThrow(this::inviteUnavailable);
 
@@ -370,12 +370,15 @@ public class InviteServiceImpl implements InviteService {
         return sb.toString();
     }
 
-    private ChallengeInvite findAvailableInvite(String inviteCode) throws ChallengeSphereException {
+    private ChallengeInvite findAvailableInvite(String inviteCode, boolean lockForRedemption)
+            throws ChallengeSphereException {
         if (!hasValidInviteCodeFormat(inviteCode)) {
             throw inviteUnavailable();
         }
 
-        ChallengeInvite invite = challengeInviteRepository.findByInviteCode(inviteCode)
+        ChallengeInvite invite = (lockForRedemption
+                ? challengeInviteRepository.findByInviteCodeForUpdate(inviteCode)
+                : challengeInviteRepository.findByInviteCode(inviteCode))
                 .orElseThrow(this::inviteUnavailable);
 
         if (!Boolean.TRUE.equals(invite.getActive())

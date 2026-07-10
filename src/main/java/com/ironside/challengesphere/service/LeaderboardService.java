@@ -24,7 +24,10 @@ public interface LeaderboardService {
      * @param userId The user ID
      * @return UserRankDTO with rank information
      */
-    LeaderboardResponse.UserRankDTO getUserRank(Long challengeId, Long userId) throws ChallengeSphereException;
+    LeaderboardResponse.UserRankDTO getUserRank(
+            Long challengeId,
+            Long userId,
+            Long viewerUserId) throws ChallengeSphereException;
     
     /**
      * Update a user's score in the leaderboard

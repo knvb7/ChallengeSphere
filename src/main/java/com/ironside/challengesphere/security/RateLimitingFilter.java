@@ -6,6 +6,8 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
@@ -50,6 +52,17 @@ public class RateLimitingFilter extends OncePerRequestFilter {
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
             throws ServletException, IOException {
+        String path = applicationPath(request);
+        if (isAmbiguousPath(path)) {
+            response.setStatus(400);
+            response.setContentType(MediaType.APPLICATION_JSON_VALUE);
+            response.setHeader("Cache-Control", "no-store");
+            response.getWriter().write(
+                    "{\"errorMessage\":\"Non-canonical API path\",\"errorCode\":400}"
+            );
+            return;
+        }
+
         Limit limit = limitFor(request);
         if (limit != null) {
             RateLimitStore.Decision decision;
@@ -73,12 +86,32 @@ public class RateLimitingFilter extends OncePerRequestFilter {
             response.setHeader("X-RateLimit-Limit", Integer.toString(limit.maxRequests()));
             response.setHeader("X-RateLimit-Remaining", Integer.toString(decision.remaining()));
             if (!decision.allowed()) {
-                response.setStatus(429);
-                response.setContentType(MediaType.APPLICATION_JSON_VALUE);
-                response.setHeader("Cache-Control", "no-store");
-                response.setHeader("Retry-After", Long.toString(decision.retryAfterSeconds()));
-                response.getWriter().write("{\"errorMessage\":\"Too many requests\",\"errorCode\":429}");
+                writeTooManyRequests(response, decision);
                 return;
+            }
+
+            if ("support-ticket".equals(limit.name())) {
+                RateLimitStore.Decision ipDecision;
+                try {
+                    ipDecision = rateLimitStore.consume(
+                            rateLimitKey("support-ticket-ip", "ip:" + clientIpKey(request)),
+                            30,
+                            Duration.ofHours(1)
+                    );
+                } catch (RuntimeException unavailable) {
+                    response.setStatus(503);
+                    response.setContentType(MediaType.APPLICATION_JSON_VALUE);
+                    response.setHeader("Cache-Control", "no-store");
+                    response.setHeader("Retry-After", "1");
+                    response.getWriter().write(
+                            "{\"errorMessage\":\"Request protection is temporarily unavailable\",\"errorCode\":503}"
+                    );
+                    return;
+                }
+                if (!ipDecision.allowed()) {
+                    writeTooManyRequests(response, ipDecision);
+                    return;
+                }
             }
         }
 
@@ -90,7 +123,7 @@ public class RateLimitingFilter extends OncePerRequestFilter {
             return null;
         }
         String method = request.getMethod();
-        String path = request.getRequestURI();
+        String path = applicationPath(request);
 
         if (path.startsWith("/api/v1/auth/otp/")) {
             return new Limit("otp", 5, Duration.ofMinutes(10));
@@ -132,14 +165,47 @@ public class RateLimitingFilter extends OncePerRequestFilter {
         }
         if ("POST".equals(method) && (path.equals("/api/v1/challenges/presigned-urls")
                 || path.equals("/api/v1/submissions/presigned-urls")
-                || path.equals("/api/v1/submissions/upload-fallback"))) {
+                || path.equals("/api/v1/submissions/upload-fallback")
+                || path.equals("/api/v1/support/presigned-urls")
+                || path.matches("^/api/v1/users/\\d+/profile-picture/presigned-url$"))) {
             return new Limit("upload-url", 20, Duration.ofMinutes(1));
+        }
+        if ("POST".equals(method) && path.equals("/api/v1/support/tickets")) {
+            return new Limit("support-ticket", 10, Duration.ofMinutes(10));
+        }
+        if ("PUT".equals(method) && path.matches("^/api/v1/submissions/\\d+$")) {
+            return new Limit("submission-reupload", 10, Duration.ofMinutes(10));
+        }
+        if ("PUT".equals(method) && path.matches("^/api/v1/challenges/\\d+$")) {
+            return new Limit("challenge-update", 5, Duration.ofMinutes(10));
+        }
+        if ("POST".equals(method) && path.equals("/api/v1/submissions")) {
+            return new Limit("submission-create", 10, Duration.ofMinutes(10));
+        }
+        if ("POST".equals(method) && path.equals("/api/v1/challenges")) {
+            return new Limit("challenge-create", 5, Duration.ofMinutes(10));
+        }
+        if ("PUT".equals(method) && (path.equals("/api/v1/users")
+                || path.matches("^/api/v1/users/\\d+/profile-picture$"))) {
+            return new Limit("profile-update", 5, Duration.ofMinutes(10));
         }
 
         return null;
     }
 
     private String clientKey(HttpServletRequest request) {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        if (authentication != null
+                && authentication.isAuthenticated()
+                && authentication.getPrincipal() instanceof UserPrincipal principal
+                && principal.getId() != null) {
+            return "user:" + principal.getId();
+        }
+
+        return "ip:" + clientIpKey(request);
+    }
+
+    private String clientIpKey(HttpServletRequest request) {
         String remoteAddr = request.getRemoteAddr();
         if (!isTrustedProxy(remoteAddr)) {
             return remoteAddr;
@@ -166,6 +232,45 @@ public class RateLimitingFilter extends OncePerRequestFilter {
             }
         }
         return remoteAddr;
+    }
+
+    private String applicationPath(HttpServletRequest request) {
+        String uri = request.getRequestURI();
+        String contextPath = request.getContextPath();
+        if (contextPath != null && !contextPath.isEmpty() && uri.startsWith(contextPath)) {
+            return uri.substring(contextPath.length());
+        }
+        return uri;
+    }
+
+    private boolean isAmbiguousPath(String path) {
+        if (path == null) {
+            return false;
+        }
+        if (path.indexOf(';') >= 0
+                || path.indexOf('%') >= 0
+                || path.indexOf('\\') >= 0
+                || path.contains("//")
+                || path.contains("/./")
+                || path.contains("/../")
+                || path.endsWith("/.")
+                || path.endsWith("/..")) {
+            return true;
+        }
+        return path.startsWith("/api/")
+                && path.length() > "/api/".length()
+                && path.endsWith("/");
+    }
+
+    private void writeTooManyRequests(
+            HttpServletResponse response,
+            RateLimitStore.Decision decision
+    ) throws IOException {
+        response.setStatus(429);
+        response.setContentType(MediaType.APPLICATION_JSON_VALUE);
+        response.setHeader("Cache-Control", "no-store");
+        response.setHeader("Retry-After", Long.toString(decision.retryAfterSeconds()));
+        response.getWriter().write("{\"errorMessage\":\"Too many requests\",\"errorCode\":429}");
     }
 
     private boolean isTrustedProxy(String ipAddress) {

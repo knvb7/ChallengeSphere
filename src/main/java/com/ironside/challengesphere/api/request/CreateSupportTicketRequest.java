@@ -32,7 +32,7 @@ public class CreateSupportTicketRequest {
     private String deviceInfo;
 
     @Size(max = 3, message = "A support request can include at most 3 screenshots")
-    private List<String> screenshotKeys = new ArrayList<>();
+    private List<@Size(max = 160, message = "Screenshot reference is too long") String> screenshotKeys = new ArrayList<>();
 
     public enum IssueType {
         QUESTION("Question"),

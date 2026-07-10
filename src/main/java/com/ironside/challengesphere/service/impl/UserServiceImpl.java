@@ -341,10 +341,13 @@ public class UserServiceImpl implements UserService {
                 logger.debug("Updated name for user {}", userId);
             }
             if (updateUserRequest.getProfilePicUrl() != null) {
-                user.setProfilePicUrl(profilePhotoService.validateUploadedObjectKey(
-                        userId,
-                        updateUserRequest.getProfilePicUrl()
-                ));
+                String requestedProfilePicUrl = updateUserRequest.getProfilePicUrl().trim();
+                if (!requestedProfilePicUrl.equals(user.getProfilePicUrl())) {
+                    user.setProfilePicUrl(profilePhotoService.validateUploadedObjectKey(
+                            userId,
+                            requestedProfilePicUrl
+                    ));
+                }
                 logger.debug("Updated profilePicUrl for user {}", userId);
             }
             if (updateUserRequest.getNotifications() != null) {
@@ -988,7 +991,8 @@ public class UserServiceImpl implements UserService {
             return readableUser;
         }
         try {
-            readableUser.setProfilePicUrl(mediaUrlService.toReadableMediaUrl(user.getProfilePicUrl()));
+            readableUser.setProfilePicUrl(
+                    mediaUrlService.toReadableProfilePhoto(user.getId(), user.getProfilePicUrl()));
         } catch (Exception e) {
             logger.warn("Failed to prepare readable profile photo URL for userId={}: {}", user.getId(), e.getClass().getSimpleName());
         }

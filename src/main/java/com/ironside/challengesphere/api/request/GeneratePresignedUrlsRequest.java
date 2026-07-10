@@ -5,6 +5,8 @@ import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Positive;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
 import lombok.Getter;
@@ -31,6 +33,11 @@ public class GeneratePresignedUrlsRequest {
 
         @NotNull(message = "Content type is required")
         private ContentType contentType; // Using existing ContentType enum
+
+        @NotNull(message = "File size is required")
+        @Positive(message = "File size must be positive")
+        @Max(value = 15728640, message = "File size must not exceed 15 MB")
+        private Long fileSizeBytes;
     }
 
     @Getter

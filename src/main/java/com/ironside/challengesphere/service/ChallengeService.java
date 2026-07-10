@@ -41,6 +41,7 @@ public interface ChallengeService {
     void deleteChallenges(List<Long> challengeIds);
     void disableChallengesForUsers(List<Long> userIds) throws ChallengeSphereException;
     JoinChallengeResponse joinChallenge(JoinChallengeRequest request) throws ChallengeSphereException;
+    JoinChallengeResponse joinChallengeFromVerifiedInvite(JoinChallengeRequest request) throws ChallengeSphereException;
     LeaveChallengeResponse leaveChallenge(LeaveChallengeRequest request) throws ChallengeSphereException;
     ChallengeParticipantsResponse getChallengeParticipants(GetChallengeParticipantsRequest request) throws ChallengeSphereException;
     ChallengesByHashtagResponse getChallengesByHashtag(GetChallengesByHashtagRequest request) throws ChallengeSphereException;

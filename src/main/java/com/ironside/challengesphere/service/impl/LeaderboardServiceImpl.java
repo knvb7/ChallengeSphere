@@ -97,6 +97,8 @@ public class LeaderboardServiceImpl implements LeaderboardService {
                             HttpStatus.NOT_FOUND,
                             logger
                     ));
+
+            requireLeaderboardAccess(challenge, request.getViewerUserId());
             
             List<LeaderboardEntryDTO> entries = getLeaderboardEntriesFromCache(challengeId, limit);
 
@@ -127,7 +129,7 @@ public class LeaderboardServiceImpl implements LeaderboardService {
                             .userId(user.getId())
                             .username(user.getUsername())
                             .displayName(user.getUsername())
-                            .profilePictureUrl(readableProfilePic(user.getProfilePicUrl()))
+                            .profilePictureUrl(readableProfilePic(user.getId(), user.getProfilePicUrl()))
                             .rank(i + 1L)
                             .score(le.getScore())
                             .submissionCount(le.getSubmissionCount())
@@ -145,7 +147,7 @@ public class LeaderboardServiceImpl implements LeaderboardService {
             
             // If userId is provided, also fetch their rank
             if (userId != null) {
-                UserRankDTO userRank = getUserRank(challengeId, userId);
+                UserRankDTO userRank = getUserRankInternal(challengeId, userId);
                 response = LeaderboardResponse.withUserRank(
                         challengeId,
                         challenge.getTitle(),
@@ -180,7 +182,21 @@ public class LeaderboardServiceImpl implements LeaderboardService {
     }
     
     @Override
-    public UserRankDTO getUserRank(Long challengeId, Long userId) throws ChallengeSphereException {
+    @Transactional(readOnly = true)
+    public UserRankDTO getUserRank(Long challengeId, Long userId, Long viewerUserId)
+            throws ChallengeSphereException {
+        Challenge challenge = challengeRepository.findById(challengeId)
+                .orElseThrow(() -> new ChallengeSphereException(
+                        "Challenge not found with id: " + challengeId,
+                        HttpStatus.NOT_FOUND,
+                        logger
+                ));
+        requireLeaderboardAccess(challenge, viewerUserId);
+        return getUserRankInternal(challengeId, userId);
+    }
+
+    private UserRankDTO getUserRankInternal(Long challengeId, Long userId)
+            throws ChallengeSphereException {
         logger.debug("Getting user rank for challenge: {}, user: {}", challengeId, userId);
 
         try {
@@ -236,6 +252,42 @@ public class LeaderboardServiceImpl implements LeaderboardService {
         }
     }
 
+    private void requireLeaderboardAccess(Challenge challenge, Long viewerUserId)
+            throws ChallengeSphereException {
+        if (viewerUserId == null) {
+            throw new ChallengeSphereException(
+                    "Authenticated user required",
+                    HttpStatus.UNAUTHORIZED,
+                    logger
+            );
+        }
+        if (!Boolean.TRUE.equals(challenge.getActive())) {
+            throw new ChallengeSphereException(
+                    "Leaderboard is unavailable for an inactive challenge",
+                    HttpStatus.FORBIDDEN,
+                    logger
+            );
+        }
+        if (!Boolean.TRUE.equals(challenge.getIsPrivate())) {
+            return;
+        }
+        if (viewerUserId.equals(challenge.getCreatorId())
+                || viewerUserId.equals(challenge.getCurrentOwnerId())) {
+            return;
+        }
+        boolean activeParticipant = userChallengeRepository
+                .findByUserIdAndChallengeId(viewerUserId, challenge.getId())
+                .map(UserChallenge::getActive)
+                .orElse(false);
+        if (!activeParticipant) {
+            throw new ChallengeSphereException(
+                    "Not authorized to view this leaderboard",
+                    HttpStatus.FORBIDDEN,
+                    logger
+            );
+        }
+    }
+
     private List<LeaderboardEntryDTO> getLeaderboardEntriesFromCache(Long challengeId, int limit) {
         List<RedisCacheServiceImpl.LeaderboardEntry> cachedEntries =
                 cacheService.getTopScoresWithRank(challengeId, limit);
@@ -265,7 +317,7 @@ public class LeaderboardServiceImpl implements LeaderboardService {
                     .userId(user.getId())
                     .username(user.getUsername())
                     .displayName(user.getUsername())
-                    .profilePictureUrl(readableProfilePic(user.getProfilePicUrl()))
+                    .profilePictureUrl(readableProfilePic(user.getId(), user.getProfilePicUrl()))
                     .rank(cached.rank())
                     .score(cached.score())
                     .submissionCount(leaderboardEntry == null ? 0 : leaderboardEntry.getSubmissionCount())
@@ -276,10 +328,10 @@ public class LeaderboardServiceImpl implements LeaderboardService {
         return entries;
     }
 
-    private String readableProfilePic(String value) {
+    private String readableProfilePic(Long userId, String value) {
         return value == null || value.isBlank()
                 ? value
-                : mediaUrlService.toReadableMediaUrl(value);
+                : mediaUrlService.toReadableProfilePhoto(userId, value);
     }
     
     @Override

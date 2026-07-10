@@ -10,6 +10,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
 import java.util.stream.Collectors;
 
 import org.apache.logging.log4j.LogManager;
@@ -53,7 +54,10 @@ import com.ironside.challengesphere.repository.FollowRepository;
 import com.ironside.challengesphere.repository.SubmissionRepository;
 import com.ironside.challengesphere.repository.UserChallengeRepository;
 import com.ironside.challengesphere.repository.UserRepository;
+import com.ironside.challengesphere.security.IssuedUploadService;
+import com.ironside.challengesphere.security.UploadQuotaService;
 import com.ironside.challengesphere.service.ChallengeService;
+import com.ironside.challengesphere.service.ContentModerationService;
 import com.ironside.challengesphere.service.NotificationService;
 import com.ironside.challengesphere.util.GetSignedUrlForS3;
 
@@ -62,6 +66,7 @@ public class ChallengeServiceImpl implements ChallengeService {
     private static final Logger logger = LogManager.getLogger(ChallengeServiceImpl.class);
     private static final int MAX_CHALLENGE_COVER_PHOTOS = 5;
     private static final int MAX_CHALLENGES_CREATED_PER_DAY = 5;
+    private static final int MAX_CHALLENGE_DURATION_DAYS = 365;
 
     @Autowired
     private ChallengeRepository challengeRepository;
@@ -91,7 +96,16 @@ public class ChallengeServiceImpl implements ChallengeService {
     private MediaUrlService mediaUrlService;
 
     @Autowired
-    private RedisCacheServiceImpl redisCacheServiceImpl;
+    private ChallengeMediaKeyPolicy challengeMediaKeyPolicy;
+
+    @Autowired
+    private ContentModerationService contentModerationService;
+
+    @Autowired
+    private UploadQuotaService uploadQuotaService;
+
+    @Autowired
+    private IssuedUploadService issuedUploadService;
 
     @Value("${aws.s3.bucket.name}")
     private String bucketName;
@@ -136,16 +150,7 @@ public class ChallengeServiceImpl implements ChallengeService {
 
         try {
             ensureFollowAccess(userId, currentUserId, "challenges");
-
-            // Try cache first
-            Optional<UserChallengesResponse> cached = cacheService.getCachedUserChallenges(userId, page, pageSize, activeFilter, UserChallengesResponse.class);
-            if (cached.isPresent()) {
-                logger.info("Cache hit for user challenges: userId={}, page={}", userId, page);
-                UserChallengesResponse cachedResponse = cached.get();
-                cachedResponse.setChallenges(withReadableCoverPhotoUrls(cachedResponse.getChallenges()));
-                return cachedResponse;
-            }
-            logger.debug("Cache miss for user challenges: userId={}, fetching from DB", userId);
+            boolean selfView = userId != null && userId.equals(currentUserId);
 
             List<Challenge> createdChallenges = challengeRepository.findByCreatorId(userId);
             List<Challenge> ownedChallenges = challengeRepository.findByCurrentOwnerId(userId);
@@ -162,6 +167,12 @@ public class ChallengeServiceImpl implements ChallengeService {
             ownedChallenges.forEach(challenge -> allUserChallengesById.putIfAbsent(challenge.getId(), challenge));
             joinedChallenges.forEach(challenge -> allUserChallengesById.putIfAbsent(challenge.getId(), challenge));
             List<Challenge> allUserChallenges = new ArrayList<>(allUserChallengesById.values());
+
+            if (!selfView) {
+                allUserChallenges = allUserChallenges.stream()
+                        .filter(challenge -> canViewChallenge(challenge, currentUserId))
+                        .toList();
+            }
 
             if (activeFilter != null) {
                 allUserChallenges = allUserChallenges.stream()
@@ -186,9 +197,6 @@ public class ChallengeServiceImpl implements ChallengeService {
                     pageSize,
                     totalCount
             );
-
-            // Cache the response asynchronously
-            cacheService.cacheUserChallenges(userId, page, pageSize, activeFilter, response);
 
             return response;
 
@@ -240,21 +248,19 @@ public class ChallengeServiceImpl implements ChallengeService {
     }
 
     @Override
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public ChallengeCreateResponse createChallenge(ChallengeCreateRequest request) throws ChallengeSphereException {
         logger.info("Creating challenge for creator userId={}", request.getCreatorUserId());
 
         try {
-            // Validate that the creator user exists
-            if(redisCacheServiceImpl.getCachedUserProfile(request.getCreatorUserId(), null, null, User.class).isEmpty()) {
-                if (!userRepository.existsById(request.getCreatorUserId())) {
-                    throw new ChallengeSphereException(
+            // Lock the creator row so concurrent Swagger/API requests cannot race
+            // past the per-day creation cap.
+            userRepository.findByIdForUpdate(request.getCreatorUserId())
+                    .orElseThrow(() -> new ChallengeSphereException(
                             "Creator user not found with id: " + request.getCreatorUserId(),
                             HttpStatus.NOT_FOUND,
                             logger
-                    );
-                }
-            }
+                    ));
 
             enforceDailyChallengeCreationLimit(request.getCreatorUserId());
 
@@ -274,8 +280,10 @@ public class ChallengeServiceImpl implements ChallengeService {
             challenge.setChallengeMode(challengeMode);
             challenge.setNumberOfDays(resolveChallengeDuration(request.getNumberOfDays(), challengeMode));
             List<String> requestedCoverPhotoUrls = getRequestedCoverPhotoUrls(request);
-            if (requestedCoverPhotoUrls != null)
-                challenge.setCoverPhotoUrls(serializeCoverPhotoUrls(requestedCoverPhotoUrls));
+            if (requestedCoverPhotoUrls != null) {
+                challenge.setCoverPhotoUrls(validateAndSerializeCoverPhotoUrls(
+                        request.getCreatorUserId(), requestedCoverPhotoUrls, null));
+            }
 
             Challenge savedChallenge = challengeRepository.save(challenge);
             UserChallenge creatorParticipant = new UserChallenge();
@@ -288,11 +296,6 @@ public class ChallengeServiceImpl implements ChallengeService {
 
             logger.info("Successfully created challenge with id: {} for user: {}", savedChallenge.getId(), request.getCreatorUserId());
             cacheService.cacheChallenge(savedChallenge.getId(), savedChallenge);
-            cacheService.prependCreatedChallengeToUserChallenges(
-                    request.getCreatorUserId(),
-                    10,
-                    withReadableCoverPhotoUrls(savedChallenge)
-            );
             cacheService.invalidateRecentAndTrendingChallenges();
             if (savedChallenge.getHashtags() != null && !savedChallenge.getHashtags().isBlank()) {
                 cacheService.invalidateHashtagChallenges();
@@ -321,7 +324,7 @@ public class ChallengeServiceImpl implements ChallengeService {
                     savedChallenge.getCurrentOwnerId(),
                     savedChallenge.getNumberOfDays(),
                     savedChallenge.getChallengeMode(),
-                    toReadableCoverPhotoUrls(savedChallenge.getCoverPhotoUrls())
+                    toReadableCoverPhotoUrls(savedChallenge)
             );
 
         } catch (ChallengeSphereException e) {
@@ -580,8 +583,21 @@ public class ChallengeServiceImpl implements ChallengeService {
     }
 
     @Override
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public JoinChallengeResponse joinChallenge(JoinChallengeRequest request) throws ChallengeSphereException {
+        return joinChallenge(request, false);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public JoinChallengeResponse joinChallengeFromVerifiedInvite(JoinChallengeRequest request)
+            throws ChallengeSphereException {
+        return joinChallenge(request, true);
+    }
+
+    private JoinChallengeResponse joinChallenge(
+            JoinChallengeRequest request,
+            boolean verifiedInvitation) throws ChallengeSphereException {
         Long challengeId = request.getChallengeId();
         List<Long> userIds = request.getUserIds();
 
@@ -613,7 +629,7 @@ public class ChallengeServiceImpl implements ChallengeService {
 
             Long ownerUserId = challenge.getCurrentOwnerId() != null ? challenge.getCurrentOwnerId() : challenge.getCreatorId();
             for (Long userId : userIds) {
-                if (!canJoinChallenge(challenge, ownerUserId, userId)) {
+                if (!canJoinChallenge(challenge, ownerUserId, userId, verifiedInvitation)) {
                     throw new ChallengeSphereException(
                             "Not authorized to join this challenge",
                             HttpStatus.FORBIDDEN,
@@ -788,6 +804,14 @@ public class ChallengeServiceImpl implements ChallengeService {
                 userChallengeRepository.saveAll(toDeactivate);
                 logger.info("Successfully deactivated {} users from challenge {}", successfulUserIds.size(), challengeId);
 
+                // Access revocation must not depend on asynchronous broad cache invalidation.
+                // Remove each leaving user's ID-only timeline so the next read rebuilds from DB;
+                // rendered feed responses are intentionally no longer cached.
+                for (Long userId : successfulUserIds) {
+                    cacheService.invalidateTimeline(userId);
+                }
+                cacheService.invalidateChallengeParticipants(challengeId);
+
                 // Update challengesAccepted count for all successfully deactivated users
                 for (Long userId : successfulUserIds) {
                     updateChallengesAcceptedCountAsync(userId, false);
@@ -883,7 +907,7 @@ public class ChallengeServiceImpl implements ChallengeService {
             participant.setProfilePicUrl(
                     user.getProfilePicUrl() == null || user.getProfilePicUrl().isBlank()
                             ? user.getProfilePicUrl()
-                            : mediaUrlService.toReadableMediaUrl(user.getProfilePicUrl())
+                            : mediaUrlService.toReadableProfilePhoto(user.getId(), user.getProfilePicUrl())
             );
             participant.setActive(user.getActive());
             participant.setCreatedAt(user.getCreatedAt());
@@ -1165,7 +1189,7 @@ public class ChallengeServiceImpl implements ChallengeService {
     }
 
     @Override
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public Challenge updateChallenge(Long id, ChallengeUpdateRequest request, Long actorUserId, boolean admin) throws ChallengeSphereException {
         logger.info("Updating challenge id: {}", id);
 
@@ -1207,12 +1231,27 @@ public class ChallengeServiceImpl implements ChallengeService {
         } else if (Challenge.isOneOffMode(challenge.getChallengeMode())) {
             challenge.setNumberOfDays(1);
         }
-        if (request.getActive() != null) {
+        if (request.getActive() != null
+                && !admin
+                && !java.util.Objects.equals(request.getActive(), challenge.getActive())) {
+            throw new ChallengeSphereException(
+                    "Only an administrator can change a challenge's active status",
+                    HttpStatus.FORBIDDEN,
+                    logger
+            );
+        }
+        if (request.getActive() != null && admin) {
             challenge.setActive(request.getActive());
         }
         List<String> requestedCoverPhotoUrls = getRequestedCoverPhotoUrls(request);
         if (requestedCoverPhotoUrls != null) {
-            challenge.setCoverPhotoUrls(serializeCoverPhotoUrls(requestedCoverPhotoUrls));
+            Long mediaOwnerId = actorUserId != null
+                    ? actorUserId
+                    : (challenge.getCurrentOwnerId() != null
+                            ? challenge.getCurrentOwnerId()
+                            : challenge.getCreatorId());
+            challenge.setCoverPhotoUrls(validateAndSerializeCoverPhotoUrls(
+                    mediaOwnerId, requestedCoverPhotoUrls, challenge.getCoverPhotoUrls()));
         }
 
         Challenge updated = challengeRepository.save(challenge);
@@ -1273,10 +1312,18 @@ public class ChallengeServiceImpl implements ChallengeService {
                             "Challenge not found with id: " + challengeId,
                             HttpStatus.NOT_FOUND, logger));
 
+            if (!canViewChallenge(challenge, userId)) {
+                throw new ChallengeSphereException(
+                        "Not authorized to view this challenge",
+                        HttpStatus.FORBIDDEN,
+                        logger
+                );
+            }
+
             List<com.ironside.challengesphere.model.Submission> submissions =
                     submissionRepository.findActiveByUserIdAndChallengeId(userId, challengeId);
 
-            int totalDays = challenge.getNumberOfDays();
+            int totalDays = requireValidChallengeDuration(challenge.getNumberOfDays());
             Map<Integer, Submission> byDay = submissions.stream()
                     .filter(submission -> isValidChallengeDay(submission.getDayNumber(), totalDays))
                     .collect(Collectors.toMap(
@@ -1340,9 +1387,13 @@ public class ChallengeServiceImpl implements ChallengeService {
                     ? Map.of()
                     : userChallengeRepository.findActiveByChallengeIds(challengeIds).stream()
                     .collect(Collectors.groupingBy(UserChallenge::getChallengeId, Collectors.counting()));
-            Map<Long, Challenge> challengeMap = withReadableCoverPhotoUrls(
-                    challengeRepository.findAllById(challengeIds)
-            )
+            List<Challenge> visibleChallenges = challengeRepository.findAllById(challengeIds);
+            if (!java.util.Objects.equals(userId, currentUserId)) {
+                visibleChallenges = visibleChallenges.stream()
+                        .filter(challenge -> canViewChallenge(challenge, currentUserId))
+                        .toList();
+            }
+            Map<Long, Challenge> challengeMap = withReadableCoverPhotoUrls(visibleChallenges)
                     .stream().collect(Collectors.toMap(Challenge::getId, c -> c));
 
             List<MyChallengesResponse.ChallengeSummary> summaries = new ArrayList<>();
@@ -1409,19 +1460,26 @@ public class ChallengeServiceImpl implements ChallengeService {
                 throw new ChallengeSphereException("A challenge can have at most 5 cover photos", HttpStatus.BAD_REQUEST, logger);
             }
 
+            uploadQuotaService.reserve(request.getUserId(), request.getMediaFiles());
+
             long expiry = 3600L;
             List<PresignedUrlsResponse.PresignedUrlInfo> urls = new ArrayList<>();
             for (GeneratePresignedUrlsRequest.MediaFileInfo file : request.getMediaFiles()) {
-                String ext = getFileExtension(file.getFileName());
-                String key = String.format("challenges/user_%d/covers/%d_%s%s",
-                        request.getUserId(), System.currentTimeMillis(), java.util.UUID.randomUUID(), ext);
+                String key = challengeMediaKeyPolicy.createKey(
+                        request.getUserId(),
+                        file.getMediaType(),
+                        file.getContentType(),
+                        System.currentTimeMillis(),
+                        UUID.randomUUID());
+                issuedUploadService.issue(
+                        request.getUserId(), key, IssuedUploadService.Purpose.CHALLENGE_COVER);
                 urls.add(new PresignedUrlsResponse.PresignedUrlInfo(
                         file.getFileName(),
                         file.getMediaType().name(),
                         file.getContentType().getMimeType(),
                         GetSignedUrlForS3.generatePutObjectSignedUrl(
                                 bucketName,
-                                key, expiry, file.getContentType()),
+                                key, expiry, file.getContentType(), file.getFileSizeBytes()),
                         key, expiry));
             }
             return PresignedUrlsResponse.success(request.getUserId(), urls);
@@ -1462,11 +1520,24 @@ public class ChallengeServiceImpl implements ChallengeService {
         );
     }
 
-    private int resolveChallengeDuration(Integer requestedDays, String challengeMode) {
+    private int resolveChallengeDuration(Integer requestedDays, String challengeMode)
+            throws ChallengeSphereException {
         if (Challenge.isOneOffMode(challengeMode)) {
             return 1;
         }
-        return requestedDays != null ? requestedDays : 1;
+        return requireValidChallengeDuration(requestedDays != null ? requestedDays : 1);
+    }
+
+    private int requireValidChallengeDuration(Integer numberOfDays)
+            throws ChallengeSphereException {
+        if (numberOfDays == null || numberOfDays < 1 || numberOfDays > MAX_CHALLENGE_DURATION_DAYS) {
+            throw new ChallengeSphereException(
+                    "Challenge duration must be between 1 and " + MAX_CHALLENGE_DURATION_DAYS + " days",
+                    HttpStatus.BAD_REQUEST,
+                    logger
+            );
+        }
+        return numberOfDays;
     }
 
     private boolean isExpiredChallenge(Challenge challenge) {
@@ -1545,41 +1616,54 @@ public class ChallengeServiceImpl implements ChallengeService {
                 creator == null ? challenge.getCreatorUsername() : creator.getUsername()
         );
         copy.setCreatorProfilePicUrl(toReadableProfilePicUrl(
+                creator == null ? challenge.getCreatorId() : creator.getId(),
                 creator == null ? challenge.getCreatorProfilePicUrl() : creator.getProfilePicUrl()
         ));
         copy.setCurrentOwnerId(challenge.getCurrentOwnerId());
         copy.setNumberOfDays(challenge.getNumberOfDays());
         copy.setChallengeMode(challenge.getChallengeMode());
-        copy.setCoverPhotoUrls(toReadableCoverPhotoUrls(challenge.getCoverPhotoUrls()));
+        copy.setCoverPhotoUrls(toReadableCoverPhotoUrls(challenge));
         return copy;
     }
 
-    private String toReadableProfilePicUrl(String profilePicUrl) {
+    private String toReadableProfilePicUrl(Long userId, String profilePicUrl) {
         if (profilePicUrl == null || profilePicUrl.isBlank() || mediaUrlService == null) {
             return profilePicUrl;
         }
 
         try {
-            return mediaUrlService.toReadableMediaUrl(profilePicUrl);
+            return mediaUrlService.toReadableProfilePhoto(userId, profilePicUrl);
         } catch (Exception e) {
             logger.warn("Failed to prepare readable creator profile photo URL: {}", e.getClass().getSimpleName());
             return profilePicUrl;
         }
     }
 
-    private String toReadableCoverPhotoUrls(String rawCoverPhotoUrls) {
+    private String toReadableCoverPhotoUrls(Challenge challenge) {
+        String rawCoverPhotoUrls = challenge == null ? null : challenge.getCoverPhotoUrls();
         if (rawCoverPhotoUrls == null || rawCoverPhotoUrls.isBlank()) {
             return rawCoverPhotoUrls;
         }
         if (mediaUrlService == null) {
-            return rawCoverPhotoUrls;
+            return null;
         }
 
         try {
-            return mediaUrlService.toReadableMediaUrls(rawCoverPhotoUrls);
+            Set<Long> allowedOwnerIds = new HashSet<>();
+            if (challenge.getCreatorId() != null) {
+                allowedOwnerIds.add(challenge.getCreatorId());
+            }
+            if (challenge.getCurrentOwnerId() != null) {
+                allowedOwnerIds.add(challenge.getCurrentOwnerId());
+            }
+            List<String> safeKeys = challengeMediaKeyPolicy.filterOwnedKeysForRead(
+                    rawCoverPhotoUrls, allowedOwnerIds);
+            return safeKeys.isEmpty()
+                    ? null
+                    : mediaUrlService.toReadableMediaUrls(String.join(",", safeKeys));
         } catch (Exception e) {
             logger.warn("Failed to prepare readable challenge cover URL(s): {}", e.getClass().getSimpleName());
-            return rawCoverPhotoUrls;
+            return null;
         }
     }
 
@@ -1609,30 +1693,92 @@ public class ChallengeServiceImpl implements ChallengeService {
         return null;
     }
 
-    private String serializeCoverPhotoUrls(List<String> urls) {
-        List<String> normalizedUrls = urls.stream()
-                .map(this::normalizeCoverPhotoUrl)
-                .filter(url -> url != null && !url.isBlank())
-                .toList();
-        return normalizedUrls.isEmpty() ? null : String.join(",", normalizedUrls);
-    }
-
-    private String normalizeCoverPhotoUrl(String url) {
-        if (url == null || url.isBlank()) {
-            return null;
-        }
-
-        String trimmed = url.trim();
-        if (mediaUrlService != null) {
-            List<String> storedUrls = mediaUrlService.toStoredMediaUrls(List.of(trimmed));
-            if (!storedUrls.isEmpty()) {
-                return storedUrls.get(0);
+    private String validateAndSerializeCoverPhotoUrls(
+            Long ownerUserId,
+            List<String> urls,
+            String existingMediaKeys)
+            throws ChallengeSphereException {
+        if (existingMediaKeys != null
+                && urls != null
+                && urls.size() <= MAX_CHALLENGE_COVER_PHOTOS
+                && urls.stream().allMatch(java.util.Objects::nonNull)) {
+            String unchangedCandidate = urls.stream()
+                    .map(String::trim)
+                    .collect(Collectors.joining(","));
+            if (unchangedCandidate.equals(existingMediaKeys)) {
+                return existingMediaKeys;
             }
         }
 
-        String objectKey = trimmed.replaceFirst("^/+", "");
-        String bucketPrefix = bucketName + "/";
-        return objectKey.startsWith(bucketPrefix) ? objectKey.substring(bucketPrefix.length()) : objectKey;
+        if (urls == null || urls.size() > MAX_CHALLENGE_COVER_PHOTOS) {
+            throw new ChallengeSphereException(
+                    "Invalid challenge cover media reference",
+                    HttpStatus.BAD_REQUEST,
+                    logger
+            );
+        }
+        Set<String> existingKeys = existingMediaKeys == null || existingMediaKeys.isBlank()
+                ? Set.of()
+                : new HashSet<>(List.of(existingMediaKeys.split(",")));
+        List<String> requestedKeys = urls.stream()
+                .map(value -> value == null ? null : value.trim())
+                .toList();
+        List<String> newKeyCandidates = requestedKeys.stream()
+                .filter(java.util.Objects::nonNull)
+                .filter(key -> !existingKeys.contains(key))
+                .toList();
+        List<String> validatedNewKeys = challengeMediaKeyPolicy.validateAndNormalize(
+                ownerUserId, newKeyCandidates);
+        Set<String> validatedNewKeySet = new HashSet<>(validatedNewKeys);
+        List<String> mediaKeys = new ArrayList<>(requestedKeys.size());
+        Set<String> seenKeys = new HashSet<>();
+        for (String key : requestedKeys) {
+            if (key == null
+                    || (!existingKeys.contains(key) && !validatedNewKeySet.contains(key))
+                    || !seenKeys.add(key)) {
+                throw new ChallengeSphereException(
+                        "Invalid challenge cover media reference",
+                        HttpStatus.BAD_REQUEST,
+                        logger
+                );
+            }
+            mediaKeys.add(key);
+        }
+        if (mediaKeys.isEmpty()) {
+            return null;
+        }
+
+        String serializedMediaKeys = String.join(",", mediaKeys);
+        if (serializedMediaKeys.equals(existingMediaKeys)) {
+            return serializedMediaKeys;
+        }
+
+        issuedUploadService.consume(
+                ownerUserId, validatedNewKeys, IssuedUploadService.Purpose.CHALLENGE_COVER);
+
+        ContentModerationService.Result moderationResult;
+        try {
+            moderationResult = validatedNewKeys.isEmpty()
+                    ? new ContentModerationService.Result(
+                            ContentModerationService.Verdict.CLEAN, List.of())
+                    : contentModerationService.scanStrict(validatedNewKeys);
+        } catch (Exception e) {
+            logger.error("Challenge cover moderation failed closed for userId={}: {}",
+                    ownerUserId, e.getClass().getSimpleName());
+            throw new ChallengeSphereException(
+                    "Challenge cover photos could not be verified",
+                    HttpStatus.SERVICE_UNAVAILABLE,
+                    logger
+            );
+        }
+        if (moderationResult.verdict() != ContentModerationService.Verdict.CLEAN) {
+            throw new ChallengeSphereException(
+                    "One or more challenge cover photos violate the media policy",
+                    HttpStatus.BAD_REQUEST,
+                    logger
+            );
+        }
+        return serializedMediaKeys;
     }
 
     private int computeCurrentStreak(List<Integer> days) {
@@ -1658,11 +1804,6 @@ public class ChallengeServiceImpl implements ChallengeService {
             }
         }
         return longest;
-    }
-
-    private String getFileExtension(String fileName) {
-        if (fileName == null || !fileName.contains(".")) return "";
-        return fileName.substring(fileName.lastIndexOf("."));
     }
 
     private void ensureFollowAccess(Long ownerUserId, Long viewerUserId, String contentType)
@@ -1709,7 +1850,11 @@ public class ChallengeServiceImpl implements ChallengeService {
                 .orElse(false);
     }
 
-    private boolean canJoinChallenge(Challenge challenge, Long ownerUserId, Long userId) {
+    private boolean canJoinChallenge(
+            Challenge challenge,
+            Long ownerUserId,
+            Long userId,
+            boolean verifiedInvitation) {
         if (challenge == null || userId == null) {
             return false;
         }
@@ -1719,8 +1864,7 @@ public class ChallengeServiceImpl implements ChallengeService {
         if (userId.equals(ownerUserId) || userId.equals(challenge.getCreatorId())) {
             return true;
         }
-        return followRepository.existsByFollowerIdAndFollowingIdAndActive(ownerUserId, userId)
-                || followRepository.existsByFollowerIdAndFollowingIdAndActive(userId, ownerUserId);
+        return verifiedInvitation;
     }
 
     private void notifyChallengeOwnersOfJoins(Challenge challenge, List<Long> successfulUserIds) {

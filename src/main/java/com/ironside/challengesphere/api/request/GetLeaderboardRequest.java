@@ -15,6 +15,9 @@ import lombok.NoArgsConstructor;
 public class GetLeaderboardRequest {
     
     private Long challengeId;
+
+    /** Authenticated user requesting access to this leaderboard. */
+    private Long viewerUserId;
     
     /**
      * Number of top entries to return (default: 10, max: 100)

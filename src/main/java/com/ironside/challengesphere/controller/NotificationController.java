@@ -134,7 +134,7 @@ public class NotificationController {
         request.setChallengeId(challengeId);
         request.setUserIds(List.of(userId));
 
-        JoinChallengeResponse response = challengeService.joinChallenge(request);
+        JoinChallengeResponse response = challengeService.joinChallengeFromVerifiedInvite(request);
         notificationRepository.markAsRead(userId, notificationId);
         return ResponseEntity.ok(response);
     }

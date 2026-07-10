@@ -171,7 +171,6 @@ class SubmissionMediaSecurityIntegrationTest {
         verify(contentModerationService).scanStrict(List.of(OWNED_KEY));
         verify(contentModerationService, never()).scan(anyList());
         verify(submissionRepository, never()).save(any(Submission.class));
-        verify(mediaUrlService, never()).applyPrivateImageCacheHeaders(anyList());
     }
 
     @Test

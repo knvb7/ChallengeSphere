@@ -7,6 +7,10 @@ import com.ironside.challengesphere.api.response.SupportTicketResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.model.User;
 import com.ironside.challengesphere.repository.UserRepository;
+import com.ironside.challengesphere.security.IssuedUploadService;
+import com.ironside.challengesphere.security.RateLimitStore;
+import com.ironside.challengesphere.security.UploadQuotaService;
+import com.ironside.challengesphere.service.ContentModerationService;
 import com.ironside.challengesphere.service.EmailService;
 import com.ironside.challengesphere.service.SupportService;
 import com.ironside.challengesphere.util.MediaTypes;
@@ -16,11 +20,14 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 @Service
@@ -29,20 +36,41 @@ public class SupportServiceImpl implements SupportService {
     private static final Logger logger = LogManager.getLogger(SupportServiceImpl.class);
     private static final String SUPPORT_EMAIL = "ironside-dev@challengesphere.com";
     private static final int MAX_SCREENSHOTS = 3;
+    private static final int MAX_SUPPORT_TICKETS_PER_DAY = 5;
     private static final long UPLOAD_EXPIRY_SECONDS = 3600L;
+    private static final Pattern SUPPORT_SCREENSHOT_KEY = Pattern.compile(
+            "^support/user_(\\d+)/screenshots/\\d{13}_"
+                    + "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+                    + "[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\\.(?:jpg|jpeg|png|gif)$"
+    );
 
     private final UserRepository userRepository;
     private final MediaUrlService mediaUrlService;
     private final EmailService emailService;
+    private final UploadQuotaService uploadQuotaService;
+    private final IssuedUploadService issuedUploadService;
+    private final RateLimitStore rateLimitStore;
+    private final ContentModerationService contentModerationService;
+    private final ModerationEnforcementService moderationEnforcementService;
 
     public SupportServiceImpl(
             UserRepository userRepository,
             MediaUrlService mediaUrlService,
-            EmailService emailService
+            EmailService emailService,
+            UploadQuotaService uploadQuotaService,
+            IssuedUploadService issuedUploadService,
+            RateLimitStore rateLimitStore,
+            ContentModerationService contentModerationService,
+            ModerationEnforcementService moderationEnforcementService
     ) {
         this.userRepository = userRepository;
         this.mediaUrlService = mediaUrlService;
         this.emailService = emailService;
+        this.uploadQuotaService = uploadQuotaService;
+        this.issuedUploadService = issuedUploadService;
+        this.rateLimitStore = rateLimitStore;
+        this.contentModerationService = contentModerationService;
+        this.moderationEnforcementService = moderationEnforcementService;
     }
 
     @Override
@@ -61,14 +89,22 @@ public class SupportServiceImpl implements SupportService {
             throw new ChallengeSphereException("User not found", HttpStatus.NOT_FOUND, logger);
         }
 
+        uploadQuotaService.reserve(userId, mediaFiles);
+
         List<PresignedUrlsResponse.PresignedUrlInfo> presignedUrls = new ArrayList<>();
         for (GeneratePresignedUrlsRequest.MediaFileInfo file : mediaFiles) {
             String fileKey = buildScreenshotKey(userId, file.getFileName());
+            issuedUploadService.issue(
+                    userId, fileKey, IssuedUploadService.Purpose.SUPPORT_SCREENSHOT);
             presignedUrls.add(new PresignedUrlsResponse.PresignedUrlInfo(
                     file.getFileName(),
                     file.getMediaType().name(),
                     file.getContentType().getMimeType(),
-                    mediaUrlService.createUploadUrl(fileKey, UPLOAD_EXPIRY_SECONDS, file.getContentType()),
+                    mediaUrlService.createUploadUrl(
+                            fileKey,
+                            UPLOAD_EXPIRY_SECONDS,
+                            file.getContentType(),
+                            file.getFileSizeBytes()),
                     fileKey,
                     UPLOAD_EXPIRY_SECONDS
             ));
@@ -91,6 +127,8 @@ public class SupportServiceImpl implements SupportService {
         User user = userRepository.findById(userId).orElseThrow(() ->
                 new ChallengeSphereException("User not found", HttpStatus.NOT_FOUND, logger));
 
+        reserveDailySupportTicket(userId);
+
         List<String> screenshotKeys = request.getScreenshotKeys() == null
                 ? List.of()
                 : request.getScreenshotKeys().stream()
@@ -98,9 +136,13 @@ public class SupportServiceImpl implements SupportService {
                 .map(String::trim)
                 .toList();
 
+        issuedUploadService.consume(
+                userId, screenshotKeys, IssuedUploadService.Purpose.SUPPORT_SCREENSHOT);
+
         for (String key : screenshotKeys) {
             validateScreenshotKey(userId, key);
         }
+        moderateSupportScreenshots(userId, screenshotKeys);
 
         String supportSubject = "[ChallengeSphere Support] "
                 + request.getIssueType().getLabel()
@@ -111,6 +153,81 @@ public class SupportServiceImpl implements SupportService {
 
         logger.info("Submitted support request for userId={} issueType={}", userId, request.getIssueType());
         return new SupportTicketResponse(true, "Support request sent");
+    }
+
+    private void moderateSupportScreenshots(
+            Long userId,
+            List<String> screenshotKeys
+    ) throws ChallengeSphereException {
+        if (screenshotKeys == null || screenshotKeys.isEmpty()) {
+            return;
+        }
+
+        ContentModerationService.Result moderation;
+        try {
+            moderation = contentModerationService.scanStrict(screenshotKeys);
+        } catch (RuntimeException unavailable) {
+            logger.error("Support screenshot moderation failed closed for userId={}: {}",
+                    userId, unavailable.getClass().getSimpleName());
+            throw new ChallengeSphereException(
+                    "Support screenshots could not be verified for safety",
+                    HttpStatus.SERVICE_UNAVAILABLE,
+                    logger,
+                    unavailable
+            );
+        }
+
+        if (moderation == null) {
+            throw new ChallengeSphereException(
+                    "Support screenshots could not be verified for safety",
+                    HttpStatus.SERVICE_UNAVAILABLE,
+                    logger
+            );
+        }
+        if (moderation.verdict() == ContentModerationService.Verdict.BLOCK_AND_BAN) {
+            moderationEnforcementService.banUser(
+                    userId,
+                    "Content policy violation in support attachment"
+            );
+            throw new ChallengeSphereException(
+                    "Support attachment rejected for content policy violation. Your account has been suspended.",
+                    HttpStatus.FORBIDDEN,
+                    logger
+            );
+        }
+        if (moderation.verdict() != ContentModerationService.Verdict.CLEAN) {
+            throw new ChallengeSphereException(
+                    "Support attachment rejected by content safety review",
+                    HttpStatus.BAD_REQUEST,
+                    logger
+            );
+        }
+    }
+
+    private void reserveDailySupportTicket(Long userId) throws ChallengeSphereException {
+        RateLimitStore.Decision decision;
+        try {
+            decision = rateLimitStore.consume(
+                    "support-ticket:daily:user:" + userId,
+                    MAX_SUPPORT_TICKETS_PER_DAY,
+                    Duration.ofDays(1)
+            );
+        } catch (RuntimeException unavailable) {
+            logger.error("Daily support-ticket protection unavailable for userId={}: {}",
+                    userId, unavailable.getClass().getSimpleName());
+            throw new ChallengeSphereException(
+                    "Support requests are temporarily unavailable",
+                    HttpStatus.SERVICE_UNAVAILABLE,
+                    logger
+            );
+        }
+        if (!decision.allowed()) {
+            throw new ChallengeSphereException(
+                    "Daily support request limit reached",
+                    HttpStatus.TOO_MANY_REQUESTS,
+                    logger
+            );
+        }
     }
 
     private void validateSupportUploadFiles(
@@ -154,14 +271,28 @@ public class SupportServiceImpl implements SupportService {
     }
 
     private void validateScreenshotKey(Long userId, String key) throws ChallengeSphereException {
-        String prefix = supportPrefix(userId);
-        if (!StringUtils.hasText(key)
-                || key.startsWith("http://")
-                || key.startsWith("https://")
-                || !key.startsWith(prefix)
-                || key.contains("..")
-                || key.contains("?")) {
+        Matcher matcher = key == null
+                ? SUPPORT_SCREENSHOT_KEY.matcher("")
+                : SUPPORT_SCREENSHOT_KEY.matcher(key);
+        if (userId == null
+                || !matcher.matches()
+                || !Long.toString(userId).equals(matcher.group(1))) {
             throw badRequest("Invalid support screenshot reference");
+        }
+        try {
+            if (!mediaUrlService.objectExists(key)) {
+                throw badRequest("Invalid support screenshot reference");
+            }
+        } catch (ChallengeSphereException e) {
+            throw e;
+        } catch (Exception e) {
+            logger.error("Could not verify support screenshot object for userId={}: {}",
+                    userId, e.getClass().getSimpleName());
+            throw new ChallengeSphereException(
+                    "Support screenshot could not be verified",
+                    HttpStatus.SERVICE_UNAVAILABLE,
+                    logger
+            );
         }
     }
 
