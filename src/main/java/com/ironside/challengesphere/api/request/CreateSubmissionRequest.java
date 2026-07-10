@@ -24,6 +24,7 @@ public class CreateSubmissionRequest {
     @Size(max = 2000, message = "Description cannot exceed 2000 characters")
     private String description;
 
+    @Size(max = 5, message = "A submission can include at most 5 media files")
     private List<String> mediaUrls; // Image/video URLs
 
     private Boolean isPrivate = false; // Default to public submission

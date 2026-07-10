@@ -96,6 +96,9 @@ public class SubmissionServiceImpl implements SubmissionService {
     private MediaUrlService mediaUrlService;
 
     @Autowired
+    private SubmissionMediaKeyPolicy submissionMediaKeyPolicy;
+
+    @Autowired
     private SubmissionModerationJob submissionModerationJob;
 
     @Autowired
@@ -110,6 +113,7 @@ public class SubmissionServiceImpl implements SubmissionService {
         Long userId = request.getUserId();
         Long challengeId = request.getChallengeId();
         Integer dayNumber = request.getDayNumber();
+        List<String> mediaKeys = submissionMediaKeyPolicy.validateAndNormalize(userId, request.getMediaUrls());
 
         logger.info("Creating submission for user: {}, challenge: {}, day: {}", userId, challengeId, dayNumber);
 
@@ -219,7 +223,7 @@ public class SubmissionServiceImpl implements SubmissionService {
                 );
             }
 
-            mediaUrlService.applyPrivateImageCacheHeaders(request.getMediaUrls());
+            mediaUrlService.applyPrivateImageCacheHeaders(mediaKeys);
 
             // Create submission
             Submission submission = new Submission();
@@ -229,7 +233,7 @@ public class SubmissionServiceImpl implements SubmissionService {
             submission.setDescription(request.getDescription());
 
             // Convert media URLs list to comma-separated string
-            submission.setMediaUrls(mediaUrlService.toStoredMediaUrlsString(request.getMediaUrls()));
+            submission.setMediaUrls(mediaUrlService.toStoredMediaUrlsString(mediaKeys));
 
             boolean challengeIsPrivate = Boolean.TRUE.equals(challenge.getIsPrivate());
             if (challengeIsPrivate) {
@@ -257,7 +261,7 @@ public class SubmissionServiceImpl implements SubmissionService {
                         savedSubmission.getId(),
                         userId,
                         challengeId,
-                        request.getMediaUrls() == null ? List.of() : List.copyOf(request.getMediaUrls())
+                        mediaKeys
                 );
             } catch (Exception e) {
                 logger.warn("Failed to enqueue moderation for submission {}: {}", savedSubmission.getId(), e.getClass().getSimpleName());
@@ -290,7 +294,7 @@ public class SubmissionServiceImpl implements SubmissionService {
                 }
             }
 
-            return SubmissionResponse.success(savedSubmission, request.getMediaUrls());
+            return SubmissionResponse.success(savedSubmission, mediaKeys);
 
         } catch (ChallengeSphereException e) {
             throw e;
@@ -414,6 +418,7 @@ public class SubmissionServiceImpl implements SubmissionService {
             throw new ChallengeSphereException("Submission ID is required", HttpStatus.BAD_REQUEST, logger);
         }
         Long userId = request.getUserId();
+        List<String> mediaKeys = submissionMediaKeyPolicy.validateAndNormalize(userId, request.getMediaUrls());
         logger.info("Reuploading submission: {} for user: {}", submissionId, userId);
 
         try {
@@ -440,7 +445,7 @@ public class SubmissionServiceImpl implements SubmissionService {
                     ));
             ensureSubmissionDayAcceptsUpload(challenge, submission.getDayNumber());
 
-            ContentModerationService.Result moderation = contentModerationService.scan(request.getMediaUrls());
+            ContentModerationService.Result moderation = contentModerationService.scan(mediaKeys);
             if (moderation.verdict() == ContentModerationService.Verdict.BLOCK_AND_BAN) {
                 User user = userRepository.findById(userId).orElse(null);
                 if (user != null) {
@@ -457,9 +462,9 @@ public class SubmissionServiceImpl implements SubmissionService {
                 );
             }
 
-            mediaUrlService.applyPrivateImageCacheHeaders(request.getMediaUrls());
+            mediaUrlService.applyPrivateImageCacheHeaders(mediaKeys);
             submission.setDescription(request.getDescription());
-            submission.setMediaUrls(mediaUrlService.toStoredMediaUrlsString(request.getMediaUrls()));
+            submission.setMediaUrls(mediaUrlService.toStoredMediaUrlsString(mediaKeys));
             if (request.getIsPrivate() != null) {
                 submission.setIsPrivate(request.getIsPrivate());
             }
@@ -470,7 +475,7 @@ public class SubmissionServiceImpl implements SubmissionService {
             Submission savedSubmission = submissionRepository.save(submission);
             invalidateSubmissionCaches(savedSubmission);
             logger.info("Successfully reuploaded submission: {} for user: {}", submissionId, userId);
-            return SubmissionResponse.success(savedSubmission, request.getMediaUrls());
+            return SubmissionResponse.success(savedSubmission, mediaKeys);
         } catch (ChallengeSphereException e) {
             throw e;
         } catch (Exception e) {
@@ -671,15 +676,12 @@ public class SubmissionServiceImpl implements SubmissionService {
             for (GeneratePresignedUrlsRequest.MediaFileInfo mediaFile : mediaFiles) {
                 try {
                     // Generate unique file key with timestamp and UUID to prevent collisions
-                    String timestamp = String.valueOf(System.currentTimeMillis());
-                    String uniqueId = UUID.randomUUID().toString();
-                    String fileExtension = getFileExtension(mediaFile.getFileName());
-                    String fileKey = String.format("submissions/user_%d/%s/%s_%s%s",
+                    String fileKey = submissionMediaKeyPolicy.createKey(
                             userId,
-                            mediaFile.getMediaType().name(),
-                            timestamp,
-                            uniqueId,
-                            fileExtension);
+                            mediaFile.getMediaType(),
+                            mediaFile.getContentType(),
+                            System.currentTimeMillis(),
+                            UUID.randomUUID());
 
                     // Generate presigned URL using S3
                     PresignedUrlsResponse.PresignedUrlInfo urlInfo = getPresignedUrlInfo(mediaFile, fileKey, expirationTimeInSeconds);
@@ -755,13 +757,12 @@ public class SubmissionServiceImpl implements SubmissionService {
             throw new ChallengeSphereException("User not found with id: " + userId, HttpStatus.NOT_FOUND, logger);
         }
 
-        String fileName = file.getOriginalFilename() == null ? "upload" : file.getOriginalFilename();
-        String fileKey = String.format("submissions/user_%d/%s/%d_%s%s",
+        String fileKey = submissionMediaKeyPolicy.createKey(
                 userId,
-                mediaType.name(),
+                mediaType,
+                contentType,
                 System.currentTimeMillis(),
-                UUID.randomUUID(),
-                getFileExtension(fileName));
+                UUID.randomUUID());
 
         try {
             mediaUrlService.uploadObject(fileKey, file.getBytes(), contentType.getMimeType());
@@ -806,16 +807,6 @@ public class SubmissionServiceImpl implements SubmissionService {
         if (mediaType == MediaTypes.SUBMISSION_VIDEO && contentType != GeneratePresignedUrlsRequest.ContentType.VIDEO_MP4) {
             throw new ChallengeSphereException("Content type does not match submission video media type", HttpStatus.BAD_REQUEST, logger);
         }
-    }
-
-    /**
-     * Extract file extension from filename
-     */
-    private String getFileExtension(String fileName) {
-        if (fileName == null || !fileName.contains(".")) {
-            return "";
-        }
-        return fileName.substring(fileName.lastIndexOf("."));
     }
 
     @Override
