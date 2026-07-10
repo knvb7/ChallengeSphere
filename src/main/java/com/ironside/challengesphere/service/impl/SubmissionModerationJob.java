@@ -37,9 +37,6 @@ public class SubmissionModerationJob {
     private ContentModerationService contentModerationService;
 
     @Autowired
-    private MediaUrlService mediaUrlService;
-
-    @Autowired
     private RedisCacheServiceImpl cacheService;
 
     @Autowired
@@ -87,8 +84,10 @@ public class SubmissionModerationJob {
             invalidateAfterRemoval(submission);
             logger.warn("Submission {} hidden and user {} banned after async moderation", submissionId, userId);
         } catch (Exception e) {
-            logger.error("Async moderation failed for submission {}; deleting uploaded media: {}", submissionId, e.getClass().getSimpleName());
-            mediaUrlService.deleteMediaObjects(urls);
+            logger.error(
+                    "Async moderation failed for submission {}; uploaded media retained for administrative cleanup: {}",
+                    submissionId,
+                    e.getClass().getSimpleName());
             hideSubmission(submission);
             invalidateAfterRemoval(submission);
         }

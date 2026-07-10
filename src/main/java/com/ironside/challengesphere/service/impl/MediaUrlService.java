@@ -149,35 +149,6 @@ public class MediaUrlService {
         return storedUrls.isEmpty() ? null : String.join(",", storedUrls);
     }
 
-    public void deleteMediaObjects(List<String> mediaUrls) {
-        if (mediaUrls == null || mediaUrls.isEmpty()) {
-            return;
-        }
-
-        for (String objectName : toS3ObjectNames(mediaUrls)) {
-            try {
-                GetSignedUrlForS3.deleteObject(bucketName, objectName);
-            } catch (Exception e) {
-                logger.warn("Failed to delete S3 object");
-            }
-        }
-    }
-
-    List<String> toS3ObjectNames(List<String> mediaUrls) {
-        if (mediaUrls == null || mediaUrls.isEmpty()) {
-            return List.of();
-        }
-
-        List<String> objectNames = new ArrayList<>();
-        for (String mediaUrl : mediaUrls) {
-            String objectName = extractS3ObjectName(mediaUrl);
-            if (objectName != null && !objectName.isBlank()) {
-                objectNames.add(objectName);
-            }
-        }
-        return objectNames;
-    }
-
     private String extractS3ObjectName(String mediaUrl) {
         if (mediaUrl == null || mediaUrl.isBlank()) {
             return null;

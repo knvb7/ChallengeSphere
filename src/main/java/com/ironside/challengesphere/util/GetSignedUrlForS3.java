@@ -13,7 +13,6 @@ import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.CopyObjectRequest;
-import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
@@ -146,22 +145,6 @@ public class GetSignedUrlForS3 {
 
         s3Client().copyObject(copyRequest.build());
         logger.debug("Updated cache-control for S3 object");
-    }
-
-    public static void deleteObject(String bucketName, String objectName) {
-        try {
-            s3Client().deleteObject(DeleteObjectRequest.builder()
-                    .bucket(bucketName)
-                    .key(objectName)
-                    .build());
-            logger.debug("Deleted S3 object");
-        } catch (S3Exception e) {
-            if (e.statusCode() == 404) {
-                logger.warn("S3 object was not found for deletion");
-                return;
-            }
-            throw e;
-        }
     }
 
     public static void uploadObject(String bucketName, String objectName, byte[] content, String contentType) {
