@@ -95,11 +95,11 @@ class SubmissionMediaSecurityIntegrationTest {
                 any(UUID.class)))
                 .thenThrow(new ChallengeSphereException("stop before signing", HttpStatus.BAD_REQUEST, null));
 
-        try {
-            service.generatePresignedUrls(request);
-        } catch (ChallengeSphereException ignored) {
-            // The policy exception deliberately stops the flow before static S3 signing.
-        }
+        ChallengeSphereException error = assertThrows(
+                ChallengeSphereException.class,
+                () -> service.generatePresignedUrls(request));
+        assertEquals(HttpStatus.INTERNAL_SERVER_ERROR, error.getStatus());
+        assertEquals("Failed to generate presigned URL for file: proof.jpg", error.getResponseMessage());
 
         verify(keyPolicy).createKey(
                 eq(7L),
@@ -107,6 +107,7 @@ class SubmissionMediaSecurityIntegrationTest {
                 eq(GeneratePresignedUrlsRequest.ContentType.IMAGE_JPEG),
                 anyLong(),
                 any(UUID.class));
+        verifyNoInteractions(mediaUrlService);
     }
 
     @Test
@@ -124,15 +125,15 @@ class SubmissionMediaSecurityIntegrationTest {
 
         MockMultipartFile file = new MockMultipartFile(
                 "file", "proof.jpg", "image/jpeg", new byte[]{1});
-        try {
-            service.uploadSubmissionMedia(
-                    7L,
-                    file,
-                    MediaTypes.SUBMISSION_PHOTO,
-                    GeneratePresignedUrlsRequest.ContentType.IMAGE_JPEG);
-        } catch (ChallengeSphereException ignored) {
-            // The policy exception deliberately stops the flow before S3 upload.
-        }
+        ChallengeSphereException error = assertThrows(
+                ChallengeSphereException.class,
+                () -> service.uploadSubmissionMedia(
+                        7L,
+                        file,
+                        MediaTypes.SUBMISSION_PHOTO,
+                        GeneratePresignedUrlsRequest.ContentType.IMAGE_JPEG));
+        assertEquals(HttpStatus.BAD_REQUEST, error.getStatus());
+        assertEquals("stop before upload", error.getResponseMessage());
 
         verify(keyPolicy).createKey(
                 eq(7L),
