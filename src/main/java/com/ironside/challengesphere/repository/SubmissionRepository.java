@@ -36,7 +36,7 @@ public interface SubmissionRepository extends JpaRepository<Submission, Long> {
                 AND s.active = true
                 AND c.active = true
                 AND NULLIF(BTRIM(s.media_urls), '') IS NOT NULL
-                AND s.media_urls ~* '\\.(jpe?g|png|webp|heic|heif)([?,]|$)'
+                AND s.media_urls ~* '\\.(jpe?g|png|webp|heic|heif)([?&#,''"\\]\\)],|$)'
                 AND (CAST(:profileUserId AS BIGINT) IS NULL OR s.user_id = :profileUserId)
                 AND (
                   s.user_id = :viewerId OR (
@@ -216,7 +216,7 @@ public interface SubmissionRepository extends JpaRepository<Submission, Long> {
             "AND s.day_number = :dayNumber " +
             "AND s.active = true " +
             "AND c.active = true " +
-            "AND (CAST(:participantQuery AS TEXT) IS NULL OR LOWER(u.username) LIKE LOWER(CONCAT('%', CAST(:participantQuery AS TEXT), '%'))) " +
+            "AND (CAST(:participantQuery AS TEXT) IS NULL OR LOWER(u.username) LIKE LOWER(CONCAT('%', CAST(:participantQuery AS TEXT), '%')) OR LOWER(COALESCE(u.name, '')) LIKE LOWER(CONCAT('%', CAST(:participantQuery AS TEXT), '%'))) " +
             "AND (s.user_id = :viewerId OR ( " +
             "  NOT EXISTS (SELECT 1 FROM challengesphere.user_blocks ub WHERE ub.active = true AND ((ub.blocker_user_id = :viewerId AND ub.blocked_user_id = s.user_id) OR (ub.blocker_user_id = s.user_id AND ub.blocked_user_id = :viewerId))) " +
             "  AND ((c.private = false AND s.is_private = false) OR EXISTS (SELECT 1 FROM challengesphere.user_challenges uc WHERE uc.challenge_id = s.challenge_id AND uc.user_id = :viewerId AND uc.active = true)) " +
@@ -229,7 +229,7 @@ public interface SubmissionRepository extends JpaRepository<Submission, Long> {
                     "AND s.day_number = :dayNumber " +
                     "AND s.active = true " +
                     "AND c.active = true " +
-                    "AND (CAST(:participantQuery AS TEXT) IS NULL OR LOWER(u.username) LIKE LOWER(CONCAT('%', CAST(:participantQuery AS TEXT), '%'))) " +
+                    "AND (CAST(:participantQuery AS TEXT) IS NULL OR LOWER(u.username) LIKE LOWER(CONCAT('%', CAST(:participantQuery AS TEXT), '%')) OR LOWER(COALESCE(u.name, '')) LIKE LOWER(CONCAT('%', CAST(:participantQuery AS TEXT), '%'))) " +
                     "AND (s.user_id = :viewerId OR ( " +
                     "  NOT EXISTS (SELECT 1 FROM challengesphere.user_blocks ub WHERE ub.active = true AND ((ub.blocker_user_id = :viewerId AND ub.blocked_user_id = s.user_id) OR (ub.blocker_user_id = s.user_id AND ub.blocked_user_id = :viewerId))) " +
                     "  AND ((c.private = false AND s.is_private = false) OR EXISTS (SELECT 1 FROM challengesphere.user_challenges uc WHERE uc.challenge_id = s.challenge_id AND uc.user_id = :viewerId AND uc.active = true)) " +
@@ -249,7 +249,7 @@ public interface SubmissionRepository extends JpaRepository<Submission, Long> {
             "AND s.day_number = :dayNumber " +
             "AND s.active = true " +
             "AND c.active = true " +
-            "AND (CAST(:participantQuery AS TEXT) IS NULL OR LOWER(u.username) LIKE LOWER(CONCAT('%', CAST(:participantQuery AS TEXT), '%'))) " +
+            "AND (CAST(:participantQuery AS TEXT) IS NULL OR LOWER(u.username) LIKE LOWER(CONCAT('%', CAST(:participantQuery AS TEXT), '%')) OR LOWER(COALESCE(u.name, '')) LIKE LOWER(CONCAT('%', CAST(:participantQuery AS TEXT), '%'))) " +
             "AND (s.user_id = :viewerId OR ( " +
             "  NOT EXISTS (SELECT 1 FROM challengesphere.user_blocks ub WHERE ub.active = true AND ((ub.blocker_user_id = :viewerId AND ub.blocked_user_id = s.user_id) OR (ub.blocker_user_id = s.user_id AND ub.blocked_user_id = :viewerId))) " +
             "  AND ((c.private = false AND s.is_private = false) OR EXISTS (SELECT 1 FROM challengesphere.user_challenges uc WHERE uc.challenge_id = s.challenge_id AND uc.user_id = :viewerId AND uc.active = true)) " +
@@ -262,7 +262,7 @@ public interface SubmissionRepository extends JpaRepository<Submission, Long> {
                     "AND s.day_number = :dayNumber " +
                     "AND s.active = true " +
                     "AND c.active = true " +
-                    "AND (CAST(:participantQuery AS TEXT) IS NULL OR LOWER(u.username) LIKE LOWER(CONCAT('%', CAST(:participantQuery AS TEXT), '%'))) " +
+                    "AND (CAST(:participantQuery AS TEXT) IS NULL OR LOWER(u.username) LIKE LOWER(CONCAT('%', CAST(:participantQuery AS TEXT), '%')) OR LOWER(COALESCE(u.name, '')) LIKE LOWER(CONCAT('%', CAST(:participantQuery AS TEXT), '%'))) " +
                     "AND (s.user_id = :viewerId OR ( " +
                     "  NOT EXISTS (SELECT 1 FROM challengesphere.user_blocks ub WHERE ub.active = true AND ((ub.blocker_user_id = :viewerId AND ub.blocked_user_id = s.user_id) OR (ub.blocker_user_id = s.user_id AND ub.blocked_user_id = :viewerId))) " +
                     "  AND ((c.private = false AND s.is_private = false) OR EXISTS (SELECT 1 FROM challengesphere.user_challenges uc WHERE uc.challenge_id = s.challenge_id AND uc.user_id = :viewerId AND uc.active = true)) " +
@@ -282,7 +282,7 @@ public interface SubmissionRepository extends JpaRepository<Submission, Long> {
             "AND s.day_number = :dayNumber " +
             "AND s.active = true " +
             "AND c.active = true " +
-            "AND (CAST(:participantQuery AS TEXT) IS NULL OR LOWER(u.username) LIKE LOWER(CONCAT('%', CAST(:participantQuery AS TEXT), '%'))) " +
+            "AND (CAST(:participantQuery AS TEXT) IS NULL OR LOWER(u.username) LIKE LOWER(CONCAT('%', CAST(:participantQuery AS TEXT), '%')) OR LOWER(COALESCE(u.name, '')) LIKE LOWER(CONCAT('%', CAST(:participantQuery AS TEXT), '%'))) " +
             "AND (s.user_id = :viewerId OR ( " +
             "  NOT EXISTS (SELECT 1 FROM challengesphere.user_blocks ub WHERE ub.active = true AND ((ub.blocker_user_id = :viewerId AND ub.blocked_user_id = s.user_id) OR (ub.blocker_user_id = s.user_id AND ub.blocked_user_id = :viewerId))) " +
             "  AND ((c.private = false AND s.is_private = false) OR EXISTS (SELECT 1 FROM challengesphere.user_challenges uc WHERE uc.challenge_id = s.challenge_id AND uc.user_id = :viewerId AND uc.active = true)) " +
@@ -295,7 +295,7 @@ public interface SubmissionRepository extends JpaRepository<Submission, Long> {
                     "AND s.day_number = :dayNumber " +
                     "AND s.active = true " +
                     "AND c.active = true " +
-                    "AND (CAST(:participantQuery AS TEXT) IS NULL OR LOWER(u.username) LIKE LOWER(CONCAT('%', CAST(:participantQuery AS TEXT), '%'))) " +
+                    "AND (CAST(:participantQuery AS TEXT) IS NULL OR LOWER(u.username) LIKE LOWER(CONCAT('%', CAST(:participantQuery AS TEXT), '%')) OR LOWER(COALESCE(u.name, '')) LIKE LOWER(CONCAT('%', CAST(:participantQuery AS TEXT), '%'))) " +
                     "AND (s.user_id = :viewerId OR ( " +
                     "  NOT EXISTS (SELECT 1 FROM challengesphere.user_blocks ub WHERE ub.active = true AND ((ub.blocker_user_id = :viewerId AND ub.blocked_user_id = s.user_id) OR (ub.blocker_user_id = s.user_id AND ub.blocked_user_id = :viewerId))) " +
                     "  AND ((c.private = false AND s.is_private = false) OR EXISTS (SELECT 1 FROM challengesphere.user_challenges uc WHERE uc.challenge_id = s.challenge_id AND uc.user_id = :viewerId AND uc.active = true)) " +
@@ -304,6 +304,120 @@ public interface SubmissionRepository extends JpaRepository<Submission, Long> {
     Page<Submission> findVisibleByChallengeIdAndDayNumberMostGlories(
             @Param("challengeId") Long challengeId,
             @Param("dayNumber") Integer dayNumber,
+            @Param("viewerId") Long viewerId,
+            @Param("participantQuery") String participantQuery,
+            Pageable pageable);
+
+    @Query(value = """
+            SELECT s.* FROM challengesphere.submissions s
+            JOIN challengesphere.challenges c ON c.id = s.challenge_id
+            JOIN challengesphere.users u ON u.id = s.user_id
+            WHERE s.challenge_id = :challengeId
+            AND s.active = true
+            AND c.active = true
+            AND (CAST(:participantQuery AS TEXT) IS NULL
+              OR LOWER(u.username) LIKE LOWER(CONCAT('%', CAST(:participantQuery AS TEXT), '%'))
+              OR LOWER(COALESCE(u.name, '')) LIKE LOWER(CONCAT('%', CAST(:participantQuery AS TEXT), '%')))
+            AND (s.user_id = :viewerId OR (
+              NOT EXISTS (SELECT 1 FROM challengesphere.user_blocks ub WHERE ub.active = true AND ((ub.blocker_user_id = :viewerId AND ub.blocked_user_id = s.user_id) OR (ub.blocker_user_id = s.user_id AND ub.blocked_user_id = :viewerId)))
+              AND ((c.private = false AND s.is_private = false) OR EXISTS (SELECT 1 FROM challengesphere.user_challenges uc WHERE uc.challenge_id = s.challenge_id AND uc.user_id = :viewerId AND uc.active = true))
+            ))
+            ORDER BY s.created_at DESC, s.id DESC
+            """,
+            countQuery = """
+                    SELECT COUNT(*) FROM challengesphere.submissions s
+                    JOIN challengesphere.challenges c ON c.id = s.challenge_id
+                    JOIN challengesphere.users u ON u.id = s.user_id
+                    WHERE s.challenge_id = :challengeId
+                    AND s.active = true
+                    AND c.active = true
+                    AND (CAST(:participantQuery AS TEXT) IS NULL
+                      OR LOWER(u.username) LIKE LOWER(CONCAT('%', CAST(:participantQuery AS TEXT), '%'))
+                      OR LOWER(COALESCE(u.name, '')) LIKE LOWER(CONCAT('%', CAST(:participantQuery AS TEXT), '%')))
+                    AND (s.user_id = :viewerId OR (
+                      NOT EXISTS (SELECT 1 FROM challengesphere.user_blocks ub WHERE ub.active = true AND ((ub.blocker_user_id = :viewerId AND ub.blocked_user_id = s.user_id) OR (ub.blocker_user_id = s.user_id AND ub.blocked_user_id = :viewerId)))
+                      AND ((c.private = false AND s.is_private = false) OR EXISTS (SELECT 1 FROM challengesphere.user_challenges uc WHERE uc.challenge_id = s.challenge_id AND uc.user_id = :viewerId AND uc.active = true))
+                    ))
+                    """,
+            nativeQuery = true)
+    Page<Submission> findVisibleByChallengeIdNewest(
+            @Param("challengeId") Long challengeId,
+            @Param("viewerId") Long viewerId,
+            @Param("participantQuery") String participantQuery,
+            Pageable pageable);
+
+    @Query(value = """
+            SELECT s.* FROM challengesphere.submissions s
+            JOIN challengesphere.challenges c ON c.id = s.challenge_id
+            JOIN challengesphere.users u ON u.id = s.user_id
+            WHERE s.challenge_id = :challengeId
+            AND s.active = true
+            AND c.active = true
+            AND (CAST(:participantQuery AS TEXT) IS NULL
+              OR LOWER(u.username) LIKE LOWER(CONCAT('%', CAST(:participantQuery AS TEXT), '%'))
+              OR LOWER(COALESCE(u.name, '')) LIKE LOWER(CONCAT('%', CAST(:participantQuery AS TEXT), '%')))
+            AND (s.user_id = :viewerId OR (
+              NOT EXISTS (SELECT 1 FROM challengesphere.user_blocks ub WHERE ub.active = true AND ((ub.blocker_user_id = :viewerId AND ub.blocked_user_id = s.user_id) OR (ub.blocker_user_id = s.user_id AND ub.blocked_user_id = :viewerId)))
+              AND ((c.private = false AND s.is_private = false) OR EXISTS (SELECT 1 FROM challengesphere.user_challenges uc WHERE uc.challenge_id = s.challenge_id AND uc.user_id = :viewerId AND uc.active = true))
+            ))
+            ORDER BY s.created_at ASC, s.id ASC
+            """,
+            countQuery = """
+                    SELECT COUNT(*) FROM challengesphere.submissions s
+                    JOIN challengesphere.challenges c ON c.id = s.challenge_id
+                    JOIN challengesphere.users u ON u.id = s.user_id
+                    WHERE s.challenge_id = :challengeId
+                    AND s.active = true
+                    AND c.active = true
+                    AND (CAST(:participantQuery AS TEXT) IS NULL
+                      OR LOWER(u.username) LIKE LOWER(CONCAT('%', CAST(:participantQuery AS TEXT), '%'))
+                      OR LOWER(COALESCE(u.name, '')) LIKE LOWER(CONCAT('%', CAST(:participantQuery AS TEXT), '%')))
+                    AND (s.user_id = :viewerId OR (
+                      NOT EXISTS (SELECT 1 FROM challengesphere.user_blocks ub WHERE ub.active = true AND ((ub.blocker_user_id = :viewerId AND ub.blocked_user_id = s.user_id) OR (ub.blocker_user_id = s.user_id AND ub.blocked_user_id = :viewerId)))
+                      AND ((c.private = false AND s.is_private = false) OR EXISTS (SELECT 1 FROM challengesphere.user_challenges uc WHERE uc.challenge_id = s.challenge_id AND uc.user_id = :viewerId AND uc.active = true))
+                    ))
+                    """,
+            nativeQuery = true)
+    Page<Submission> findVisibleByChallengeIdOldest(
+            @Param("challengeId") Long challengeId,
+            @Param("viewerId") Long viewerId,
+            @Param("participantQuery") String participantQuery,
+            Pageable pageable);
+
+    @Query(value = """
+            SELECT s.* FROM challengesphere.submissions s
+            JOIN challengesphere.challenges c ON c.id = s.challenge_id
+            JOIN challengesphere.users u ON u.id = s.user_id
+            WHERE s.challenge_id = :challengeId
+            AND s.active = true
+            AND c.active = true
+            AND (CAST(:participantQuery AS TEXT) IS NULL
+              OR LOWER(u.username) LIKE LOWER(CONCAT('%', CAST(:participantQuery AS TEXT), '%'))
+              OR LOWER(COALESCE(u.name, '')) LIKE LOWER(CONCAT('%', CAST(:participantQuery AS TEXT), '%')))
+            AND (s.user_id = :viewerId OR (
+              NOT EXISTS (SELECT 1 FROM challengesphere.user_blocks ub WHERE ub.active = true AND ((ub.blocker_user_id = :viewerId AND ub.blocked_user_id = s.user_id) OR (ub.blocker_user_id = s.user_id AND ub.blocked_user_id = :viewerId)))
+              AND ((c.private = false AND s.is_private = false) OR EXISTS (SELECT 1 FROM challengesphere.user_challenges uc WHERE uc.challenge_id = s.challenge_id AND uc.user_id = :viewerId AND uc.active = true))
+            ))
+            ORDER BY s.glories_count DESC, s.comments_count DESC, s.created_at DESC, s.id DESC
+            """,
+            countQuery = """
+                    SELECT COUNT(*) FROM challengesphere.submissions s
+                    JOIN challengesphere.challenges c ON c.id = s.challenge_id
+                    JOIN challengesphere.users u ON u.id = s.user_id
+                    WHERE s.challenge_id = :challengeId
+                    AND s.active = true
+                    AND c.active = true
+                    AND (CAST(:participantQuery AS TEXT) IS NULL
+                      OR LOWER(u.username) LIKE LOWER(CONCAT('%', CAST(:participantQuery AS TEXT), '%'))
+                      OR LOWER(COALESCE(u.name, '')) LIKE LOWER(CONCAT('%', CAST(:participantQuery AS TEXT), '%')))
+                    AND (s.user_id = :viewerId OR (
+                      NOT EXISTS (SELECT 1 FROM challengesphere.user_blocks ub WHERE ub.active = true AND ((ub.blocker_user_id = :viewerId AND ub.blocked_user_id = s.user_id) OR (ub.blocker_user_id = s.user_id AND ub.blocked_user_id = :viewerId)))
+                      AND ((c.private = false AND s.is_private = false) OR EXISTS (SELECT 1 FROM challengesphere.user_challenges uc WHERE uc.challenge_id = s.challenge_id AND uc.user_id = :viewerId AND uc.active = true))
+                    ))
+                    """,
+            nativeQuery = true)
+    Page<Submission> findVisibleByChallengeIdMostGlories(
+            @Param("challengeId") Long challengeId,
             @Param("viewerId") Long viewerId,
             @Param("participantQuery") String participantQuery,
             Pageable pageable);
@@ -414,6 +528,19 @@ public interface SubmissionRepository extends JpaRepository<Submission, Long> {
     // Find all submissions for a challenge by a specific user
     @Query(value = "SELECT * FROM challengesphere.submissions WHERE user_id = :userId AND challenge_id = :challengeId AND active = true ORDER BY day_number ASC", nativeQuery = true)
     List<Submission> findActiveByUserIdAndChallengeId(@Param("userId") Long userId, @Param("challengeId") Long challengeId);
+
+    @Query(value = """
+            SELECT COUNT(*)
+            FROM challengesphere.submissions
+            WHERE user_id = :userId
+              AND challenge_id = :challengeId
+              AND day_number = :dayNumber
+              AND active = true
+            """, nativeQuery = true)
+    long countActiveByUserIdAndChallengeIdAndDayNumber(
+            @Param("userId") Long userId,
+            @Param("challengeId") Long challengeId,
+            @Param("dayNumber") Integer dayNumber);
 
     // Find submissions by challenge and user (for leaderboard)
     @Query(value = "SELECT * FROM challengesphere.submissions WHERE challenge_id = :challengeId AND user_id = :userId ORDER BY day_number ASC", nativeQuery = true)

@@ -431,6 +431,47 @@ public class ChallengeServiceImpl implements ChallengeService {
 
     @Override
     @Transactional
+    public void deleteChallenge(Long challengeId, Long actorUserId) throws ChallengeSphereException {
+        logger.info("Deleting challenge {} by actor {}", challengeId, actorUserId);
+
+        Challenge challenge = challengeRepository.findById(challengeId)
+                .orElseThrow(() -> new ChallengeSphereException(
+                        "Challenge not found with id: " + challengeId,
+                        HttpStatus.NOT_FOUND,
+                        logger
+                ));
+
+        boolean owner = actorUserId != null
+                && (actorUserId.equals(challenge.getCreatorId()) || actorUserId.equals(challenge.getCurrentOwnerId()));
+        if (!owner) {
+            throw new ChallengeSphereException("Not authorized to delete this challenge", HttpStatus.FORBIDDEN, logger);
+        }
+
+        List<UserChallenge> allParticipantLinks = userChallengeRepository.findByChallengeIds(List.of(challengeId));
+        if (Boolean.FALSE.equals(challenge.getActive())) {
+            invalidateDeletedChallengeCaches(challenge, allParticipantLinks);
+            logger.info("Challenge {} is already deleted; invalidated caches", challengeId);
+            return;
+        }
+
+        challenge.setActive(false);
+        challengeRepository.save(challenge);
+
+        List<UserChallenge> participantLinks = allParticipantLinks.stream()
+                .filter(userChallenge -> Boolean.TRUE.equals(userChallenge.getActive()))
+                .peek(userChallenge -> userChallenge.setActive(false))
+                .toList();
+        if (!participantLinks.isEmpty()) {
+            userChallengeRepository.saveAll(participantLinks);
+        }
+
+        invalidateDeletedChallengeCaches(challenge, participantLinks);
+
+        logger.info("Challenge {} deleted by actor {}", challengeId, actorUserId);
+    }
+
+    @Override
+    @Transactional
     public void deleteChallenges(List<Long> challengeIds) {
         try {
             logger.info("Bulk update on challenges {}", challengeIds);
@@ -438,11 +479,11 @@ public class ChallengeServiceImpl implements ChallengeService {
             List<Challenge> challenges = challengeRepository.findAllById(challengeIds).stream().toList();
             for (Challenge challenge : challenges) {
                 challenge.setActive(false);
-                cacheService.invalidateChallenge(challenge.getId());
             }
             challengeRepository.saveAll(challenges);
 
-            List<UserChallenge> participantLinks = userChallengeRepository.findByChallengeIds(challengeIds).stream()
+            List<UserChallenge> allParticipantLinks = userChallengeRepository.findByChallengeIds(challengeIds);
+            List<UserChallenge> participantLinks = allParticipantLinks.stream()
                     .filter(userChallenge -> Boolean.TRUE.equals(userChallenge.getActive()))
                     .peek(userChallenge -> userChallenge.setActive(false))
                     .toList();
@@ -450,27 +491,45 @@ public class ChallengeServiceImpl implements ChallengeService {
                 userChallengeRepository.saveAll(participantLinks);
             }
 
-            // Invalidate list caches since challenge status changed
-            // cacheService.invalidateRecentChallenges();
-            // cacheService.invalidateTrendingChallenges();
-            // cacheService.invalidateHashtagChallenges();
-
-            // Invalidate user challenges cache for affected creators/owners
-            // challenges.stream()
-            //         .map(Challenge::getCreatorId)
-            //         .distinct()
-            //         .forEach(cacheService::invalidateUserChallenges);
-
-            // Invalidate participants cache for affected challenges
-            // challengeIds.forEach(cacheService::invalidateChallengeParticipants);
-
-            cacheService.invalidateAllFeeds();
+            Map<Long, List<UserChallenge>> participantsByChallengeId = allParticipantLinks.stream()
+                    .collect(Collectors.groupingBy(UserChallenge::getChallengeId));
+            challenges.forEach(challenge -> invalidateDeletedChallengeCaches(
+                    challenge,
+                    participantsByChallengeId.getOrDefault(challenge.getId(), List.of())
+            ));
 
             logger.info("Deleted {} challenges and invalidated caches", challenges.size());
         } catch (Exception e) {
             logger.error("Error during bulk update for challenges {}: {}", challengeIds, e.getClass().getSimpleName());
             throw new RuntimeException("Failed to perform bulk update on challenges", e);
         }
+    }
+
+    private void invalidateDeletedChallengeCaches(Challenge challenge, List<UserChallenge> participantLinks) {
+        if (challenge == null || challenge.getId() == null) {
+            return;
+        }
+
+        Long challengeId = challenge.getId();
+        cacheService.clearChallengeCache(challengeId);
+        cacheService.invalidateChallengeParticipants(challengeId);
+        cacheService.invalidateHashtagChallenges();
+        cacheService.invalidateAllFeeds();
+
+        Set<Long> affectedUserIds = new HashSet<>();
+        if (challenge.getCreatorId() != null) {
+            affectedUserIds.add(challenge.getCreatorId());
+        }
+        if (challenge.getCurrentOwnerId() != null) {
+            affectedUserIds.add(challenge.getCurrentOwnerId());
+        }
+        if (participantLinks != null) {
+            participantLinks.stream()
+                    .map(UserChallenge::getUserId)
+                    .filter(java.util.Objects::nonNull)
+                    .forEach(affectedUserIds::add);
+        }
+        affectedUserIds.forEach(cacheService::invalidateUserChallenges);
     }
 
     @Override
@@ -544,6 +603,13 @@ public class ChallengeServiceImpl implements ChallengeService {
                         logger
                 );
             }
+            if (isExpiredChallenge(challenge)) {
+                throw new ChallengeSphereException(
+                        "This challenge has ended and is no longer accepting new participants",
+                        HttpStatus.BAD_REQUEST,
+                        logger
+                );
+            }
 
             Long ownerUserId = challenge.getCurrentOwnerId() != null ? challenge.getCurrentOwnerId() : challenge.getCreatorId();
             for (Long userId : userIds) {
@@ -600,7 +666,7 @@ public class ChallengeServiceImpl implements ChallengeService {
                 long activeParticipations =
                         userChallengeRepository.countSlotConsumingParticipations(userId);
                 int limit = challengeParticipationProperties.getMaxActiveParticipations();
-                if (activeParticipations >= limit) {
+                if (limit > 0 && activeParticipations >= limit) {
                     throw new ChallengeSphereException(
                             "You can participate in at most " + limit
                                     + " active challenges at a time. Complete or leave a challenge before joining another.",
@@ -854,6 +920,7 @@ public class ChallengeServiceImpl implements ChallengeService {
                             challengeRepository.findByCategoriesContaining(hashtag).stream()
                     ))
                     .filter(Challenge::getActive)
+                    .filter(challenge -> !isExpiredChallenge(challenge))
                     .filter(challenge -> canViewChallengeDiscovery(challenge, currentUserId))
                     .distinct()
                     .toList();
@@ -931,6 +998,7 @@ public class ChallengeServiceImpl implements ChallengeService {
             // Get all public challenges
             List<Challenge> publicChallenges = challengeRepository.findAll().stream()
                     .filter(challenge -> !challenge.getIsPrivate())
+                    .filter(challenge -> !isExpiredChallenge(challenge))
                     .filter(challenge -> canViewChallengeDiscovery(challenge, currentUserId))
                     .collect(Collectors.toList());
 
@@ -1033,6 +1101,7 @@ public class ChallengeServiceImpl implements ChallengeService {
                         if (right.getCreatedAt() == null) return -1;
                         return right.getCreatedAt().compareTo(left.getCreatedAt());
                     })
+                    .filter(challenge -> !isExpiredChallenge(challenge))
                     .filter(challenge -> canViewChallengeDiscovery(challenge, currentUserId))
                     .toList();
 
@@ -1266,28 +1335,18 @@ public class ChallengeServiceImpl implements ChallengeService {
 
             List<UserChallenge> userChallenges = userChallengeRepository.findActiveByUserId(userId);
 
-            if (status != null && !status.isBlank()) {
-                boolean filterCompleted = "completed".equalsIgnoreCase(status);
-                userChallenges = userChallenges.stream()
-                        .filter(uc -> Boolean.TRUE.equals(uc.getCompleted()) == filterCompleted)
-                        .toList();
-            }
-
-            int totalCount = userChallenges.size();
-            int offset = (page - 1) * pageSize;
-            List<UserChallenge> paginatedUserChallenges = userChallenges.stream()
-                    .skip(offset)
-                    .limit(pageSize)
-                    .toList();
-
-            List<Long> challengeIds = paginatedUserChallenges.stream().map(UserChallenge::getChallengeId).toList();
+            List<Long> challengeIds = userChallenges.stream().map(UserChallenge::getChallengeId).toList();
+            Map<Long, Long> activeParticipantCountMap = challengeIds.isEmpty()
+                    ? Map.of()
+                    : userChallengeRepository.findActiveByChallengeIds(challengeIds).stream()
+                    .collect(Collectors.groupingBy(UserChallenge::getChallengeId, Collectors.counting()));
             Map<Long, Challenge> challengeMap = withReadableCoverPhotoUrls(
                     challengeRepository.findAllById(challengeIds)
             )
                     .stream().collect(Collectors.toMap(Challenge::getId, c -> c));
 
             List<MyChallengesResponse.ChallengeSummary> summaries = new ArrayList<>();
-            for (UserChallenge uc : paginatedUserChallenges) {
+            for (UserChallenge uc : userChallenges) {
                 Challenge c = challengeMap.get(uc.getChallengeId());
                 if (c == null) continue;
 
@@ -1307,11 +1366,30 @@ public class ChallengeServiceImpl implements ChallengeService {
                 summary.setCurrentStreak(computeCurrentStreak(submittedDays));
                 summary.setCompletionPercentage(completionPct);
                 summary.setJoinedAt(uc.getJoinedAt());
-                summary.setCompleted(oneOff ? daysCompleted == 1 : Boolean.TRUE.equals(uc.getCompleted()));
+                summary.setCompleted(oneOff
+                        ? daysCompleted == 1
+                        : Boolean.TRUE.equals(uc.getCompleted()) || isExpiredChallenge(c));
+                int participantCount = activeParticipantCountMap.getOrDefault(c.getId(), 0L).intValue();
+                summary.setParticipantCount(participantCount);
+                summary.setActiveParticipantCount(participantCount);
                 summaries.add(summary);
             }
 
-            return MyChallengesResponse.create(summaries, page, pageSize, totalCount);
+            if (status != null && !status.isBlank()) {
+                boolean filterCompleted = "completed".equalsIgnoreCase(status);
+                summaries = summaries.stream()
+                        .filter(summary -> summary.isCompleted() == filterCompleted)
+                        .toList();
+            }
+
+            int totalCount = summaries.size();
+            int offset = (page - 1) * pageSize;
+            List<MyChallengesResponse.ChallengeSummary> paginatedSummaries = summaries.stream()
+                    .skip(offset)
+                    .limit(pageSize)
+                    .toList();
+
+            return MyChallengesResponse.create(paginatedSummaries, page, pageSize, totalCount);
         } catch (ChallengeSphereException e) {
             throw e;
         } catch (Exception e) {
@@ -1389,6 +1467,18 @@ public class ChallengeServiceImpl implements ChallengeService {
             return 1;
         }
         return requestedDays != null ? requestedDays : 1;
+    }
+
+    private boolean isExpiredChallenge(Challenge challenge) {
+        if (challenge == null || Challenge.isOneOffMode(challenge.getChallengeMode())) {
+            return false;
+        }
+        LocalDate startDate = challenge.getStartDate();
+        Integer numberOfDays = challenge.getNumberOfDays();
+        if (startDate == null || numberOfDays == null || numberOfDays <= 0) {
+            return false;
+        }
+        return !LocalDate.now().isBefore(startDate.plusDays(numberOfDays));
     }
 
     private List<Integer> distinctSubmittedDays(List<Submission> submissions, int totalDays) {

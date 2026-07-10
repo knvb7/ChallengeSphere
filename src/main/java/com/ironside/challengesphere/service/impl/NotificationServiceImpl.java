@@ -23,6 +23,8 @@ import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.sql.Timestamp;
 import java.time.Instant;
@@ -63,6 +65,9 @@ public class NotificationServiceImpl implements NotificationService {
 
     @Autowired
     private MediaUrlService mediaUrlService;
+
+    private record PushDispatch(Long userId, String type, String message, String actionObject) {
+    }
 
     public NotificationServiceImpl(NotificationRepository notificationRepository,
                                    UserRepository userRepository,
@@ -161,6 +166,7 @@ public class NotificationServiceImpl implements NotificationService {
                 .collect(Collectors.toMap(UserPreferences::getUserId, prefs -> prefs));
         List<User> recipients = userRepository.findAllById(normalizedRecipients);
         List<Notification> toSave = new ArrayList<>();
+        List<PushDispatch> pushes = new ArrayList<>();
 
         String challengeTitle = safe(challenge.getTitle());
         String message = displayName(author) + " posted Day " + submission.getDayNumber()
@@ -174,13 +180,14 @@ public class NotificationServiceImpl implements NotificationService {
             UserPreferences prefs = prefsByUserId.get(recipient.getId());
             if (allowsInApp(recipient, prefs, TYPE_SUBMISSION)) {
                 toSave.add(buildNotification(recipient.getId(), TYPE_SUBMISSION, message, actionObject));
-                pushNotificationService.sendInteractionPush(recipient.getId(), TYPE_SUBMISSION, message, actionObject);
+                pushes.add(new PushDispatch(recipient.getId(), TYPE_SUBMISSION, message, actionObject));
             }
             sendEmailIfAllowed(recipient, prefs, TYPE_SUBMISSION, message);
         }
 
         if (!toSave.isEmpty()) {
             notificationRepository.saveAll(toSave);
+            dispatchPushesAfterCommit(pushes);
         }
         logger.info("Created {} submission notification(s) for submissionId={}", toSave.size(), submission.getId());
         return toSave.size();
@@ -213,6 +220,7 @@ public class NotificationServiceImpl implements NotificationService {
                     .collect(Collectors.toMap(UserPreferences::getUserId, prefs -> prefs));
             List<User> recipients = userRepository.findAllById(requestedRecipients);
             List<Notification> toSave = new ArrayList<>();
+            List<PushDispatch> pushes = new ArrayList<>();
 
             String challengeTitle = safe(challenge.getTitle());
             String message = displayName(actor) + " invited you to join"
@@ -226,13 +234,14 @@ public class NotificationServiceImpl implements NotificationService {
                 String actionObject = toJson(baseChallengeInvitePayload(actor, recipient, challenge));
                 if (allowsInApp(recipient, prefs, TYPE_CHALLENGE_INVITE)) {
                     toSave.add(buildNotification(recipient.getId(), TYPE_CHALLENGE_INVITE, message, actionObject));
-                    pushNotificationService.sendInteractionPush(recipient.getId(), TYPE_CHALLENGE_INVITE, message, actionObject);
+                    pushes.add(new PushDispatch(recipient.getId(), TYPE_CHALLENGE_INVITE, message, actionObject));
                 }
 //                sendEmailIfAllowed(recipient, prefs, TYPE_CHALLENGE_INVITE, message);
             }
 
             if (!toSave.isEmpty()) {
                 notificationRepository.saveAll(toSave);
+                dispatchPushesAfterCommit(pushes);
             }
             logger.info("Created {} challenge invite notification(s) for challengeId={}", toSave.size(), challenge.getId());
         } catch (Exception e) {
@@ -267,6 +276,7 @@ public class NotificationServiceImpl implements NotificationService {
                 .collect(Collectors.toMap(UserPreferences::getUserId, prefs -> prefs));
         List<User> recipients = userRepository.findAllById(normalizedRecipients);
         List<Notification> toSave = new ArrayList<>();
+        List<PushDispatch> pushes = new ArrayList<>();
 
         String challengeTitle = safe(challenge.getTitle());
         String message = displayName(joiner) + " joined"
@@ -280,13 +290,14 @@ public class NotificationServiceImpl implements NotificationService {
             String actionObject = toJson(baseChallengeJoinedPayload(joiner, recipient, challenge));
             if (allowsInApp(recipient, prefs, TYPE_CHALLENGE_UPDATE)) {
                 toSave.add(buildNotification(recipient.getId(), TYPE_CHALLENGE_UPDATE, message, actionObject));
-                pushNotificationService.sendInteractionPush(recipient.getId(), TYPE_CHALLENGE_UPDATE, message, actionObject);
+                pushes.add(new PushDispatch(recipient.getId(), TYPE_CHALLENGE_UPDATE, message, actionObject));
             }
             sendEmailIfAllowed(recipient, prefs, TYPE_CHALLENGE_UPDATE, message);
         }
 
         if (!toSave.isEmpty()) {
             notificationRepository.saveAll(toSave);
+            dispatchPushesAfterCommit(pushes);
         }
         logger.info("Created {} challenge join notification(s) for challengeId={}", toSave.size(), challenge.getId());
         return toSave.size();
@@ -368,12 +379,38 @@ public class NotificationServiceImpl implements NotificationService {
         if (allowsInApp(recipient, prefs, type)) {
             saved = notificationRepository.save(buildNotification(recipient.getId(), type, message, actionObject));
             logger.info("Created notification id={} for userId={} type={}", saved.getId(), recipient.getId(), type);
-            pushNotificationService.sendInteractionPush(recipient.getId(), type, message, actionObject);
+            dispatchPushAfterCommit(recipient.getId(), type, message, actionObject);
         } else {
             logger.debug("In-app notification suppressed by preferences for userId={} type={}", recipient.getId(), type);
         }
         sendEmailIfAllowed(recipient, prefs, type, message);
         return saved;
+    }
+
+    private void dispatchPushesAfterCommit(List<PushDispatch> pushes) {
+        if (pushes == null || pushes.isEmpty()) {
+            return;
+        }
+        Runnable dispatch = () -> pushes.forEach(push ->
+                pushNotificationService.sendInteractionPush(push.userId(), push.type(), push.message(), push.actionObject()));
+        runAfterCommit(dispatch);
+    }
+
+    private void dispatchPushAfterCommit(Long userId, String type, String message, String actionObject) {
+        runAfterCommit(() -> pushNotificationService.sendInteractionPush(userId, type, message, actionObject));
+    }
+
+    private void runAfterCommit(Runnable task) {
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    task.run();
+                }
+            });
+            return;
+        }
+        task.run();
     }
 
     private Notification buildNotification(Long userId, String type, String message, String actionObject) {

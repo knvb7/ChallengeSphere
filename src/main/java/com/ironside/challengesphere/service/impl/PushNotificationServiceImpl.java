@@ -13,6 +13,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -95,6 +96,7 @@ public class PushNotificationServiceImpl implements PushNotificationService {
     }
 
     @Override
+    @Async("cacheExecutor")
     public void sendInteractionPush(Long userId, String type, String message, String actionObject) {
         String normalizedType = safe(type).toUpperCase();
         if (userId == null || !PUSH_TYPES.contains(normalizedType)) {

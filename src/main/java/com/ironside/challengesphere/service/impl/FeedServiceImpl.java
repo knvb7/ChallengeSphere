@@ -94,13 +94,43 @@ public class FeedServiceImpl implements FeedService {
                 throw new ChallengeSphereException("User not found: " + userId, HttpStatus.NOT_FOUND, logger);
             }
 
-            Pageable pageable = PageRequest.of(Math.max(0, page - 1), pageSize);
+            int normalizedPage = Math.max(1, page);
+            int offset = (normalizedPage - 1) * pageSize;
+            if (cacheService.timelineExists(userId)) {
+                List<Long> cachedSubmissionIds = cacheService.getTimelineIds(userId, offset, pageSize);
+                long totalItems = cacheService.getTimelineSize(userId);
+                if (!cachedSubmissionIds.isEmpty()) {
+                    List<Submission> cachedSubmissions = hydrateTimelineSubmissions(cachedSubmissionIds);
+                    List<FeedItemResponse> cachedItems = enrichSubmissions(cachedSubmissions, userId);
+                    return FeedResponse.create(cachedItems, page, pageSize, totalItems, "FOLLOWING");
+                }
+                return totalItems > 0
+                        ? FeedResponse.create(List.of(), page, pageSize, totalItems, "FOLLOWING")
+                        : FeedResponse.empty(page, pageSize, "FOLLOWING");
+            }
+
+            Pageable pageable = PageRequest.of(normalizedPage - 1, pageSize);
             Page<Submission> submissionsPage = submissionRepository.findFeedForUser(userId, pageable);
 
             if (submissionsPage.isEmpty()) {
                 logger.debug("No submissions found in following feed for userId: {}", userId);
                 return FeedResponse.empty(page, pageSize, "FOLLOWING");
             }
+
+            Pageable rebuildPageable = PageRequest.of(0, TIMELINE_REBUILD_SIZE);
+            Page<Submission> timelinePage = submissionRepository.findFeedForUser(userId, rebuildPageable);
+            List<Long> timelineSubmissionIds = timelinePage.getContent().stream()
+                    .map(Submission::getId)
+                    .toList();
+            List<Double> timelineScores = timelinePage.getContent().stream()
+                    .map(submission -> {
+                        if (submission.getCreatedAt() != null) {
+                            return (double) submission.getCreatedAt().getTime();
+                        }
+                        return (double) System.currentTimeMillis();
+                    })
+                    .toList();
+            cacheService.rebuildTimeline(userId, timelineSubmissionIds, timelineScores);
 
             List<FeedItemResponse> feedItems = enrichSubmissions(submissionsPage.getContent(), userId);
             logger.info("Returning {} following feed items for userId={}, page={}",
@@ -328,6 +358,18 @@ public class FeedServiceImpl implements FeedService {
     }
 
     // ==================== HELPER METHODS ====================
+
+    private List<Submission> hydrateTimelineSubmissions(List<Long> submissionIds) {
+        if (submissionIds == null || submissionIds.isEmpty()) {
+            return List.of();
+        }
+        Map<Long, Submission> submissionsById = submissionRepository.findAllById(submissionIds).stream()
+                .collect(Collectors.toMap(Submission::getId, submission -> submission));
+        return submissionIds.stream()
+                .map(submissionsById::get)
+                .filter(Objects::nonNull)
+                .toList();
+    }
 
     /**
      * Enrich submissions with user and challenge information

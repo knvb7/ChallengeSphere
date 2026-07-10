@@ -32,6 +32,9 @@ public class User {
     @Column(name = "username", nullable = false, unique = true, length = 50)
     private String username;
 
+    @Column(name = "name", length = 120)
+    private String name;
+
     @JsonIgnore
     @Column(name = "hashed_password", length = 255)
     private String hashedPassword;

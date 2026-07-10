@@ -39,6 +39,8 @@ public class MyChallengesResponse {
         private int completionPercentage;
         private Timestamp joinedAt;
         private boolean completed;
+        private int participantCount;
+        private int activeParticipantCount;
 
         public static ChallengeSummary from(Challenge challenge) {
             ChallengeSummary summary = new ChallengeSummary();

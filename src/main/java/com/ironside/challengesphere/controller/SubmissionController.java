@@ -146,10 +146,19 @@ public class SubmissionController {
             @RequestParam(defaultValue = "1") @Min(1) int page,
             @RequestParam(defaultValue = "10") @Min(1) @Max(100) int pageSize,
             @RequestParam(required = false) Long callerId,
+            @RequestParam(defaultValue = "newest") String sortBy,
+            @RequestParam(required = false) String participantQuery,
             @AuthenticationPrincipal UserPrincipal principal) throws ChallengeSphereException {
 
-        logger.info("Getting submissions for challenge: {}, page: {}, pageSize: {}", challengeId, page, pageSize);
-        SubmissionsResponse response = submissionService.getSubmissionsByChallenge(challengeId, page, pageSize, SecurityAccess.requireUserId(principal));
+        logger.info("Getting submissions for challenge: {}, page: {}, pageSize: {}, sortBy: {}", challengeId, page, pageSize, sortBy);
+        SubmissionsResponse response = submissionService.getSubmissionsByChallenge(
+                challengeId,
+                page,
+                pageSize,
+                SecurityAccess.requireUserId(principal),
+                sortBy,
+                participantQuery
+        );
         return ResponseEntity.ok(response);
     }
 

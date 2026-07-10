@@ -25,6 +25,12 @@ public interface UserRepository extends JpaRepository<User, Long> {
     @Query(value = "SELECT * FROM challengesphere.users WHERE username = :username", nativeQuery = true)
     Optional<User> findByUsername(@Param("username") String username);
 
+    @Query(value = "SELECT CASE WHEN COUNT(*) > 0 THEN TRUE ELSE FALSE END " +
+            "FROM challengesphere.users WHERE LOWER(username) = LOWER(:username) AND id <> :userId",
+            nativeQuery = true)
+    boolean existsByUsernameIgnoreCaseAndIdNot(@Param("username") String username,
+                                               @Param("userId") Long userId);
+
     @Query(value = "SELECT * FROM challengesphere.users WHERE email_id = :emailId", nativeQuery = true)
     Optional<User> findByEmailId(@Param("emailId") String emailId);
 

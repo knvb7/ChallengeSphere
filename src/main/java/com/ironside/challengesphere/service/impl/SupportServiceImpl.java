@@ -27,7 +27,7 @@ import java.util.stream.Collectors;
 public class SupportServiceImpl implements SupportService {
 
     private static final Logger logger = LogManager.getLogger(SupportServiceImpl.class);
-    private static final String SUPPORT_EMAIL = "support@ironside.com";
+    private static final String SUPPORT_EMAIL = "ironside-dev@challengesphere.com";
     private static final int MAX_SCREENSHOTS = 3;
     private static final long UPLOAD_EXPIRY_SECONDS = 3600L;
 

@@ -37,6 +37,7 @@ public interface ChallengeService {
     Challenge updateChallenge(Long id, ChallengeUpdateRequest request, Long actorUserId, boolean admin) throws ChallengeSphereException;
     Optional<Challenge> getChallengeById(Long challengeId) throws ChallengeSphereException;
     List<Challenge> getChallengeByIds(List<Long> challengeId, Long currentUserId) throws ChallengeSphereException;
+    void deleteChallenge(Long challengeId, Long actorUserId) throws ChallengeSphereException;
     void deleteChallenges(List<Long> challengeIds);
     void disableChallengesForUsers(List<Long> userIds) throws ChallengeSphereException;
     JoinChallengeResponse joinChallenge(JoinChallengeRequest request) throws ChallengeSphereException;

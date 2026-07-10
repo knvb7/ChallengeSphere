@@ -8,7 +8,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 import org.springframework.data.domain.PageRequest;
@@ -17,7 +16,6 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -80,12 +78,6 @@ public class LeaderboardServiceImpl implements LeaderboardService {
 
     @Autowired
     private MediaUrlService mediaUrlService;
-
-    // challengeIds whose ranks are stale — flushed by flushDirtyRanks below.
-    // Used as a set; the boolean value is ignored. ConcurrentHashMap.newKeySet gives us
-    // the same API and avoids allocating Boolean.TRUE on every dirty-mark.
-    private final Set<Long> dirtyChallengeIds = ConcurrentHashMap.newKeySet();
-
 
     @Override
     @Transactional(readOnly = true)
@@ -317,7 +309,7 @@ public class LeaderboardServiceImpl implements LeaderboardService {
                 logger.info("Incremented score by {} for user {} in challenge {}, new score: {}",
                     score, userId, challengeId, newScore);
             }
-            dirtyChallengeIds.add(challengeId);
+            syncLeaderboardEntry(challengeId, userId, entry.getScore());
         } catch (Exception e) {
             logger.error("Error updating score for challenge {}, user {}: {}", 
                 challengeId, userId, e.getClass().getSimpleName());
@@ -345,7 +337,7 @@ public class LeaderboardServiceImpl implements LeaderboardService {
             
             logger.info("Score updated: challenge={}, userId={}, points={}, newScore={}",
                 challengeId, userId, points, newScore);
-            dirtyChallengeIds.add(challengeId);
+            syncLeaderboardEntry(challengeId, userId, newScore);
         } catch (Exception e) {
             logger.error("Error incrementing score: challenge={}, user={}, points={}",
                 challengeId, userId, points);
@@ -353,33 +345,74 @@ public class LeaderboardServiceImpl implements LeaderboardService {
         }
     }
 
-    /**
-     * Drain the dirty-set every 30s and recompute ranks for each affected challenge.
-     * Score writes (updateScore / incrementScore) only touch `score` — `current_rank`
-     * and `previous_rank` would otherwise drift until the next full rebuild.
-     * Each challenge's rank refresh runs in its own transaction so one failure
-     * doesn't block the rest.
-     */
-    @Scheduled(fixedDelay = 30_000, initialDelay = 30_000)
-    public void flushDirtyRanks() {
-        if (dirtyChallengeIds.isEmpty()) return;
+    @Override
+    @Transactional
+    public void decrementSubmissionScore(Long challengeId, Long userId, double points, String reason) {
+        logger.debug("Decrementing submission score for challenge={}, userId={}, points={}",
+            challengeId, userId, points);
 
-        // Snapshot + clear before running — new dirty marks arriving during refresh
-        // land back in the set and get picked up on the next tick.
-        List<Long> snapshot = new ArrayList<>(dirtyChallengeIds);
-        dirtyChallengeIds.clear();
-
-        for (Long challengeId : snapshot) {
-            try {
-                updateRanks(challengeId);
-            } catch (Exception e) {
-                logger.error("Rank refresh failed for challenge {}: {}", challengeId, e.getClass().getSimpleName());
-                // Re-mark so the next tick retries
-                dirtyChallengeIds.add(challengeId);
+        try {
+            Optional<LeaderboardEntry> entryOptional = leaderboardEntryRepository.findByChallengeIdAndUserId(challengeId, userId);
+            if (entryOptional.isEmpty()) {
+                logger.info("No leaderboard entry found while decrementing submission score: challenge={}, user={}",
+                    challengeId, userId);
+                return;
             }
+
+            LeaderboardEntry entry = entryOptional.get();
+            double currentScore = entry.getScore() == null ? 0.0 : entry.getScore();
+            double newScore = Math.max(0.0, currentScore - points);
+            entry.setScore(newScore);
+            entry.decrementSubmissionCount();
+            leaderboardEntryRepository.save(entry);
+
+            logger.info("Submission score decremented: challenge={}, userId={}, points={}, reason={}, newScore={}",
+                challengeId, userId, points, reason, newScore);
+            syncLeaderboardEntry(challengeId, userId, newScore);
+        } catch (Exception e) {
+            logger.error("Error decrementing submission score: challenge={}, user={}, points={}",
+                challengeId, userId, points);
+            // Don't throw - leaderboard updates should be best effort.
         }
     }
-    
+
+    @Override
+    @Transactional
+    public void incrementGloryScore(Long challengeId, Long userId, double points, String reason) {
+        adjustGloryScore(challengeId, userId, points, 1, reason);
+    }
+
+    @Override
+    @Transactional
+    public void decrementGloryScore(Long challengeId, Long userId, double points, String reason) {
+        adjustGloryScore(challengeId, userId, -points, -1, reason);
+    }
+
+    private void adjustGloryScore(Long challengeId, Long userId, double scoreDelta, int gloryDelta, String reason) {
+        logger.debug("Adjusting glory score for challenge={}, userId={}, scoreDelta={}, gloryDelta={}",
+            challengeId, userId, scoreDelta, gloryDelta);
+
+        try {
+            LeaderboardEntry entry = getOrCreateLeaderboardEntry(challengeId, userId);
+            double currentScore = entry.getScore() == null ? 0.0 : entry.getScore();
+            double newScore = Math.max(0.0, currentScore + scoreDelta);
+            int currentGlories = entry.getGloryPoints() == null ? 0 : entry.getGloryPoints();
+            int newGlories = Math.max(0, currentGlories + gloryDelta);
+
+            entry.setScore(newScore);
+            entry.setGloryPoints(newGlories);
+            leaderboardEntryRepository.save(entry);
+
+            logger.info("Glory score updated: challenge={}, userId={}, scoreDelta={}, gloryDelta={}, reason={}, newScore={}",
+                challengeId, userId, scoreDelta, gloryDelta, reason, newScore);
+            syncLeaderboardEntry(challengeId, userId, newScore);
+        } catch (Exception e) {
+            logger.error("Error adjusting glory score: challenge={}, user={}, scoreDelta={}, gloryDelta={}",
+                challengeId, userId, scoreDelta, gloryDelta);
+            // Don't throw - leaderboard updates should be best effort.
+        }
+    }
+
     @Override
     @Transactional
     public void rebuildLeaderboard(Long challengeId) throws ChallengeSphereException {
@@ -613,6 +646,11 @@ public class LeaderboardServiceImpl implements LeaderboardService {
                             .orElseThrow(() -> new RuntimeException("User not found: " + userId));
                     return new LeaderboardEntry(challenge, user);
                 });
+    }
+
+    private void syncLeaderboardEntry(Long challengeId, Long userId, double score) {
+        leaderboardEntryRepository.updateRanksForChallenge(challengeId);
+        cacheService.addToLeaderboard(challengeId, userId, score);
     }
     
     /**

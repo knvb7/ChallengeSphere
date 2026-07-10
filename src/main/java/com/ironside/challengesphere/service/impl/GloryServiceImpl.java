@@ -14,6 +14,7 @@ import com.ironside.challengesphere.repository.UserBlockRepository;
 import com.ironside.challengesphere.repository.UserChallengeRepository;
 import com.ironside.challengesphere.repository.UserRepository;
 import com.ironside.challengesphere.service.GloryService;
+import com.ironside.challengesphere.service.LeaderboardService;
 import com.ironside.challengesphere.service.NotificationService;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -58,6 +59,9 @@ public class GloryServiceImpl implements GloryService {
 
     @Autowired
     private NotificationService notificationService;
+
+    @Autowired
+    private LeaderboardService leaderboardService;
 
     @Autowired
     private MediaUrlService mediaUrlService;
@@ -120,6 +124,7 @@ public class GloryServiceImpl implements GloryService {
         else
             submissionRepository.decrementGloryCount(submissionId);
         logger.info("Updated glory count for submission: {} ({})", submissionId, isGiven ? "incremented" : "decremented");
+        updateLeaderboardForGloryToggle(submission, isGiven, userId);
 
         invalidateInteractionCaches(submission);
         if (isGiven) {
@@ -212,6 +217,7 @@ public class GloryServiceImpl implements GloryService {
                 if (Boolean.TRUE.equals(glory.getActive())) {
                     glory.setActive(false);
                     submissionRepository.decrementGloryCount(submissionId);
+                    updateLeaderboardForGloryToggle(submission, false, userId);
                 }
             }
             gloryRepository.save(glory);
@@ -245,6 +251,30 @@ public class GloryServiceImpl implements GloryService {
         Long count = gloryRepository.countActiveBySubmissionId(submissionId);
 
         return count;
+    }
+
+    private void updateLeaderboardForGloryToggle(Submission submission, boolean isGiven, Long actorUserId) {
+        if (submission == null || submission.getChallengeId() == null || submission.getUserId() == null) {
+            return;
+        }
+        try {
+            if (isGiven) {
+                leaderboardService.incrementGloryScore(
+                        submission.getChallengeId(),
+                        submission.getUserId(),
+                        1,
+                        "Glory received from user " + actorUserId);
+            } else {
+                leaderboardService.decrementGloryScore(
+                        submission.getChallengeId(),
+                        submission.getUserId(),
+                        1,
+                        "Glory removed by user " + actorUserId);
+            }
+        } catch (Exception e) {
+            logger.warn("Failed to update leaderboard for glory toggle: submissionId={}, actorUserId={}, given={}: {}",
+                    submission.getId(), actorUserId, isGiven, e.getClass().getSimpleName());
+        }
     }
 
     private void invalidateInteractionCaches(Submission submission) {

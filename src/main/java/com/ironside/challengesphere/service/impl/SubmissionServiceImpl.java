@@ -506,10 +506,23 @@ public class SubmissionServiceImpl implements SubmissionService {
                 return;
             }
 
+            boolean shouldRemoveSubmissionPoints = submission.getDayNumber() != null
+                    && submissionRepository.countActiveByUserIdAndChallengeIdAndDayNumber(
+                            userId,
+                            submission.getChallengeId(),
+                            submission.getDayNumber()) <= 1;
+
             submission.setActive(false);
             submission.setUpdatedAt(new Timestamp(System.currentTimeMillis()));
             submissionRepository.save(submission);
             invalidateSubmissionCaches(submission);
+            if (shouldRemoveSubmissionPoints) {
+                leaderboardService.decrementSubmissionScore(
+                        submission.getChallengeId(),
+                        userId,
+                        10,
+                        "Deleted submission for day " + submission.getDayNumber());
+            }
             try {
                 leaderboardService.rebuildLeaderboard(submission.getChallengeId());
             } catch (Exception e) {
@@ -526,23 +539,37 @@ public class SubmissionServiceImpl implements SubmissionService {
 
     @Override
     @Transactional(readOnly = true)
-    public SubmissionsResponse getSubmissionsByChallenge(Long challengeId, int page, int pageSize, Long callerId) throws ChallengeSphereException {
-        logger.info("Getting submissions for challenge: {}, page: {}, pageSize: {}", challengeId, page, pageSize);
+    public SubmissionsResponse getSubmissionsByChallenge(Long challengeId, int page, int pageSize, Long callerId, String sortBy, String participantQuery) throws ChallengeSphereException {
+        String normalizedSort = normalizeGlobalSubmissionSort(sortBy);
+        String normalizedParticipantQuery = normalizeParticipantQuery(participantQuery);
+        logger.info("Getting submissions for challenge: {}, page: {}, pageSize: {}, sortBy: {}", challengeId, page, pageSize, normalizedSort);
 
         try {
-            List<Submission> visibleSubmissions = submissionRepository.findActiveByChallengeId(challengeId).stream()
-                    .filter(submission -> canViewSubmission(submission, callerId))
-                    .toList();
-            int totalCount = visibleSubmissions.size();
-            int offset = Math.max(0, page - 1) * pageSize;
-            List<Submission> paginatedSubmissions = visibleSubmissions.stream()
-                    .skip(offset)
-                    .limit(pageSize)
-                    .toList();
+            Pageable pageable = PageRequest.of(Math.max(0, page - 1), pageSize);
+            Page<Submission> submissionPage = switch (normalizedSort) {
+                case "oldest" -> submissionRepository.findVisibleByChallengeIdOldest(
+                        challengeId,
+                        callerId,
+                        normalizedParticipantQuery,
+                        pageable
+                );
+                case "glories" -> submissionRepository.findVisibleByChallengeIdMostGlories(
+                        challengeId,
+                        callerId,
+                        normalizedParticipantQuery,
+                        pageable
+                );
+                default -> submissionRepository.findVisibleByChallengeIdNewest(
+                        challengeId,
+                        callerId,
+                        normalizedParticipantQuery,
+                        pageable
+                );
+            };
 
             logger.info("Found {} active submissions for challenge: {} (showing page {}/{})",
-                    totalCount, challengeId, page, totalCount == 0 ? 0 : (int) Math.ceil((double) totalCount / pageSize));
-            return SubmissionsResponse.create(withReadableMediaUrls(paginatedSubmissions), page, pageSize, totalCount);
+                    submissionPage.getTotalElements(), challengeId, page, submissionPage.getTotalPages());
+            return SubmissionsResponse.create(withReadableMediaUrls(submissionPage.getContent()), page, pageSize, (int) submissionPage.getTotalElements());
 
         } catch (Exception e) {
             logger.error("Error getting submissions for challenge {}: {}", challengeId, e.getClass().getSimpleName());

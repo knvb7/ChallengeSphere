@@ -3,6 +3,7 @@ package com.ironside.challengesphere.service.impl;
 import com.ironside.challengesphere.service.PushNotificationSender;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.springframework.http.MediaType;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
@@ -34,6 +35,8 @@ public class ExpoPushNotificationSender implements PushNotificationSender {
         try {
             restClient.post()
                     .uri(expoPushUrl)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .accept(MediaType.APPLICATION_JSON)
                     .body(messages)
                     .retrieve()
                     .toBodilessEntity();

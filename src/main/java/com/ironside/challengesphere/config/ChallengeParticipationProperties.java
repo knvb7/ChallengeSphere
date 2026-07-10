@@ -14,6 +14,6 @@ import org.springframework.validation.annotation.Validated;
 @ConfigurationProperties(prefix = "app.challenge")
 public class ChallengeParticipationProperties {
 
-    @Min(1)
-    private int maxActiveParticipations = 10;
+    @Min(0)
+    private int maxActiveParticipations = 0;
 }

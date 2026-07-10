@@ -4,6 +4,7 @@ import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Collectors;
 
@@ -11,6 +12,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpStatus;
@@ -317,8 +319,26 @@ public class UserServiceImpl implements UserService {
             // }
 
             if (updateUserRequest.getUsername() != null && !updateUserRequest.getUsername().trim().isEmpty()) {
-                user.setUsername(updateUserRequest.getUsername().trim());
+                String requestedUsername = updateUserRequest.getUsername().trim();
+                if (!requestedUsername.equalsIgnoreCase(user.getUsername())
+                        && userRepository.existsByUsernameIgnoreCaseAndIdNot(requestedUsername, userId)) {
+                    throw new ChallengeSphereException(
+                            "Username is already taken",
+                            HttpStatus.CONFLICT,
+                            logger
+                    );
+                }
+                user.setUsername(requestedUsername);
                 logger.debug("Updated username for user {}", userId);
+            }
+            String requestedName = firstPresent(
+                    updateUserRequest.getName(),
+                    updateUserRequest.getFullName(),
+                    updateUserRequest.getDisplayName()
+            );
+            if (requestedName != null) {
+                user.setName(requestedName);
+                logger.debug("Updated name for user {}", userId);
             }
             if (updateUserRequest.getProfilePicUrl() != null) {
                 user.setProfilePicUrl(profilePhotoService.validateUploadedObjectKey(
@@ -359,6 +379,14 @@ public class UserServiceImpl implements UserService {
 
         } catch (ChallengeSphereException e) {
             throw e;
+        } catch (DataIntegrityViolationException e) {
+            logger.warn("Username update rejected by database constraint for userId={}", userId);
+            throw new ChallengeSphereException(
+                    "Username is already taken",
+                    HttpStatus.CONFLICT,
+                    logger,
+                    e
+            );
         } catch (Exception e) {
             logger.error("Error updating user details for userId: {}: {}", userId, e.getClass().getSimpleName());
             throw new ChallengeSphereException(
@@ -442,11 +470,11 @@ public class UserServiceImpl implements UserService {
             updateFollowCounts(followerId, followingId, true);
 
             // Mutate the sorted sets in-place — O(log N), no invalidation needed
-            // long ts = follow.getCreatedAt() != null ? follow.getCreatedAt().getTime() : System.currentTimeMillis();
-            // cacheService.addFollow(followerId, followingId, ts);
+            long ts = follow.getCreatedAt() != null ? follow.getCreatedAt().getTime() : System.currentTimeMillis();
+            cacheService.addFollow(followerId, followingId, ts);
 
             // Following set changed — rebuild timeline on next read
-            // cacheService.invalidateTimeline(followerId);
+            cacheService.invalidateTimeline(followerId);
             cacheService.invalidateAllFeeds();
 
             try {
@@ -493,10 +521,10 @@ public class UserServiceImpl implements UserService {
             updateFollowCounts(followerId, followingId, false);
 
             // Mutate the sorted sets in-place — O(log N), no invalidation needed
-            // cacheService.removeFollow(followerId, followingId);
+            cacheService.removeFollow(followerId, followingId);
 
             // Following set changed — rebuild timeline on next read
-            // cacheService.invalidateTimeline(followerId);
+            cacheService.invalidateTimeline(followerId);
             cacheService.invalidateAllFeeds();
 
             logger.info("User {} successfully unfollowed user {}", followerId, followingId);
@@ -559,6 +587,19 @@ public class UserServiceImpl implements UserService {
             ensureMutualProfileAccess(userId, currentUserId, "followers");
 
             long offset = (long) (page - 1) * pageSize;
+            String cacheKey = cacheService.getFollowersKey(userId);
+            if (cacheService.followSetExists(cacheKey)) {
+                List<Long> pageIds = cacheService.getFollowPage(cacheKey, offset, pageSize);
+                long cachedCount = cacheService.getFollowCount(cacheKey);
+                List<User> followers = pageIds.isEmpty() ? List.of() : userRepository.findAllById(pageIds);
+                return FollowersFollowingResponse.followers(
+                        userId,
+                        withReadableProfilePicUrls(orderUsersById(followers, pageIds)),
+                        page,
+                        pageSize,
+                        Math.max(0, (int) cachedCount)
+                );
+            }
 
             // DB-only path
             List<Follow> allFollows = followRepository.findActiveFollowsByFollowingId(userId);
@@ -566,6 +607,13 @@ public class UserServiceImpl implements UserService {
             List<Long> pageIds = allFollows.stream().skip(offset).limit(pageSize)
                     .map(Follow::getFollowerId).collect(Collectors.toList());
             List<User> followers = pageIds.isEmpty() ? List.of() : userRepository.findAllById(pageIds);
+            cacheService.backfillFollowSet(
+                    cacheKey,
+                    allFollows.stream().map(Follow::getFollowerId).toList(),
+                    allFollows.stream()
+                            .map(follow -> follow.getCreatedAt() != null ? follow.getCreatedAt().getTime() : 0L)
+                            .toList()
+            );
 
             logger.info("Found {} followers for userId: {} (page {})",
                     followers.size(), userId, page);
@@ -597,6 +645,19 @@ public class UserServiceImpl implements UserService {
             ensureMutualProfileAccess(userId, currentUserId, "following");
 
             long offset = (long) (page - 1) * pageSize;
+            String cacheKey = cacheService.getFollowingKey(userId);
+            if (cacheService.followSetExists(cacheKey)) {
+                List<Long> pageIds = cacheService.getFollowPage(cacheKey, offset, pageSize);
+                long cachedCount = cacheService.getFollowCount(cacheKey);
+                List<User> following = pageIds.isEmpty() ? List.of() : userRepository.findAllById(pageIds);
+                return FollowersFollowingResponse.following(
+                        userId,
+                        withReadableProfilePicUrls(orderUsersById(following, pageIds)),
+                        page,
+                        pageSize,
+                        Math.max(0, (int) cachedCount)
+                );
+            }
 
             // DB-only path
             List<Follow> allFollows = followRepository.findActiveFollowsByFollowerId(userId);
@@ -604,6 +665,13 @@ public class UserServiceImpl implements UserService {
             List<Long> pageIds = allFollows.stream().skip(offset).limit(pageSize)
                     .map(Follow::getFollowingId).collect(Collectors.toList());
             List<User> following = pageIds.isEmpty() ? List.of() : userRepository.findAllById(pageIds);
+            cacheService.backfillFollowSet(
+                    cacheKey,
+                    allFollows.stream().map(Follow::getFollowingId).toList(),
+                    allFollows.stream()
+                            .map(follow -> follow.getCreatedAt() != null ? follow.getCreatedAt().getTime() : 0L)
+                            .toList()
+            );
 
             logger.info("Found {} following for userId: {} (page {})",
                     following.size(), userId, page);
@@ -687,6 +755,8 @@ public class UserServiceImpl implements UserService {
                 existing.setActive(false);
                 followRepository.save(existing);
                 updateFollowCounts(blockerUserId, blockedUserId, false);
+                cacheService.removeFollow(blockerUserId, blockedUserId);
+                cacheService.invalidateTimeline(blockerUserId);
             }
         });
         followRepository.findByFollowerIdAndFollowingId(blockedUserId, blockerUserId).ifPresent(existing -> {
@@ -694,6 +764,8 @@ public class UserServiceImpl implements UserService {
                 existing.setActive(false);
                 followRepository.save(existing);
                 updateFollowCounts(blockedUserId, blockerUserId, false);
+                cacheService.removeFollow(blockedUserId, blockerUserId);
+                cacheService.invalidateTimeline(blockedUserId);
             }
         });
         cacheService.invalidateAllFeeds();
@@ -932,6 +1004,18 @@ public class UserServiceImpl implements UserService {
                 .toList();
     }
 
+    private List<User> orderUsersById(List<User> users, List<Long> orderedIds) {
+        if (users == null || users.isEmpty() || orderedIds == null || orderedIds.isEmpty()) {
+            return List.of();
+        }
+        Map<Long, User> usersById = users.stream()
+                .collect(Collectors.toMap(User::getId, user -> user));
+        return orderedIds.stream()
+                .map(usersById::get)
+                .filter(java.util.Objects::nonNull)
+                .toList();
+    }
+
     private String normalizeUserSearchQuery(String query) {
         if (query == null) {
             return "";
@@ -986,6 +1070,21 @@ public class UserServiceImpl implements UserService {
         if (userId == null || !userRepository.existsById(userId)) {
             throw new ChallengeSphereException(label + " not found with id: " + userId, HttpStatus.NOT_FOUND, logger);
         }
+    }
+
+    private String firstPresent(String... values) {
+        if (values == null) {
+            return null;
+        }
+        for (String value : values) {
+            if (value != null) {
+                String trimmed = value.trim();
+                if (!trimmed.isEmpty()) {
+                    return trimmed;
+                }
+            }
+        }
+        return null;
     }
 
     @Override

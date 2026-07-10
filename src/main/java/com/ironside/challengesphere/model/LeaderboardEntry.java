@@ -157,6 +157,14 @@ public class LeaderboardEntry {
     }
 
     /**
+     * Decrement submission count without going below zero.
+     */
+    public void decrementSubmissionCount() {
+        this.submissionCount = Math.max(0, (this.submissionCount == null ? 0 : this.submissionCount) - 1);
+        this.lastSubmissionAt = LocalDateTime.now();
+    }
+
+    /**
      * Add glory points to user
      */
     public void addGloryPoints(int points) {

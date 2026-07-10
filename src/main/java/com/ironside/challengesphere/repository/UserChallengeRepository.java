@@ -47,6 +47,10 @@ public interface UserChallengeRepository extends JpaRepository<UserChallenge, Lo
               AND uc.active = true
               AND COALESCE(uc.completed, false) = false
               AND c.active = true
+              AND (
+                    UPPER(COALESCE(c.challenge_mode, 'DAILY')) = 'ONE_OFF'
+                    OR CURRENT_DATE < (c.start_date + (c.number_of_days * INTERVAL '1 day'))::date
+              )
             """, nativeQuery = true)
     long countSlotConsumingParticipations(@Param("userId") Long userId);
 }

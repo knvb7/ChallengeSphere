@@ -18,7 +18,15 @@ public interface PushDeviceTokenRepository extends JpaRepository<PushDeviceToken
     @Query(value = "SELECT * FROM challengesphere.push_device_tokens WHERE user_id = :userId AND enabled = true", nativeQuery = true)
     List<PushDeviceToken> findEnabledByUserId(@Param("userId") Long userId);
 
-    @Query(value = "SELECT * FROM challengesphere.push_device_tokens WHERE enabled = true", nativeQuery = true)
+    @Query(value = """
+            SELECT pdt.*
+            FROM challengesphere.push_device_tokens pdt
+            JOIN challengesphere.users u ON u.id = pdt.user_id
+            LEFT JOIN challengesphere.user_preferences up ON up.user_id = pdt.user_id
+            WHERE pdt.enabled = true
+              AND (COALESCE(u.notifications, 1) & 1) = 1
+              AND COALESCE(up.push_notifications_enabled, true) = true
+            """, nativeQuery = true)
     List<PushDeviceToken> findEnabledReminderTokens();
 
     @Modifying

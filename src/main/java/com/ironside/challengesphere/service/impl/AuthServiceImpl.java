@@ -496,6 +496,9 @@ public class AuthServiceImpl implements AuthService {
         user.setGoogleId(googleId);
         user.setProfilePicUrl(pictureUrl);
         user.setUsername(generateUsername(email, name));
+        if (name != null && !name.isBlank()) {
+            user.setName(name.trim());
+        }
         user.setHashedPassword(null);
         user.setCreatedAt(new Timestamp(System.currentTimeMillis()));
         user.setLastLoginAt(new Timestamp(System.currentTimeMillis()));

@@ -15,6 +15,15 @@ public class UpdateUserRequest {
     @Size(max = 50, message = "Username must be between 3 and 50 characters")
     private String username;
 
+    @Size(max = 120, message = "Name should not exceed 120 characters")
+    private String name;
+
+    @Size(max = 120, message = "Full name should not exceed 120 characters")
+    private String fullName;
+
+    @Size(max = 120, message = "Display name should not exceed 120 characters")
+    private String displayName;
+
     private String profilePicUrl;
 
     private Integer notifications;

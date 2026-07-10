@@ -4,6 +4,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -19,7 +20,9 @@ import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.data.redis.connection.RedisConnectionCommands;
+import org.springframework.data.redis.core.Cursor;
 import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.data.redis.core.ScanOptions;
 import org.springframework.data.redis.core.ZSetOperations;
 import org.springframework.stereotype.Service;
 
@@ -230,7 +233,7 @@ public class RedisCacheServiceImpl {
             return;
         }
         try {
-            Set<String> keys = redisTemplate.keys(pattern);
+            Set<String> keys = scanKeys(pattern);
             if (!keys.isEmpty()) {
                 Long deleted = redisTemplate.delete(keys);
                 logger.debug("Deleted cache entries by pattern; count={}", deleted);
@@ -297,6 +300,21 @@ public class RedisCacheServiceImpl {
 
     private boolean shouldBypassRedis() {
         return System.currentTimeMillis() < redisRetryAfterMillis.get();
+    }
+
+    private Set<String> scanKeys(String pattern) {
+        if (pattern == null || shouldBypassRedis()) {
+            return Set.of();
+        }
+        try (Cursor<String> cursor = redisTemplate.scan(
+                ScanOptions.scanOptions().match(pattern).count(1000).build())) {
+            Set<String> keys = new HashSet<>();
+            cursor.forEachRemaining(keys::add);
+            return keys;
+        } catch (Exception e) {
+            markRedisUnavailable(e);
+            return Set.of();
+        }
     }
 
     private void markRedisUnavailable(Exception exception) {
@@ -406,24 +424,24 @@ public class RedisCacheServiceImpl {
     public record LeaderboardEntry(String userId, double score, long rank) {}
 
     /**
-     * Add user score to leaderboard (ASYNC - non-blocking)
-     * Use Case: Real-time leaderboard updates
+     * Add user score to leaderboard.
+     * Use Case: Real-time leaderboard updates where DB and Redis should be updated
+     * before the caller returns.
      */
     public void addToLeaderboard(Long challengeId, Long userId, double score) {
         if (challengeId == null || userId == null) {
             return;
         }
-        executeAsync(() -> {
-            String key = LEADERBOARD_PREFIX + challengeId;
-            try {
-                redisTemplate.opsForZSet().add(key, userId.toString(), score);
-                expire(key, DEFAULT_LEADERBOARD_TTL);
-                logger.debug("Added to leaderboard: challengeId={}, userId={}, score={}",
-                        challengeId, userId, score);
-            } catch (Exception e) {
-                logger.warn("Error adding to leaderboard: challengeId={}, userId={}", challengeId, userId);
-            }
-        });
+        String key = LEADERBOARD_PREFIX + challengeId;
+        try {
+            redisTemplate.opsForZSet().add(key, userId.toString(), score);
+            expire(key, DEFAULT_LEADERBOARD_TTL);
+            logger.debug("Added to leaderboard: challengeId={}, userId={}, score={}",
+                    challengeId, userId, score);
+        } catch (Exception e) {
+            markRedisUnavailable(e);
+            logger.warn("Error adding to leaderboard: challengeId={}, userId={}", challengeId, userId);
+        }
     }
 
     /**
@@ -1369,7 +1387,7 @@ public class RedisCacheServiceImpl {
     public void clearAllCaches() {
         executeAsync(() -> {
             try {
-                Set<String> keys = redisTemplate.keys("*");
+                Set<String> keys = scanKeys("*");
                 if (!keys.isEmpty()) {
                     redisTemplate.delete(keys);
                     logger.warn("Cleared ALL caches: count={}", keys.size());
@@ -1411,7 +1429,7 @@ public class RedisCacheServiceImpl {
      */
     private long countKeysByPattern(String pattern) {
         try {
-            Set<String> keys = redisTemplate.keys(pattern);
+            Set<String> keys = scanKeys(pattern);
             return keys.size();
         } catch (Exception e) {
             logger.error("Error counting cache entries");
@@ -1509,7 +1527,7 @@ public class RedisCacheServiceImpl {
             return;
         }
         executeAsync(() -> {
-            Set<String> userChallengeKeys = redisTemplate.keys(USER_CHALLENGES_PREFIX + userId + ":page:*");
+            Set<String> userChallengeKeys = scanKeys(USER_CHALLENGES_PREFIX + userId + ":page:*");
             if (userChallengeKeys != null && !userChallengeKeys.isEmpty()) {
                 List<String> laterPageKeys = userChallengeKeys.stream()
                         .filter(key -> !key.contains(":page:1:size:"))
@@ -1520,7 +1538,7 @@ public class RedisCacheServiceImpl {
             }
 
             String pattern = USER_CHALLENGES_PREFIX + userId + ":page:1:size:*:active:*";
-            Set<String> keys = redisTemplate.keys(pattern);
+            Set<String> keys = scanKeys(pattern);
             if (keys == null || keys.isEmpty()) {
                 logger.debug("No cached first-page user challenges to patch: userId={}", userId);
                 return;

@@ -15,6 +15,9 @@ import java.util.List;
 public class PublicUserResponse {
     private Long id;
     private String username;
+    private String name;
+    private String displayName;
+    private String fullName;
     private Timestamp createdAt;
     private Integer genuinenessScore;
     private Boolean active;
@@ -54,6 +57,9 @@ public class PublicUserResponse {
     protected static void populate(PublicUserResponse response, User user) {
         response.setId(user.getId());
         response.setUsername(user.getUsername());
+        response.setName(user.getName());
+        response.setDisplayName(user.getName());
+        response.setFullName(user.getName());
         response.setCreatedAt(user.getCreatedAt());
         response.setGenuinenessScore(user.getGenuinenessScore());
         response.setActive(user.getActive());

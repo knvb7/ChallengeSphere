@@ -41,6 +41,33 @@ public interface LeaderboardService {
      * @param reason Reason for the score update
      */
     void incrementScore(Long challengeId, Long userId, double points, String reason);
+
+    /**
+     * Remove submission points without incrementing submission counters.
+     * @param challengeId The challenge ID
+     * @param userId The user ID
+     * @param points Points to remove
+     * @param reason Reason for the score update
+     */
+    void decrementSubmissionScore(Long challengeId, Long userId, double points, String reason);
+
+    /**
+     * Increment score and glory points when a participant's submission receives glory.
+     * @param challengeId The challenge ID
+     * @param userId The submission owner user ID
+     * @param points Points to add
+     * @param reason Reason for the score update
+     */
+    void incrementGloryScore(Long challengeId, Long userId, double points, String reason);
+
+    /**
+     * Decrement score and glory points when glory is removed from a participant's submission.
+     * @param challengeId The challenge ID
+     * @param userId The submission owner user ID
+     * @param points Points to remove
+     * @param reason Reason for the score update
+     */
+    void decrementGloryScore(Long challengeId, Long userId, double points, String reason);
     
     /**
      * Recalculate and rebuild leaderboard for a challenge from database

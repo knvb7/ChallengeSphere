@@ -121,6 +121,15 @@ public class ChallengeController {
         return ResponseEntity.ok().build();
     }
 
+    @DeleteMapping("/{challengeId}")
+    public ResponseEntity<Void> deleteChallenge(
+            @AuthenticationPrincipal UserPrincipal principal,
+            @PathVariable Long challengeId) throws ChallengeSphereException {
+        Long actorUserId = SecurityAccess.requireUserId(principal);
+        challengeService.deleteChallenge(challengeId, actorUserId);
+        return ResponseEntity.ok().build();
+    }
+
     @PatchMapping("/bulk-disable-by-users")
     @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<String> disableChallengesForUsers(

@@ -21,7 +21,7 @@ public interface SubmissionService {
     SubmissionResponse reuploadSubmission(Long submissionId, CreateSubmissionRequest request) throws ChallengeSphereException;
     void deleteSubmission(Long submissionId, Long userId) throws ChallengeSphereException;
     SubmissionsResponse getSubmissionsByUserAndChallenge(Long userId, Long challengeId, int page, int pageSize, Long callerId) throws ChallengeSphereException;
-    SubmissionsResponse getSubmissionsByChallenge(Long challengeId, int page, int pageSize, Long callerId) throws ChallengeSphereException;
+    SubmissionsResponse getSubmissionsByChallenge(Long challengeId, int page, int pageSize, Long callerId, String sortBy, String participantQuery) throws ChallengeSphereException;
     List<ChallengeSubmissionPreviewResponse> getSubmissionPreviews(
             List<Long> challengeIds,
             Long userId,

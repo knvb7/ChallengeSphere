@@ -19,7 +19,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 				description = "ChallengeSphere – The Ultimate way to challenge yourself!",
 				contact = @Contact(
 						name = "IronSide",
-						email = "support@ironside.com"
+						email = "ironside-dev@challengesphere.com"
 				),
 				license = @License(
 						name = "License",

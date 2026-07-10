@@ -7,6 +7,17 @@ public interface PushNotificationSender {
 
     void send(List<PushMessage> messages);
 
-    record PushMessage(String to, String title, String body, Map<String, Object> data) {
+    record PushMessage(
+            String to,
+            String title,
+            String body,
+            Map<String, Object> data,
+            String sound,
+            String channelId,
+            String priority
+    ) {
+        public PushMessage(String to, String title, String body, Map<String, Object> data) {
+            this(to, title, body, data, "default", "default", "high");
+        }
     }
 }
