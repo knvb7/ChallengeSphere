@@ -2,13 +2,21 @@ package com.ironside.challengesphere.service.impl;
 
 import com.ironside.challengesphere.api.request.CreateSubmissionRequest;
 import com.ironside.challengesphere.api.request.GeneratePresignedUrlsRequest;
+import com.ironside.challengesphere.api.response.SubmissionResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.model.Challenge;
 import com.ironside.challengesphere.model.Submission;
+import com.ironside.challengesphere.model.User;
+import com.ironside.challengesphere.model.UserChallenge;
 import com.ironside.challengesphere.repository.ChallengeRepository;
+import com.ironside.challengesphere.repository.FollowRepository;
 import com.ironside.challengesphere.repository.SubmissionRepository;
+import com.ironside.challengesphere.repository.UserBlockRepository;
+import com.ironside.challengesphere.repository.UserChallengeRepository;
 import com.ironside.challengesphere.repository.UserRepository;
 import com.ironside.challengesphere.service.ContentModerationService;
+import com.ironside.challengesphere.service.LeaderboardService;
+import com.ironside.challengesphere.service.NotificationService;
 import com.ironside.challengesphere.util.MediaTypes;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -34,6 +42,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 class SubmissionMediaSecurityIntegrationTest {
@@ -49,6 +58,12 @@ class SubmissionMediaSecurityIntegrationTest {
     private SubmissionRepository submissionRepository;
     private ChallengeRepository challengeRepository;
     private UserRepository userRepository;
+    private UserChallengeRepository userChallengeRepository;
+    private FollowRepository followRepository;
+    private LeaderboardService leaderboardService;
+    private RedisCacheServiceImpl cacheService;
+    private NotificationService notificationService;
+    private UserBlockRepository userBlockRepository;
     private MediaUrlService mediaUrlService;
     private ContentModerationService contentModerationService;
     private SubmissionModerationJob submissionModerationJob;
@@ -59,6 +74,12 @@ class SubmissionMediaSecurityIntegrationTest {
         submissionRepository = mock(SubmissionRepository.class);
         challengeRepository = mock(ChallengeRepository.class);
         userRepository = mock(UserRepository.class);
+        userChallengeRepository = mock(UserChallengeRepository.class);
+        followRepository = mock(FollowRepository.class);
+        leaderboardService = mock(LeaderboardService.class);
+        cacheService = mock(RedisCacheServiceImpl.class);
+        notificationService = mock(NotificationService.class);
+        userBlockRepository = mock(UserBlockRepository.class);
         mediaUrlService = mock(MediaUrlService.class);
         contentModerationService = mock(ContentModerationService.class);
         submissionModerationJob = mock(SubmissionModerationJob.class);
@@ -66,6 +87,12 @@ class SubmissionMediaSecurityIntegrationTest {
         ReflectionTestUtils.setField(service, "submissionRepository", submissionRepository);
         ReflectionTestUtils.setField(service, "challengeRepository", challengeRepository);
         ReflectionTestUtils.setField(service, "userRepository", userRepository);
+        ReflectionTestUtils.setField(service, "userChallengeRepository", userChallengeRepository);
+        ReflectionTestUtils.setField(service, "followRepository", followRepository);
+        ReflectionTestUtils.setField(service, "leaderboardService", leaderboardService);
+        ReflectionTestUtils.setField(service, "cacheService", cacheService);
+        ReflectionTestUtils.setField(service, "notificationService", notificationService);
+        ReflectionTestUtils.setField(service, "userBlockRepository", userBlockRepository);
         ReflectionTestUtils.setField(service, "mediaUrlService", mediaUrlService);
         ReflectionTestUtils.setField(service, "contentModerationService", contentModerationService);
         ReflectionTestUtils.setField(service, "submissionModerationJob", submissionModerationJob);
@@ -161,6 +188,66 @@ class SubmissionMediaSecurityIntegrationTest {
             synchronizations.get(0).afterCommit();
 
             verify(submissionModerationJob).moderateSubmissionAsync(99L);
+        } finally {
+            TransactionSynchronizationManager.clearSynchronization();
+        }
+    }
+
+    @Test
+    void publicCreateSubmissionSchedulesModerationOnlyAfterCommit() throws ChallengeSphereException {
+        User user = new User();
+        user.setId(7L);
+        user.setActive(true);
+
+        Challenge challenge = new Challenge();
+        challenge.setId(3L);
+        challenge.setActive(true);
+        challenge.setStartDate(LocalDate.now());
+        challenge.setNumberOfDays(30);
+        challenge.setChallengeMode(Challenge.MODE_DAILY);
+        challenge.setIsPrivate(false);
+
+        UserChallenge userChallenge = new UserChallenge();
+        userChallenge.setUserId(7L);
+        userChallenge.setChallengeId(3L);
+        userChallenge.setActive(true);
+
+        when(userRepository.findById(7L)).thenReturn(Optional.of(user));
+        when(challengeRepository.findById(3L)).thenReturn(Optional.of(challenge));
+        when(userChallengeRepository.findByUserIdAndChallengeId(7L, 3L))
+                .thenReturn(Optional.of(userChallenge));
+        when(submissionRepository.findByUserChallengeAndDay(7L, 3L, 1)).thenReturn(List.of());
+        when(mediaUrlService.toStoredMediaUrlsString(List.of())).thenReturn(null);
+        when(submissionRepository.save(any(Submission.class))).thenAnswer(invocation -> {
+            Submission saved = invocation.getArgument(0);
+            saved.setId(99L);
+            return saved;
+        });
+        when(followRepository.findActiveFollowsByFollowingId(7L)).thenReturn(List.of());
+
+        CreateSubmissionRequest request = new CreateSubmissionRequest();
+        request.setUserId(7L);
+        request.setChallengeId(3L);
+        request.setDayNumber(1);
+        request.setDescription("text-only proof");
+        request.setMediaUrls(List.of());
+        request.setIsPrivate(false);
+
+        TransactionSynchronizationManager.initSynchronization();
+        try {
+            SubmissionResponse response = service.createSubmission(request);
+
+            assertTrue(response.isSuccess());
+            assertEquals(99L, response.getSubmissionId());
+            verifyNoInteractions(submissionModerationJob);
+
+            List<TransactionSynchronization> synchronizations =
+                    TransactionSynchronizationManager.getSynchronizations();
+            assertEquals(1, synchronizations.size());
+            synchronizations.forEach(TransactionSynchronization::afterCommit);
+
+            verify(submissionModerationJob).moderateSubmissionAsync(99L);
+            verifyNoMoreInteractions(submissionModerationJob);
         } finally {
             TransactionSynchronizationManager.clearSynchronization();
         }

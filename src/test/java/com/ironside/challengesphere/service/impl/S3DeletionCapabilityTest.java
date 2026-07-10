@@ -9,11 +9,17 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class S3DeletionCapabilityTest {
+
+    private static final List<Pattern> FORBIDDEN_DELETION_PATTERNS = List.of(
+            Pattern.compile("\\bDeleteObjects?Request\\b"),
+            Pattern.compile("\\.\\s*deleteObjects?\\s*\\("),
+            Pattern.compile("::\\s*deleteObjects?\\b"));
 
     @Test
     void runtimeExposesNoS3DeletionApi() {
@@ -24,19 +30,14 @@ class S3DeletionCapabilityTest {
     @Test
     void productionSourceContainsNoS3DeletionCapability() throws IOException {
         Path sourceRoot = Path.of("src", "main", "java");
-        List<String> forbiddenTokens = List.of(
-                "DeleteObjectRequest",
-                "DeleteObjectsRequest",
-                ".deleteObject(",
-                ".deleteObjects(");
         List<String> violations = new ArrayList<>();
 
         try (var paths = Files.walk(sourceRoot)) {
             for (Path source : paths.filter(path -> path.toString().endsWith(".java")).toList()) {
                 String content = Files.readString(source);
-                for (String token : forbiddenTokens) {
-                    if (content.contains(token)) {
-                        violations.add(source + " contains " + token);
+                for (Pattern pattern : FORBIDDEN_DELETION_PATTERNS) {
+                    if (pattern.matcher(content).find()) {
+                        violations.add(source + " matches " + pattern.pattern());
                     }
                 }
             }
@@ -45,6 +46,29 @@ class S3DeletionCapabilityTest {
         assertTrue(
                 violations.isEmpty(),
                 () -> "S3 deletion capability found in production source: " + String.join(", ", violations));
+    }
+
+    @Test
+    void detectsSingularAndPluralDeleteRequestTypeMutations() {
+        assertTrue(containsS3DeletionCapability("DeleteObjectRequest request;"));
+        assertTrue(containsS3DeletionCapability("DeleteObjectsRequest request;"));
+    }
+
+    @Test
+    void detectsWhitespaceSeparatedDeleteCallMutations() {
+        assertTrue(containsS3DeletionCapability("s3Client.deleteObject \n (request);"));
+        assertTrue(containsS3DeletionCapability("s3Client.deleteObjects\t (request);"));
+    }
+
+    @Test
+    void detectsDeleteMethodReferenceMutations() {
+        assertTrue(containsS3DeletionCapability("s3Client::deleteObject"));
+        assertTrue(containsS3DeletionCapability("s3Client:: deleteObjects"));
+    }
+
+    private static boolean containsS3DeletionCapability(String source) {
+        return FORBIDDEN_DELETION_PATTERNS.stream()
+                .anyMatch(pattern -> pattern.matcher(source).find());
     }
 
     private static boolean hasMethod(Class<?> type, String methodName) {
