@@ -28,17 +28,23 @@ public class SubmissionMediaKeyPolicy {
 
     public List<String> validateAndNormalize(Long userId, List<String> mediaKeys)
             throws ChallengeSphereException {
+        if (userId == null || userId <= 0) {
+            throw invalid();
+        }
         if (mediaKeys == null || mediaKeys.isEmpty()) {
             return List.of();
         }
-        if (userId == null || mediaKeys.size() > MAX_MEDIA_KEYS) {
+        if (mediaKeys.size() > MAX_MEDIA_KEYS) {
             throw invalid();
         }
 
         Set<String> seen = new HashSet<>();
         List<String> normalized = new ArrayList<>(mediaKeys.size());
         for (String raw : mediaKeys) {
-            String key = raw == null ? "" : raw.trim();
+            if (raw == null || raw.codePoints().anyMatch(Character::isISOControl)) {
+                throw invalid();
+            }
+            String key = raw.trim();
             Matcher matcher = KEY_PATTERN.matcher(key);
             if (!matcher.matches()
                     || !Long.toString(userId).equals(matcher.group(1))
@@ -63,7 +69,7 @@ public class SubmissionMediaKeyPolicy {
             GeneratePresignedUrlsRequest.ContentType contentType,
             long epochMillis,
             UUID uniqueId) throws ChallengeSphereException {
-        if (userId == null || mediaType == null || contentType == null || uniqueId == null
+        if (userId == null || userId <= 0 || mediaType == null || contentType == null || uniqueId == null
                 || epochMillis < 1_000_000_000_000L
                 || epochMillis > 9_999_999_999_999L
                 || (mediaType == MediaTypes.SUBMISSION_PHOTO

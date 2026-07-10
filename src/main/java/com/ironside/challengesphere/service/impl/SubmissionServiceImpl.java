@@ -27,6 +27,8 @@ import org.springframework.data.domain.Sort;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.multipart.MultipartFile;
 
 import com.ironside.challengesphere.api.request.CreateSubmissionRequest;
@@ -256,16 +258,7 @@ public class SubmissionServiceImpl implements SubmissionService {
             logger.info("Successfully created submission with id: {} for user: {}, challenge: {}, day: {}",
                     savedSubmission.getId(), userId, challengeId, dayNumber);
 
-            try {
-                submissionModerationJob.moderateSubmissionAsync(
-                        savedSubmission.getId(),
-                        userId,
-                        challengeId,
-                        mediaKeys
-                );
-            } catch (Exception e) {
-                logger.warn("Failed to enqueue moderation for submission {}: {}", savedSubmission.getId(), e.getClass().getSimpleName());
-            }
+            scheduleSubmissionModerationAfterCommit(savedSubmission.getId());
 
             if (oneOffChallenge) {
                 markOneOffChallengeCompleted(userChallenge);
@@ -445,7 +438,7 @@ public class SubmissionServiceImpl implements SubmissionService {
                     ));
             ensureSubmissionDayAcceptsUpload(challenge, submission.getDayNumber());
 
-            ContentModerationService.Result moderation = contentModerationService.scan(mediaKeys);
+            ContentModerationService.Result moderation = contentModerationService.scanStrict(mediaKeys);
             if (moderation.verdict() == ContentModerationService.Verdict.BLOCK_AND_BAN) {
                 User user = userRepository.findById(userId).orElse(null);
                 if (user != null) {
@@ -892,6 +885,31 @@ public class SubmissionServiceImpl implements SubmissionService {
                     logger
             );
         }
+    }
+
+    private void scheduleSubmissionModerationAfterCommit(Long submissionId) {
+        Runnable dispatch = () -> {
+            try {
+                submissionModerationJob.moderateSubmissionAsync(submissionId);
+            } catch (Exception e) {
+                logger.warn(
+                        "Failed to enqueue moderation for submission {}: {}",
+                        submissionId,
+                        e.getClass().getSimpleName());
+            }
+        };
+
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    dispatch.run();
+                }
+            });
+            return;
+        }
+
+        dispatch.run();
     }
 
     private boolean isImageMediaUrl(String value) {

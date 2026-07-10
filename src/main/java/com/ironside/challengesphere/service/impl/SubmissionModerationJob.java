@@ -17,6 +17,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.sql.Timestamp;
+import java.util.Arrays;
 import java.util.List;
 
 @Service
@@ -47,27 +48,27 @@ public class SubmissionModerationJob {
 
     @Async("cacheExecutor")
     @Transactional
-    public void moderateSubmissionAsync(Long submissionId, Long userId, Long challengeId, List<String> mediaUrls) {
+    public void moderateSubmissionAsync(Long submissionId) {
         if (submissionId == null) {
             logger.warn("Skipping async moderation without a submission id");
             return;
         }
 
-        List<String> urls = mediaUrls == null ? List.of() : List.copyOf(mediaUrls);
         Submission submission = submissionRepository.findById(submissionId).orElse(null);
         if (submission == null) {
             logger.warn("Skipping async moderation; submission {} was not found", submissionId);
             return;
         }
         if (!Boolean.TRUE.equals(submission.getActive())) {
-            logger.info("Skipping async moderation; submission {} is no longer active", submissionId);
+            logger.info("Skipping async moderation; submission {} is no longer active", submission.getId());
             return;
         }
 
         try {
-            ContentModerationService.Result result = contentModerationService.scanStrict(urls);
+            ContentModerationService.Result result = contentModerationService.scanStrict(
+                    storedMediaUrls(submission.getMediaUrls()));
             if (result.verdict() == ContentModerationService.Verdict.CLEAN) {
-                logger.info("Async moderation passed for submission {}", submissionId);
+                logger.info("Async moderation passed for submission {}", submission.getId());
                 return;
             }
 
@@ -75,22 +76,36 @@ public class SubmissionModerationJob {
                 hideSubmission(submission);
                 saveModerationFlags(submission, result);
                 invalidateAfterRemoval(submission);
-                logger.warn("Submission {} hidden for moderation review", submissionId);
+                logger.warn("Submission {} hidden for moderation review", submission.getId());
                 return;
             }
 
             hideSubmission(submission);
-            banUser(userId, result);
+            banUser(submission.getUserId(), result);
             invalidateAfterRemoval(submission);
-            logger.warn("Submission {} hidden and user {} banned after async moderation", submissionId, userId);
+            logger.warn(
+                    "Submission {} hidden and user {} banned after async moderation",
+                    submission.getId(),
+                    submission.getUserId());
         } catch (Exception e) {
             logger.error(
                     "Async moderation failed for submission {}; uploaded media retained for administrative cleanup: {}",
-                    submissionId,
+                    submission.getId(),
                     e.getClass().getSimpleName());
             hideSubmission(submission);
             invalidateAfterRemoval(submission);
         }
+    }
+
+    private static List<String> storedMediaUrls(String mediaUrls) {
+        if (mediaUrls == null || mediaUrls.isBlank()) {
+            return List.of();
+        }
+
+        return Arrays.stream(mediaUrls.split(","))
+                .map(String::trim)
+                .filter(url -> !url.isEmpty())
+                .toList();
     }
 
     private void hideSubmission(Submission submission) {

@@ -6,11 +6,13 @@ import com.ironside.challengesphere.util.MediaTypes;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.http.HttpStatus;
 
 import java.util.List;
 import java.util.UUID;
+import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -29,6 +31,23 @@ class SubmissionMediaKeyPolicyTest {
     @Test
     void acceptsCanonicalOwnedPhotoAndVideo() throws Exception {
         assertEquals(List.of(PHOTO, VIDEO), policy.validateAndNormalize(7L, List.of(PHOTO, VIDEO)));
+    }
+
+    @ParameterizedTest
+    @MethodSource("keysWithSurroundingControlCharacters")
+    void rejectsControlCharactersBeforeTrimming(String rawKey) {
+        assertThrows(
+                ChallengeSphereException.class,
+                () -> policy.validateAndNormalize(7L, List.of(rawKey)));
+    }
+
+    static Stream<String> keysWithSurroundingControlCharacters() {
+        return Stream.of("\n" + PHOTO, PHOTO + "\t");
+    }
+
+    @Test
+    void permitsHarmlessSurroundingOrdinaryWhitespace() throws Exception {
+        assertEquals(List.of(PHOTO), policy.validateAndNormalize(7L, List.of("  " + PHOTO + "  ")));
     }
 
     @Test
@@ -66,6 +85,14 @@ class SubmissionMediaKeyPolicyTest {
     }
 
     @ParameterizedTest
+    @ValueSource(longs = {0L, -1L})
+    void validationRejectsNonPositiveUserIds(long userId) {
+        assertThrows(
+                ChallengeSphereException.class,
+                () -> policy.validateAndNormalize(userId, List.of()));
+    }
+
+    @ParameterizedTest
     @CsvSource({
             "SUBMISSION_PHOTO,IMAGE_JPEG,.jpg",
             "SUBMISSION_PHOTO,IMAGE_PNG,.png",
@@ -81,6 +108,29 @@ class SubmissionMediaKeyPolicyTest {
                 "submissions/user_7/" + mediaType + "/1752148800000_"
                         + "123e4567-e89b-12d3-a456-426614174000" + expectedSuffix,
                 key);
+    }
+
+    @Test
+    void generatedKeyRoundTripsThroughValidation() throws Exception {
+        String key = policy.createKey(
+                7L,
+                MediaTypes.SUBMISSION_PHOTO,
+                GeneratePresignedUrlsRequest.ContentType.IMAGE_JPEG,
+                1752148800000L,
+                UNIQUE_ID);
+
+        assertEquals(List.of(key), policy.validateAndNormalize(7L, List.of(key)));
+    }
+
+    @ParameterizedTest
+    @ValueSource(longs = {0L, -1L})
+    void keyCreationRejectsNonPositiveUserIds(long userId) {
+        assertThrows(ChallengeSphereException.class, () -> policy.createKey(
+                userId,
+                MediaTypes.SUBMISSION_PHOTO,
+                GeneratePresignedUrlsRequest.ContentType.IMAGE_JPEG,
+                1752148800000L,
+                UNIQUE_ID));
     }
 
     @ParameterizedTest

@@ -3,24 +3,35 @@ package com.ironside.challengesphere.service.impl;
 import com.ironside.challengesphere.api.request.CreateSubmissionRequest;
 import com.ironside.challengesphere.api.request.GeneratePresignedUrlsRequest;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
+import com.ironside.challengesphere.model.Challenge;
+import com.ironside.challengesphere.model.Submission;
+import com.ironside.challengesphere.repository.ChallengeRepository;
 import com.ironside.challengesphere.repository.SubmissionRepository;
 import com.ironside.challengesphere.repository.UserRepository;
+import com.ironside.challengesphere.service.ContentModerationService;
 import com.ironside.challengesphere.util.MediaTypes;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
 import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.util.ReflectionTestUtils;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
+import java.time.LocalDate;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -29,22 +40,35 @@ class SubmissionMediaSecurityIntegrationTest {
 
     private static final String FOREIGN_KEY =
             "submissions/user_8/SUBMISSION_PHOTO/1752148800000_123e4567-e89b-12d3-a456-426614174000.jpg";
+    private static final String OWNED_KEY =
+            "submissions/user_7/SUBMISSION_PHOTO/1752148800000_123e4567-e89b-12d3-a456-426614174000.jpg";
+    private static final String OLD_OWNED_KEY =
+            "submissions/user_7/SUBMISSION_PHOTO/1752148800000_123e4567-e89b-12d3-a456-426614174001.png";
 
     private SubmissionServiceImpl service;
     private SubmissionRepository submissionRepository;
+    private ChallengeRepository challengeRepository;
     private UserRepository userRepository;
     private MediaUrlService mediaUrlService;
+    private ContentModerationService contentModerationService;
+    private SubmissionModerationJob submissionModerationJob;
 
     @BeforeEach
     void setUp() {
         service = new SubmissionServiceImpl();
         submissionRepository = mock(SubmissionRepository.class);
+        challengeRepository = mock(ChallengeRepository.class);
         userRepository = mock(UserRepository.class);
         mediaUrlService = mock(MediaUrlService.class);
+        contentModerationService = mock(ContentModerationService.class);
+        submissionModerationJob = mock(SubmissionModerationJob.class);
         ReflectionTestUtils.setField(service, "submissionMediaKeyPolicy", new SubmissionMediaKeyPolicy());
         ReflectionTestUtils.setField(service, "submissionRepository", submissionRepository);
+        ReflectionTestUtils.setField(service, "challengeRepository", challengeRepository);
         ReflectionTestUtils.setField(service, "userRepository", userRepository);
         ReflectionTestUtils.setField(service, "mediaUrlService", mediaUrlService);
+        ReflectionTestUtils.setField(service, "contentModerationService", contentModerationService);
+        ReflectionTestUtils.setField(service, "submissionModerationJob", submissionModerationJob);
     }
 
     @Test
@@ -75,6 +99,78 @@ class SubmissionMediaSecurityIntegrationTest {
                 () -> service.reuploadSubmission(99L, request));
         assertEquals(HttpStatus.BAD_REQUEST, error.getStatus());
         verifyNoInteractions(submissionRepository, mediaUrlService);
+    }
+
+    @Test
+    void reuploadStrictModerationFailurePreservesExistingSubmissionAndMedia() {
+        Submission submission = new Submission();
+        submission.setId(99L);
+        submission.setUserId(7L);
+        submission.setChallengeId(3L);
+        submission.setDayNumber(1);
+        submission.setDescription("original proof");
+        submission.setMediaUrls(OLD_OWNED_KEY);
+        submission.setIsPrivate(false);
+        submission.setActive(true);
+
+        Challenge challenge = new Challenge();
+        challenge.setId(3L);
+        challenge.setActive(true);
+        challenge.setStartDate(LocalDate.now());
+        challenge.setNumberOfDays(30);
+        challenge.setChallengeMode(Challenge.MODE_DAILY);
+
+        when(submissionRepository.findById(99L)).thenReturn(Optional.of(submission));
+        when(challengeRepository.findById(3L)).thenReturn(Optional.of(challenge));
+        when(contentModerationService.scanStrict(List.of(OWNED_KEY)))
+                .thenThrow(new IllegalStateException("moderation unavailable"));
+
+        CreateSubmissionRequest request = new CreateSubmissionRequest();
+        request.setUserId(7L);
+        request.setDescription("replacement proof");
+        request.setMediaUrls(List.of(OWNED_KEY));
+        request.setIsPrivate(true);
+
+        ChallengeSphereException error = assertThrows(
+                ChallengeSphereException.class,
+                () -> service.reuploadSubmission(99L, request));
+
+        assertEquals(HttpStatus.INTERNAL_SERVER_ERROR, error.getStatus());
+        assertEquals("Failed to reupload submission", error.getResponseMessage());
+        assertEquals("original proof", submission.getDescription());
+        assertEquals(OLD_OWNED_KEY, submission.getMediaUrls());
+        assertEquals(false, submission.getIsPrivate());
+        assertTrue(submission.getActive());
+        verify(contentModerationService).scanStrict(List.of(OWNED_KEY));
+        verify(contentModerationService, never()).scan(anyList());
+        verify(submissionRepository, never()).save(any(Submission.class));
+        verify(mediaUrlService, never()).applyPrivateImageCacheHeaders(anyList());
+    }
+
+    @Test
+    void moderationDispatchWaitsForCommitAndPassesOnlySubmissionId() {
+        TransactionSynchronizationManager.initSynchronization();
+        try {
+            ReflectionTestUtils.invokeMethod(service, "scheduleSubmissionModerationAfterCommit", 99L);
+
+            verifyNoInteractions(submissionModerationJob);
+            List<TransactionSynchronization> synchronizations =
+                    TransactionSynchronizationManager.getSynchronizations();
+            assertEquals(1, synchronizations.size());
+
+            synchronizations.get(0).afterCommit();
+
+            verify(submissionModerationJob).moderateSubmissionAsync(99L);
+        } finally {
+            TransactionSynchronizationManager.clearSynchronization();
+        }
+    }
+
+    @Test
+    void moderationDispatchRunsImmediatelyWithoutTransactionSynchronization() {
+        ReflectionTestUtils.invokeMethod(service, "scheduleSubmissionModerationAfterCommit", 99L);
+
+        verify(submissionModerationJob).moderateSubmissionAsync(99L);
     }
 
     @Test
