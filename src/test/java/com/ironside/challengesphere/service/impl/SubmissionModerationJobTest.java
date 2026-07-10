@@ -52,8 +52,8 @@ class SubmissionModerationJobTest {
             throws ChallengeSphereException {
         Submission submission = new Submission();
         submission.setId(99L);
-        submission.setUserId(7L);
-        submission.setChallengeId(3L);
+        submission.setUserId(71L);
+        submission.setChallengeId(31L);
         submission.setActive(true);
         when(submissionRepository.findById(99L)).thenReturn(Optional.of(submission));
         when(contentModerationService.scanStrict(anyList()))
@@ -68,9 +68,9 @@ class SubmissionModerationJobTest {
         assertFalse(submission.getActive());
         verify(submissionRepository).save(submission);
         verify(cacheService).invalidateAllFeeds();
-        verify(cacheService).invalidateTimeline(7L);
+        verify(cacheService).invalidateTimeline(71L);
         verify(cacheService).invalidateGloryCaches(99L);
         verify(cacheService).invalidateCommentsForSubmission(99L);
-        verify(leaderboardService).rebuildLeaderboard(3L);
+        verify(leaderboardService).rebuildLeaderboard(31L);
     }
 }
