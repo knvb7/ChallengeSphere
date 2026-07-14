@@ -186,7 +186,13 @@ JOIN challengesphere.challenges challenge
   ON challenge.creator_id = target.id
  AND challenge.title = submission.challenge_title
  AND challenge.hashtags LIKE '%#starter%'
-ON CONFLICT (user_id, challenge_id, day_number) DO NOTHING;
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM challengesphere.submissions existing_submission
+    WHERE existing_submission.user_id = target.id
+      AND existing_submission.challenge_id = challenge.id
+      AND existing_submission.day_number = submission.day_number
+);
 
 SELECT
     target.id AS first_user_id,

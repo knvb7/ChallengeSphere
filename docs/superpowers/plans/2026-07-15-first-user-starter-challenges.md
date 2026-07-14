@@ -41,7 +41,7 @@ for (const title of ['Morning Momentum: 30 Days of Movement', '30 Pages Before B
 assert.equal((sql.match(/#starter/g) ?? []).length >= 4, true);
 assert.match(sql, /ORDER BY id ASC LIMIT 1/);
 assert.match(sql, /ON CONFLICT \(user_id, challenge_id\) DO NOTHING/);
-assert.match(sql, /ON CONFLICT \(user_id, challenge_id, day_number\) DO NOTHING/);
+assert.match(sql, /FROM challengesphere\.submissions existing_submission/);
 assert.equal((sql.match(/Day [123]:/g) ?? []).length, 12);
 console.log('First-user starter challenge seed contract passes.');
 ```
@@ -70,7 +70,7 @@ CREATE TEMP TABLE starter_seed_target AS
 SELECT id FROM challengesphere.users WHERE active = true ORDER BY id ASC LIMIT 1;
 -- Insert absent challenge titles with public DAILY metadata and three cover URLs.
 -- Insert participation rows and increment challenges_accepted only for returned inserts.
--- Insert three submissions per challenge with ON CONFLICT (user_id, challenge_id, day_number) DO NOTHING.
+-- Insert three submissions per challenge only when the matching user, challenge, and day row does not already exist.
 COMMIT;
 ```
 

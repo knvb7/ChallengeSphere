@@ -18,7 +18,10 @@ for (const title of [
 assert.equal((sql.match(/#starter/g) ?? []).length >= 4, true);
 assert.match(sql, /ORDER BY id ASC LIMIT 1/);
 assert.match(sql, /ON CONFLICT \(user_id, challenge_id\) DO NOTHING/);
-assert.match(sql, /ON CONFLICT \(user_id, challenge_id, day_number\) DO NOTHING/);
+assert.match(
+  sql,
+  /WHERE NOT EXISTS \(\s*SELECT 1\s*FROM challengesphere\.submissions existing_submission/,
+);
 assert.equal((sql.match(/Day [123]:/g) ?? []).length, 12);
 
 console.log('First-user starter challenge seed contract passes.');
