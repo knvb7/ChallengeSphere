@@ -270,7 +270,7 @@ public class ChallengeServiceImpl implements ChallengeService {
             Challenge challenge = new Challenge();
             challenge.setTitle(content.title());
             challenge.setDescription(content.storedDescription());
-            challenge.setHashtags(content.hashtags());
+            challenge.setHashtags(request.getHashtags() != null ? request.getHashtags() : "");
             challenge.setCategories(content.categories());
             challenge.setBenefits(content.benefits());
             challenge.setIsPrivate(request.getIsPrivate() != null ? request.getIsPrivate() : false);

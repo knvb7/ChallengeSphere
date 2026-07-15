@@ -7,6 +7,7 @@ import org.apache.logging.log4j.Logger;
 import org.springframework.http.HttpStatus;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
@@ -61,11 +62,10 @@ public final class ChallengeCreationContentPolicy {
             throw badRequest("Benefits must be at most " + BENEFITS_MAX_LENGTH + " characters");
         }
 
-        String categories = normalizeCategories(request.getCategories());
-        String hashtags = trim(request.getHashtags());
+        String categories = normalizeCategories(request);
         String storedDescription = buildStoredDescription(description, rules, benefits);
 
-        return new Content(title, description, rules, benefits, categories, hashtags, storedDescription);
+        return new Content(title, description, rules, benefits, categories, storedDescription);
     }
 
     private static LegacyDescription parseLegacyDescription(String rawDescription) {
@@ -91,25 +91,40 @@ public final class ChallengeCreationContentPolicy {
         );
     }
 
-    private static String normalizeCategories(String rawCategories) throws ChallengeSphereException {
+    private static String normalizeCategories(ChallengeCreateRequest request) throws ChallengeSphereException {
+        if (request.getCategoryValues() != null) {
+            return normalizeCategoryValues(request.getCategoryValues(), true);
+        }
+
+        return normalizeLegacyCategories(request.getCategories());
+    }
+
+    private static String normalizeLegacyCategories(String rawCategories) throws ChallengeSphereException {
         String trimmedCategories = trim(rawCategories);
         if (trimmedCategories.isEmpty()) {
             throw badRequest("At least one category is required");
         }
 
-        String[] values = trimmedCategories.split(",", -1);
-        if (values.length > CATEGORY_MAX_COUNT) {
+        return normalizeCategoryValues(Arrays.asList(trimmedCategories.split(",", -1)), false);
+    }
+
+    private static String normalizeCategoryValues(List<String> values, boolean rejectCommas)
+            throws ChallengeSphereException {
+        if (values.isEmpty()) {
+            throw badRequest("At least one category is required");
+        }
+        if (values.size() > CATEGORY_MAX_COUNT) {
             throw badRequest("A challenge can have at most " + CATEGORY_MAX_COUNT + " categories");
         }
 
         Set<String> seen = new HashSet<>();
-        List<String> normalized = new ArrayList<>(values.length);
+        List<String> normalized = new ArrayList<>(values.size());
         for (String value : values) {
             String category = trim(value);
             if (category.isEmpty()) {
                 throw badRequest("Categories cannot contain blank entries");
             }
-            if (category.contains(",")) {
+            if (rejectCommas && category.contains(",")) {
                 throw badRequest("Categories cannot contain commas");
             }
             validateRange(category, "Each category", CATEGORY_MIN_LENGTH, CATEGORY_MAX_LENGTH);
@@ -137,7 +152,7 @@ public final class ChallengeCreationContentPolicy {
     }
 
     private static Pattern headerPattern(String header) {
-        return Pattern.compile("(?im)^\\h*" + Pattern.quote(header) + "\\h*(?:\\R|$)");
+        return Pattern.compile("(?im)^\\h*" + Pattern.quote(header) + "\\h*");
     }
 
     private static String trim(String value) {
@@ -154,7 +169,6 @@ public final class ChallengeCreationContentPolicy {
             String rules,
             String benefits,
             String categories,
-            String hashtags,
             String storedDescription
     ) {
     }

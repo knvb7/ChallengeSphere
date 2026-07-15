@@ -13,25 +13,23 @@ import java.util.List;
 public class ChallengeCreateRequest {
 
     @NotBlank(message = "Title is required")
-    @Size(max = 80, message = "Title must be at most 80 characters")
+    @Size(max = 255, message = "Title must be at most 255 characters")
     private String title;
 
     @NotBlank(message = "Description is required")
-    @Size(max = 2600, message = "Description must be at most 2600 characters")
+    @Size(max = 5000, message = "Description must be at most 5000 characters")
     private String description;
 
     private Long creatorUserId;
 
-    @Size(max = 160, message = "Hashtags must be at most 160 characters")
     private String hashtags;
 
-    @Size(max = 160, message = "Categories must be at most 160 characters")
     private String categories;
 
-    @Size(max = 1000, message = "Benefits must be at most 1000 characters")
+    private List<String> categoryValues;
+
     private String benefits;
 
-    @Size(max = 1000, message = "Rules must be at most 1000 characters")
     private String rules;
     private Boolean isPrivate;
     private LocalDate startDate;
