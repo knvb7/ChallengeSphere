@@ -253,6 +253,9 @@ public class ChallengeServiceImpl implements ChallengeService {
         logger.info("Creating challenge for creator userId={}", request.getCreatorUserId());
 
         try {
+            ChallengeCreationContentPolicy.Content content =
+                    ChallengeCreationContentPolicy.validateAndNormalize(request);
+
             // Lock the creator row so concurrent Swagger/API requests cannot race
             // past the per-day creation cap.
             userRepository.findByIdForUpdate(request.getCreatorUserId())
@@ -265,11 +268,11 @@ public class ChallengeServiceImpl implements ChallengeService {
             enforceDailyChallengeCreationLimit(request.getCreatorUserId());
 
             Challenge challenge = new Challenge();
-            challenge.setTitle(request.getTitle());
-            challenge.setDescription(request.getDescription());
-            challenge.setHashtags(request.getHashtags() != null ? request.getHashtags() : "");
-            challenge.setCategories(request.getCategories() != null ? request.getCategories() : "");
-            challenge.setBenefits(request.getBenefits() != null ? request.getBenefits() : "");
+            challenge.setTitle(content.title());
+            challenge.setDescription(content.storedDescription());
+            challenge.setHashtags(content.hashtags());
+            challenge.setCategories(content.categories());
+            challenge.setBenefits(content.benefits());
             challenge.setIsPrivate(request.getIsPrivate() != null ? request.getIsPrivate() : false);
             challenge.setStartDate(request.getStartDate() != null ? request.getStartDate() : LocalDate.now());
             challenge.setCreatorId(request.getCreatorUserId());
