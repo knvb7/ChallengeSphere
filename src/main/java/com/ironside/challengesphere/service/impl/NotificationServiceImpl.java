@@ -215,9 +215,11 @@ public class NotificationServiceImpl implements NotificationService {
                 continue;
             }
             UserPreferences prefs = prefsByUserId.get(recipient.getId());
-            if (allowsInApp(recipient, prefs, TYPE_SUBMISSION)) {
+            if (allowsInbox(recipient)) {
                 toSave.add(buildNotification(recipient.getId(), TYPE_SUBMISSION, message, actionObject));
-                pushes.add(new PushDispatch(recipient.getId(), TYPE_SUBMISSION, message, actionObject));
+                if (allowsPush(recipient, prefs, TYPE_SUBMISSION)) {
+                    pushes.add(new PushDispatch(recipient.getId(), TYPE_SUBMISSION, message, actionObject));
+                }
             }
             sendEmailIfAllowed(recipient, prefs, TYPE_SUBMISSION, message);
         }
@@ -298,9 +300,11 @@ public class NotificationServiceImpl implements NotificationService {
                     continue;
 
                 String actionObject = toJson(baseChallengeInvitePayload(actor, recipient, challenge));
-                if (allowsInApp(recipient, prefs, TYPE_CHALLENGE_INVITE)) {
+                if (allowsInbox(recipient)) {
                     toSave.add(buildNotification(recipient.getId(), TYPE_CHALLENGE_INVITE, message, actionObject));
-                    pushes.add(new PushDispatch(recipient.getId(), TYPE_CHALLENGE_INVITE, message, actionObject));
+                    if (allowsPush(recipient, prefs, TYPE_CHALLENGE_INVITE)) {
+                        pushes.add(new PushDispatch(recipient.getId(), TYPE_CHALLENGE_INVITE, message, actionObject));
+                    }
                 }
 //                sendEmailIfAllowed(recipient, prefs, TYPE_CHALLENGE_INVITE, message);
             }
@@ -354,9 +358,11 @@ public class NotificationServiceImpl implements NotificationService {
             }
             UserPreferences prefs = prefsByUserId.get(recipient.getId());
             String actionObject = toJson(baseChallengeJoinedPayload(joiner, recipient, challenge));
-            if (allowsInApp(recipient, prefs, TYPE_CHALLENGE_UPDATE)) {
+            if (allowsInbox(recipient)) {
                 toSave.add(buildNotification(recipient.getId(), TYPE_CHALLENGE_UPDATE, message, actionObject));
-                pushes.add(new PushDispatch(recipient.getId(), TYPE_CHALLENGE_UPDATE, message, actionObject));
+                if (allowsPush(recipient, prefs, TYPE_CHALLENGE_UPDATE)) {
+                    pushes.add(new PushDispatch(recipient.getId(), TYPE_CHALLENGE_UPDATE, message, actionObject));
+                }
             }
             sendEmailIfAllowed(recipient, prefs, TYPE_CHALLENGE_UPDATE, message);
         }
@@ -443,12 +449,15 @@ public class NotificationServiceImpl implements NotificationService {
                                  String message,
                                  String actionObject) {
         Notification saved = null;
-        if (allowsInApp(recipient, prefs, type)) {
+        if (allowsInbox(recipient)) {
             saved = notificationRepository.save(buildNotification(recipient.getId(), type, message, actionObject));
             logger.info("Created notification id={} for userId={} type={}", saved.getId(), recipient.getId(), type);
-            dispatchPushAfterCommit(recipient.getId(), type, message, actionObject);
+            if (allowsPush(recipient, prefs, type)) {
+                dispatchPushAfterCommit(recipient.getId(), type, message, actionObject);
+            }
         } else {
-            logger.debug("In-app notification suppressed by preferences for userId={} type={}", recipient.getId(), type);
+            logger.debug("In-app notification suppressed for ineligible userId={} type={}",
+                    recipient == null ? null : recipient.getId(), type);
         }
         sendEmailIfAllowed(recipient, prefs, type, message);
         return saved;
@@ -496,8 +505,14 @@ public class NotificationServiceImpl implements NotificationService {
         }
     }
 
-    private boolean allowsInApp(User user, UserPreferences prefs, String type) {
-        if (user == null || user.getId() == null) {
+    private boolean allowsInbox(User user) {
+        return user != null
+                && user.getId() != null
+                && !Boolean.FALSE.equals(user.getActive());
+    }
+
+    private boolean allowsPush(User user, UserPreferences prefs, String type) {
+        if (!allowsInbox(user)) {
             return false;
         }
         Integer mask = user.getNotifications();
