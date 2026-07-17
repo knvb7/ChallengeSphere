@@ -17,4 +17,6 @@ public interface EmailService {
     void sendPlainEmail(String to, String subject, String body);
 
     void sendHtmlEmail(String to, String subject, String html) throws ChallengeSphereException;
+
+    void sendFeatureRequestEmail(String subject, String html) throws ChallengeSphereException;
 }

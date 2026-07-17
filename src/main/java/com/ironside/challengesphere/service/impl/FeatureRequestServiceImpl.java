@@ -22,7 +22,6 @@ import java.time.Duration;
 public class FeatureRequestServiceImpl implements FeatureRequestService {
 
     private static final Logger logger = LogManager.getLogger(FeatureRequestServiceImpl.class);
-    private static final String SUPPORT_EMAIL = "ironside-dev@challengesphere.com";
     private static final int MAX_REQUESTS_PER_DAY = 5;
 
     private final FeatureRequestRepository featureRequestRepository;
@@ -77,8 +76,7 @@ public class FeatureRequestServiceImpl implements FeatureRequestService {
         featureRequest.setStatus("NEW");
 
         FeatureRequest saved = featureRequestRepository.save(featureRequest);
-        emailService.sendHtmlEmail(
-                SUPPORT_EMAIL,
+        emailService.sendFeatureRequestEmail(
                 buildEmailSubject(saved, user),
                 buildEmailHtml(saved, user)
         );
