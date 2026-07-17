@@ -68,7 +68,8 @@ class FeatureRequestServiceImplTest {
         assertEquals("CHALLENGES", captor.getValue().getCategory());
         assertEquals("NEW", response.getStatus());
         assertEquals(7L, response.getId());
-        verify(emailService).sendFeatureRequestEmail(
+        verify(emailService).sendHtmlEmail(
+                eq("ironside-dev@challengesphere.com"),
                 eq("[ChallengeSphere Feature Request] CHALLENGES from @pranjal"),
                 org.mockito.ArgumentMatchers.contains("Add team challenges")
         );

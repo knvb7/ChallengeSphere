@@ -24,8 +24,6 @@ import java.util.stream.Collectors;
 public class EmailServiceImpl implements EmailService {
 
     private static final Logger logger = LogManager.getLogger(EmailServiceImpl.class);
-    private static final String FEATURE_REQUEST_RECIPIENT =
-            "ironside-dev@challengesphere.com";
 
     private final JavaMailSender mailSender;
 
@@ -122,35 +120,6 @@ public class EmailServiceImpl implements EmailService {
     @Override
     public void sendHtmlEmail(String to, String subject, String html) throws ChallengeSphereException {
         sendHtmlOrThrow(to, subject, html);
-    }
-
-    @Override
-    public void sendFeatureRequestEmail(String subject, String html)
-            throws ChallengeSphereException {
-        if (!mailEnabled) {
-            throw new ChallengeSphereException(
-                    "Email delivery is not configured",
-                    HttpStatus.SERVICE_UNAVAILABLE,
-                    logger
-            );
-        }
-        try {
-            MimeMessage message = mailSender.createMimeMessage();
-            MimeMessageHelper helper = new MimeMessageHelper(message, true, "UTF-8");
-            helper.setFrom(fromAddress);
-            helper.setTo(FEATURE_REQUEST_RECIPIENT);
-            helper.setSubject(subject);
-            helper.setText(html, true);
-            mailSender.send(message);
-            logger.info("Sent feature request email");
-        } catch (MessagingException | MailException e) {
-            throw new ChallengeSphereException(
-                    "Failed to send feature request",
-                    HttpStatus.BAD_GATEWAY,
-                    logger,
-                    e
-            );
-        }
     }
 
     private void sendHtml(String to, String subject, String html) {
