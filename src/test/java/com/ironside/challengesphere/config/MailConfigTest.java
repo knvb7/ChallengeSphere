@@ -24,7 +24,7 @@ class MailConfigTest {
                 true,
                 "smtp.gmail.com",
                 587,
-                "ironside-dev@challengesphere.com",
+                "mihir.dalal.0911@gmail.com",
                 "",
                 PARAMETER_NAME,
                 true,
@@ -36,7 +36,7 @@ class MailConfigTest {
 
         assertEquals("smtp.gmail.com", sender.getHost());
         assertEquals(587, sender.getPort());
-        assertEquals("ironside-dev@challengesphere.com", sender.getUsername());
+        assertEquals("mihir.dalal.0911@gmail.com", sender.getUsername());
         assertEquals("generated-app-password", sender.getPassword());
         assertEquals("true", sender.getJavaMailProperties().getProperty("mail.smtp.auth"));
         assertEquals("true", sender.getJavaMailProperties().getProperty("mail.smtp.starttls.enable"));
@@ -75,7 +75,7 @@ class MailConfigTest {
                         true,
                         "smtp.gmail.com",
                         587,
-                        "ironside-dev@challengesphere.com",
+                        "mihir.dalal.0911@gmail.com",
                         "",
                         "",
                         true,

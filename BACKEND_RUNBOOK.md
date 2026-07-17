@@ -138,7 +138,7 @@ See `src/main/resources/application.properties`:
 
 ## 9) Production email delivery
 
-Production email uses Gmail SMTP as `ironside-dev@challengesphere.com`. The
+Production email uses Gmail SMTP as `mihir.dalal.0911@gmail.com`. The
 Google app password is not stored in Git, the application JAR, or the systemd
 environment. `MailConfig` reads it at startup from the encrypted Systems
 Manager Parameter Store value:
@@ -152,7 +152,7 @@ name:
 
 ```bash
 APP_MAIL_ENABLED=true
-MAIL_USERNAME=ironside-dev@challengesphere.com
+MAIL_USERNAME=mihir.dalal.0911@gmail.com
 MAIL_PASSWORD_PARAMETER_NAME=/challengesphere/prod/mail-app-password
 ```
 
