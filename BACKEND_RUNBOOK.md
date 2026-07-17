@@ -135,3 +135,27 @@ See `src/main/resources/application.properties`:
 - `aws.region`
 - `aws.s3.bucket.name`
 - `aws.rekognition.*`
+
+## 9) Production email delivery
+
+Production email uses Gmail SMTP as `ironside-dev@challengesphere.com`. The
+Google app password is not stored in Git, the application JAR, or the systemd
+environment. `MailConfig` reads it at startup from the encrypted Systems
+Manager Parameter Store value:
+
+```text
+/challengesphere/prod/mail-app-password
+```
+
+The production runtime configuration contains only the non-secret parameter
+name:
+
+```bash
+APP_MAIL_ENABLED=true
+MAIL_USERNAME=ironside-dev@challengesphere.com
+MAIL_PASSWORD_PARAMETER_NAME=/challengesphere/prod/mail-app-password
+```
+
+The EC2 role must have `ssm:GetParameter` for that exact parameter ARN. Rotate
+the credential by replacing the SecureString value with a newly generated
+Google app password and restarting `challengesphere.service`.
