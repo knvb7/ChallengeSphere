@@ -24,16 +24,18 @@ import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-class SupportServiceDisabledTest {
+class SupportServiceImplTest {
 
     private UserRepository userRepository;
     private MediaUrlService mediaUrlService;
@@ -186,6 +188,225 @@ class SupportServiceDisabledTest {
 
         assertEquals(HttpStatus.BAD_REQUEST, error.getStatus());
         verify(emailService, never()).sendSupportRequestEmail(anyString(), anyString());
+    }
+
+    @Test
+    void rawPrivateKeyFromReadableUrlFailsBeforeEmailDelivery() throws Exception {
+        allowSupportRequest();
+        String key = "support/user_42/screenshots/1721234567890_"
+                + "123e4567-e89b-12d3-a456-426614174000.png";
+        when(mediaUrlService.objectExists(key)).thenReturn(true);
+        when(mediaUrlService.toReadableMediaUrl(key)).thenReturn(key);
+        when(contentModerationService.scanStrict(List.of(key))).thenReturn(
+                new ContentModerationService.Result(
+                        ContentModerationService.Verdict.CLEAN,
+                        List.of()
+                )
+        );
+        CreateSupportTicketRequest request = request(
+                CreateSupportTicketRequest.IssueType.BUG,
+                "Screenshot link",
+                "The screenshot link needs to be readable.",
+                List.of(key)
+        );
+
+        ChallengeSphereException error = assertThrows(
+                ChallengeSphereException.class,
+                () -> service.createTicket(42L, request)
+        );
+
+        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, error.getStatus());
+        verify(emailService, never()).sendSupportRequestEmail(anyString(), anyString());
+    }
+
+    @Test
+    void blankScreenshotReferenceIsRejectedBeforeEmailDelivery() throws Exception {
+        CreateSupportTicketRequest request = request(
+                CreateSupportTicketRequest.IssueType.BUG,
+                "Blank screenshot",
+                "The screenshot reference should be rejected.",
+                List.of(" ")
+        );
+
+        ChallengeSphereException error = assertThrows(
+                ChallengeSphereException.class,
+                () -> service.createTicket(42L, request)
+        );
+
+        assertEquals(HttpStatus.BAD_REQUEST, error.getStatus());
+        verify(emailService, never()).sendSupportRequestEmail(anyString(), anyString());
+    }
+
+    @Test
+    void foreignScreenshotReferenceIsRejectedBeforeObjectLookup() throws Exception {
+        allowSupportRequest();
+        String foreignKey = "support/user_99/screenshots/1721234567890_"
+                + "123e4567-e89b-12d3-a456-426614174000.png";
+        CreateSupportTicketRequest request = request(
+                CreateSupportTicketRequest.IssueType.BUG,
+                "Foreign screenshot",
+                "This reference belongs to a different account.",
+                List.of(foreignKey)
+        );
+
+        ChallengeSphereException error = assertThrows(
+                ChallengeSphereException.class,
+                () -> service.createTicket(42L, request)
+        );
+
+        assertEquals(HttpStatus.BAD_REQUEST, error.getStatus());
+        verify(mediaUrlService, never()).objectExists(anyString());
+        verify(emailService, never()).sendSupportRequestEmail(anyString(), anyString());
+    }
+
+    @Test
+    void missingScreenshotObjectIsRejectedBeforeEmailDelivery() throws Exception {
+        allowSupportRequest();
+        String key = "support/user_42/screenshots/1721234567890_"
+                + "123e4567-e89b-12d3-a456-426614174000.png";
+        when(mediaUrlService.objectExists(key)).thenReturn(false);
+        CreateSupportTicketRequest request = request(
+                CreateSupportTicketRequest.IssueType.BUG,
+                "Missing screenshot",
+                "The referenced screenshot does not exist.",
+                List.of(key)
+        );
+
+        ChallengeSphereException error = assertThrows(
+                ChallengeSphereException.class,
+                () -> service.createTicket(42L, request)
+        );
+
+        assertEquals(HttpStatus.BAD_REQUEST, error.getStatus());
+        verify(emailService, never()).sendSupportRequestEmail(anyString(), anyString());
+    }
+
+    @Test
+    void dailyRateLimitDenialStopsEmailDelivery() throws Exception {
+        when(userRepository.findById(42L)).thenReturn(Optional.of(user()));
+        when(rateLimitStore.consume(
+                anyString(),
+                eq(5),
+                eq(Duration.ofDays(1))
+        )).thenReturn(new RateLimitStore.Decision(false, 0, 120));
+        CreateSupportTicketRequest request = request(
+                CreateSupportTicketRequest.IssueType.QUESTION,
+                "Rate limited",
+                "This support request exceeds the daily limit.",
+                List.of()
+        );
+
+        ChallengeSphereException error = assertThrows(
+                ChallengeSphereException.class,
+                () -> service.createTicket(42L, request)
+        );
+
+        assertEquals(HttpStatus.TOO_MANY_REQUESTS, error.getStatus());
+        verify(emailService, never()).sendSupportRequestEmail(anyString(), anyString());
+    }
+
+    @Test
+    void rateLimitStoreOutageFailsClosed() throws Exception {
+        when(userRepository.findById(42L)).thenReturn(Optional.of(user()));
+        when(rateLimitStore.consume(
+                anyString(),
+                eq(5),
+                eq(Duration.ofDays(1))
+        )).thenThrow(new IllegalStateException("Redis unavailable"));
+        CreateSupportTicketRequest request = request(
+                CreateSupportTicketRequest.IssueType.QUESTION,
+                "Rate store unavailable",
+                "This request cannot bypass unavailable protection.",
+                List.of()
+        );
+
+        ChallengeSphereException error = assertThrows(
+                ChallengeSphereException.class,
+                () -> service.createTicket(42L, request)
+        );
+
+        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, error.getStatus());
+        verify(emailService, never()).sendSupportRequestEmail(anyString(), anyString());
+    }
+
+    @Test
+    void unsafeScreenshotBansUserAndStopsEmailDelivery() throws Exception {
+        allowSupportRequest();
+        String key = "support/user_42/screenshots/1721234567890_"
+                + "123e4567-e89b-12d3-a456-426614174000.png";
+        when(mediaUrlService.objectExists(key)).thenReturn(true);
+        when(contentModerationService.scanStrict(List.of(key))).thenReturn(
+                new ContentModerationService.Result(
+                        ContentModerationService.Verdict.BLOCK_AND_BAN,
+                        List.of(new ContentModerationService.Finding(
+                                key,
+                                "adult",
+                                "VERY_LIKELY"
+                        ))
+                )
+        );
+        CreateSupportTicketRequest request = request(
+                CreateSupportTicketRequest.IssueType.OTHER,
+                "Unsafe screenshot",
+                "This attachment violates the content policy.",
+                List.of(key)
+        );
+
+        ChallengeSphereException error = assertThrows(
+                ChallengeSphereException.class,
+                () -> service.createTicket(42L, request)
+        );
+
+        assertEquals(HttpStatus.FORBIDDEN, error.getStatus());
+        verify(moderationEnforcementService).banUser(
+                42L,
+                "Content policy violation in support attachment"
+        );
+        verify(emailService, never()).sendSupportRequestEmail(anyString(), anyString());
+    }
+
+    @Test
+    void videoSupportUploadIsRejectedBeforeQuotaReservation() throws Exception {
+        GeneratePresignedUrlsRequest.MediaFileInfo file = new GeneratePresignedUrlsRequest.MediaFileInfo();
+        file.setFileName("support.mp4");
+        file.setMediaType(MediaTypes.SUPPORT_SCREENSHOT);
+        file.setContentType(GeneratePresignedUrlsRequest.ContentType.VIDEO_MP4);
+        file.setFileSizeBytes(1234L);
+        GeneratePresignedUrlsRequest request = new GeneratePresignedUrlsRequest();
+        request.setMediaFiles(List.of(file));
+
+        ChallengeSphereException error = assertThrows(
+                ChallengeSphereException.class,
+                () -> service.generatePresignedUrls(42L, request)
+        );
+
+        assertEquals(HttpStatus.BAD_REQUEST, error.getStatus());
+        verify(uploadQuotaService, never()).reserve(eq(42L), eq(List.of(file)));
+    }
+
+    @Test
+    void smtpFailureFromSupportEmailIsPropagated() throws Exception {
+        allowSupportRequest();
+        ChallengeSphereException smtpFailure = new ChallengeSphereException(
+                "Failed to send support request",
+                HttpStatus.BAD_GATEWAY,
+                null
+        );
+        doThrow(smtpFailure).when(emailService)
+                .sendSupportRequestEmail(anyString(), anyString());
+        CreateSupportTicketRequest request = request(
+                CreateSupportTicketRequest.IssueType.BUG,
+                "SMTP failure",
+                "The mail provider rejected this support request.",
+                List.of()
+        );
+
+        ChallengeSphereException error = assertThrows(
+                ChallengeSphereException.class,
+                () -> service.createTicket(42L, request)
+        );
+
+        assertSame(smtpFailure, error);
     }
 
     private void allowSupportRequest() {

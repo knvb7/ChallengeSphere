@@ -267,6 +267,10 @@ public class SupportServiceImpl implements SupportService {
         if (request.getScreenshotKeys() != null && request.getScreenshotKeys().size() > MAX_SCREENSHOTS) {
             throw badRequest("A support request can include at most 3 screenshots");
         }
+        if (request.getScreenshotKeys() != null
+                && request.getScreenshotKeys().stream().anyMatch(key -> !StringUtils.hasText(key))) {
+            throw badRequest("Invalid support screenshot reference");
+        }
     }
 
     private void validateScreenshotKey(Long userId, String key) throws ChallengeSphereException {
@@ -334,13 +338,8 @@ public class SupportServiceImpl implements SupportService {
             User user,
             CreateSupportTicketRequest request,
             List<String> screenshotKeys
-    ) {
-        String screenshots = screenshotKeys.isEmpty()
-                ? "<p>No screenshots attached.</p>"
-                : "<ol>" + screenshotKeys.stream()
-                .map(key -> "<li><a href=\"" + escapeAttribute(mediaUrlService.toReadableMediaUrl(key)) + "\">"
-                        + "Open screenshot</a><br><code>" + escape(key) + "</code></li>")
-                .collect(Collectors.joining()) + "</ol>";
+    ) throws ChallengeSphereException {
+        String screenshots = buildScreenshotsHtml(screenshotKeys);
 
         return "<div style=\"font-family:Arial,sans-serif;color:#222;line-height:1.5;\">"
                 + "<h2>ChallengeSphere Support Request</h2>"
@@ -364,6 +363,30 @@ public class SupportServiceImpl implements SupportService {
                 + "<h3>Screenshots</h3>"
                 + screenshots
                 + "</div>";
+    }
+
+    private String buildScreenshotsHtml(List<String> screenshotKeys)
+            throws ChallengeSphereException {
+        if (screenshotKeys.isEmpty()) {
+            return "<p>No screenshots attached.</p>";
+        }
+
+        List<String> items = new ArrayList<>();
+        for (String key : screenshotKeys) {
+            String readableUrl = mediaUrlService.toReadableMediaUrl(key);
+            if (!StringUtils.hasText(readableUrl)
+                    || readableUrl.equals(key)
+                    || !readableUrl.startsWith("https://")) {
+                throw new ChallengeSphereException(
+                        "Support screenshot link could not be generated",
+                        HttpStatus.SERVICE_UNAVAILABLE,
+                        logger
+                );
+            }
+            items.add("<li><a href=\"" + escapeAttribute(readableUrl) + "\">"
+                    + "Open screenshot</a><br><code>" + escape(key) + "</code></li>");
+        }
+        return "<ol>" + items.stream().collect(Collectors.joining()) + "</ol>";
     }
 
     private String defaultText(String value) {
