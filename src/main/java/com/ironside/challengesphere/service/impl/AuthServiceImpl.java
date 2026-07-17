@@ -17,7 +17,6 @@ import com.ironside.challengesphere.repository.UserRepository;
 import com.ironside.challengesphere.security.AuthTokenStore;
 import com.ironside.challengesphere.security.JwtService;
 import com.ironside.challengesphere.service.AuthService;
-import com.ironside.challengesphere.service.EmailService;
 import com.ironside.challengesphere.service.UserService;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -72,7 +71,6 @@ public class AuthServiceImpl implements AuthService {
     private final PasswordEncoder passwordEncoder;
     private final RedisCacheServiceImpl redisCacheServiceImpl;
     private final UserService userService;
-    private final EmailService emailService;
     private final MediaUrlService mediaUrlService;
 
     @Value("${google.client.id:}")
@@ -90,7 +88,6 @@ public class AuthServiceImpl implements AuthService {
                            PasswordEncoder passwordEncoder,
                            RedisCacheServiceImpl redisCacheServiceImpl,
                            UserService userService,
-                           EmailService emailService,
                            MediaUrlService mediaUrlService) {
         this.userRepository = userRepository;
         this.jwtService = jwtService;
@@ -98,7 +95,6 @@ public class AuthServiceImpl implements AuthService {
         this.passwordEncoder = passwordEncoder;
         this.redisCacheServiceImpl = redisCacheServiceImpl;
         this.userService = userService;
-        this.emailService = emailService;
         this.mediaUrlService = mediaUrlService;
     }
 
@@ -257,19 +253,6 @@ public class AuthServiceImpl implements AuthService {
         authTokenStore.revokeAllForUser(userId);
         redisCacheServiceImpl.invalidateUserProfile(userId);
         logger.info("Password changed and sessions revoked for userId={}", userId);
-    }
-
-    @Override
-    public void requestPasswordReset(String email) {
-        if (!StringUtils.hasText(email)) {
-            return;
-        }
-
-        userRepository.findByEmailIdIgnoreCase(email.trim()).ifPresent(user -> {
-            String resetCode = generateResetCode();
-            authTokenStore.store(resetCode, PASSWORD_RESET_TOKEN_TYPE, user.getId(), PASSWORD_RESET_TOKEN_TTL);
-            emailService.sendPasswordResetEmail(user, resetCode);
-        });
     }
 
     @Override

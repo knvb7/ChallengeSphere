@@ -18,7 +18,6 @@ import com.ironside.challengesphere.repository.UserRepository;
 import com.ironside.challengesphere.security.SecurityAccess;
 import com.ironside.challengesphere.security.UserPrincipal;
 import com.ironside.challengesphere.service.AuthService;
-import com.ironside.challengesphere.service.EmailService;
 import com.ironside.challengesphere.service.SmsService;
 import com.ironside.challengesphere.service.UserService;
 import com.ironside.challengesphere.service.impl.RedisCacheServiceImpl;
@@ -49,20 +48,17 @@ public class AuthController {
             "Password authentication is disabled. Use Google Sign-In.";
 
     private final SmsService smsService;
-    private final EmailService emailService;
     private final UserService userService;
     private final UserRepository userRepository;
     private final AuthService authService;
     private final RedisCacheServiceImpl redisCacheServiceImpl;
 
     public AuthController(SmsService smsService,
-                          EmailService emailService,
                           UserService userService,
                           UserRepository userRepository,
                           AuthService authService,
                           RedisCacheServiceImpl redisCacheServiceImpl) {
         this.smsService = smsService;
-        this.emailService = emailService;
         this.userService = userService;
         this.userRepository = userRepository;
         this.authService = authService;
