@@ -3,31 +3,32 @@ package com.ironside.challengesphere.service.impl;
 import com.ironside.challengesphere.api.request.CreateSupportTicketRequest;
 import com.ironside.challengesphere.api.request.GeneratePresignedUrlsRequest;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
-import com.ironside.challengesphere.repository.UserRepository;
-import com.ironside.challengesphere.security.IssuedUploadService;
-import com.ironside.challengesphere.security.UploadQuotaService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
 
+import java.lang.reflect.Modifier;
+import java.util.Arrays;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.verifyNoInteractions;
 
 class SupportServiceDisabledTest {
 
-    private UserRepository userRepository;
-    private UploadQuotaService uploadQuotaService;
-    private IssuedUploadService issuedUploadService;
     private SupportServiceImpl service;
 
     @BeforeEach
     void setUp() {
-        userRepository = mock(UserRepository.class);
-        uploadQuotaService = mock(UploadQuotaService.class);
-        issuedUploadService = mock(IssuedUploadService.class);
         service = new SupportServiceImpl();
+    }
+
+    @Test
+    void disabledSupportServiceHasNoNonStaticDependencies() {
+        long nonStaticFieldCount = Arrays.stream(SupportServiceImpl.class.getDeclaredFields())
+                .filter(field -> !Modifier.isStatic(field.getModifiers()))
+                .count();
+
+        assertEquals(0, nonStaticFieldCount);
     }
 
     @Test
@@ -38,7 +39,6 @@ class SupportServiceDisabledTest {
         );
 
         assertEquals(HttpStatus.GONE, error.getStatus());
-        verifyNoInteractions(userRepository, uploadQuotaService, issuedUploadService);
     }
 
     @Test
@@ -49,6 +49,5 @@ class SupportServiceDisabledTest {
         );
 
         assertEquals(HttpStatus.GONE, error.getStatus());
-        verifyNoInteractions(userRepository, uploadQuotaService, issuedUploadService);
     }
 }

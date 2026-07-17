@@ -15,10 +15,13 @@ import com.ironside.challengesphere.service.PushNotificationService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.InOrder;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.util.List;
 import java.util.Optional;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.mockito.ArgumentMatchers.any;
@@ -60,21 +63,33 @@ class NotificationServiceImplTest {
     }
 
     @Test
-    void notifyFollowSendsPushToRecipient() {
+    void notifyFollowSendsPushOnlyAfterTransactionCommit() {
         User recipient = user(1L, "recipient");
         User actor = user(2L, "actor");
         when(userRepository.findById(1L)).thenReturn(Optional.of(recipient));
         when(userRepository.findById(2L)).thenReturn(Optional.of(actor));
         when(preferencesRepository.findByUserId(1L)).thenReturn(Optional.empty());
 
-        service.notifyFollow(1L, 2L);
+        TransactionSynchronizationManager.initSynchronization();
+        try {
+            service.notifyFollow(1L, 2L);
 
-        verify(pushNotificationService).sendInteractionPush(
-                eq(1L),
-                eq("FOLLOW"),
-                eq("@actor started following you"),
-                any(String.class)
-        );
+            verify(notificationRepository).save(any(Notification.class));
+            verify(pushNotificationService, never()).sendInteractionPush(any(), any(), any(), any());
+            List<TransactionSynchronization> synchronizations = TransactionSynchronizationManager.getSynchronizations();
+            assertEquals(1, synchronizations.size());
+
+            synchronizations.forEach(TransactionSynchronization::afterCommit);
+
+            verify(pushNotificationService).sendInteractionPush(
+                    eq(1L),
+                    eq("FOLLOW"),
+                    eq("@actor started following you"),
+                    any(String.class)
+            );
+        } finally {
+            TransactionSynchronizationManager.clearSynchronization();
+        }
     }
 
     @Test

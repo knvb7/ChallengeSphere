@@ -12,18 +12,25 @@ import com.ironside.challengesphere.service.EmailService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
+import org.springframework.http.HttpStatus;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.sql.Timestamp;
 import java.time.Duration;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -68,10 +75,49 @@ class FeatureRequestServiceImplTest {
         assertEquals("CHALLENGES", captor.getValue().getCategory());
         assertEquals("NEW", response.getStatus());
         assertEquals(7L, response.getId());
-        verify(emailService).sendFeatureRequestEmail(
+        InOrder order = inOrder(repository, emailService);
+        order.verify(repository).save(any(FeatureRequest.class));
+        order.verify(emailService).sendFeatureRequestEmail(
                 eq("[ChallengeSphere Feature Request] CHALLENGES from @pranjal"),
                 org.mockito.ArgumentMatchers.contains("Add team challenges")
         );
+    }
+
+    @Test
+    void suspendsAnyCallerTransactionBeforeSavingAndSendingEmail() throws Exception {
+        Transactional transactional = FeatureRequestServiceImpl.class
+                .getMethod("createFeatureRequest", Long.class, CreateFeatureRequest.class)
+                .getAnnotation(Transactional.class);
+
+        assertEquals(Propagation.NOT_SUPPORTED, transactional.propagation());
+    }
+
+    @Test
+    void persistsFeatureRequestBeforePropagatingSmtpFailure() throws Exception {
+        when(userRepository.findById(42L)).thenReturn(Optional.of(user()));
+        when(rateLimitStore.consume(anyString(), eq(5), eq(Duration.ofDays(1))))
+                .thenReturn(new RateLimitStore.Decision(true, 4, 0));
+        when(repository.save(any(FeatureRequest.class))).thenAnswer(invocation -> {
+            FeatureRequest saved = invocation.getArgument(0);
+            saved.setId(7L);
+            return saved;
+        });
+        ChallengeSphereException smtpFailure = new ChallengeSphereException(
+                "Failed to send feature request", HttpStatus.BAD_GATEWAY, null);
+        doThrow(smtpFailure).when(emailService).sendFeatureRequestEmail(anyString(), anyString());
+
+        ChallengeSphereException thrown = assertThrows(
+                ChallengeSphereException.class,
+                () -> service.createFeatureRequest(
+                        42L,
+                        request(CreateFeatureRequest.Category.CHALLENGES, "Add team challenges")
+                )
+        );
+
+        assertSame(smtpFailure, thrown);
+        InOrder order = inOrder(repository, emailService);
+        order.verify(repository).save(any(FeatureRequest.class));
+        order.verify(emailService).sendFeatureRequestEmail(anyString(), anyString());
     }
 
     @Test

@@ -14,6 +14,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
@@ -42,7 +43,7 @@ public class FeatureRequestServiceImpl implements FeatureRequestService {
     }
 
     @Override
-    @Transactional
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public FeatureRequestResponse createFeatureRequest(
             Long userId,
             CreateFeatureRequest request
