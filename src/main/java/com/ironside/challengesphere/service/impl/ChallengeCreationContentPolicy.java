@@ -18,7 +18,7 @@ import java.util.regex.Pattern;
 public final class ChallengeCreationContentPolicy {
     public static final int TITLE_MIN_LENGTH = 5;
     public static final int TITLE_MAX_LENGTH = 80;
-    public static final int DESCRIPTION_MIN_LENGTH = 20;
+    public static final int DESCRIPTION_MIN_LENGTH = 10;
     public static final int DESCRIPTION_MAX_LENGTH = 500;
     public static final int RULES_MIN_LENGTH = 10;
     public static final int RULES_MAX_LENGTH = 1000;
