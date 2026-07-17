@@ -33,6 +33,7 @@
 **Interfaces:**
 - Produces: `void EmailService.sendFeatureRequestEmail(String subject, String html) throws ChallengeSphereException`
 - Guarantees: The recipient is fixed inside `EmailServiceImpl` and cannot be supplied by callers.
+- Sequencing: Keep legacy email methods temporarily so the project compiles while Tasks 2 through 4 remove their callers. Task 5 deletes the legacy methods and implementations.
 
 - [ ] **Step 1: Write failing tests for the narrow capability**
 
@@ -79,17 +80,15 @@ Run:
 
 Expected: compilation fails because `sendFeatureRequestEmail` does not exist.
 
-- [ ] **Step 3: Replace the general email interface**
+- [ ] **Step 3: Add the dedicated email interface method**
 
-Replace `EmailService` with:
+Add this method to `EmailService` without deleting the legacy methods yet:
 
 ```java
-public interface EmailService {
-    void sendFeatureRequestEmail(String subject, String html) throws ChallengeSphereException;
-}
+void sendFeatureRequestEmail(String subject, String html) throws ChallengeSphereException;
 ```
 
-Reduce `EmailServiceImpl` to the required path. Keep its existing exception behavior and use this fixed recipient:
+Add the required path to `EmailServiceImpl`. Keep its existing exception behavior and use this fixed recipient:
 
 ```java
 private static final String FEATURE_REQUEST_RECIPIENT =
@@ -125,7 +124,7 @@ public void sendFeatureRequestEmail(String subject, String html)
 }
 ```
 
-Remove all user, notification, digest, plain-email, arbitrary-recipient, and frontend URL code from the implementation.
+Do not remove the legacy methods from `EmailService` or `EmailServiceImpl` in this task. They remain only as a compile-safe transition until their callers are removed in Tasks 2 through 4.
 
 Change `FeatureRequestServiceImpl` to:
 
@@ -442,7 +441,19 @@ git commit -m "refactor: disable email-only support tickets"
 - Consumes: All preceding task outputs.
 - Produces: A deployable JAR with one outbound email method and one fixed recipient.
 
-- [ ] **Step 1: Audit all email symbols and recipients**
+- [ ] **Step 1: Delete the transitional general email API**
+
+After Tasks 2 through 4 have removed all legacy callers, replace `EmailService` with:
+
+```java
+public interface EmailService {
+    void sendFeatureRequestEmail(String subject, String html) throws ChallengeSphereException;
+}
+```
+
+Delete from `EmailServiceImpl` all welcome, password-reset, digest, plain-email, arbitrary-recipient, and frontend URL code. Keep only the fixed-recipient feature-request implementation from Task 1.
+
+- [ ] **Step 2: Audit all email symbols and recipients**
 
 Run:
 
@@ -454,7 +465,7 @@ rg -n "@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}" src/main/java | rg -i "mail|email|recipie
 
 Expected: production email references exist only in `EmailService`, `EmailServiceImpl`, and `FeatureRequestServiceImpl`; the only fixed recipient is `ironside-dev@challengesphere.com`.
 
-- [ ] **Step 2: Run all focused tests**
+- [ ] **Step 3: Run all focused tests**
 
 Run:
 
@@ -464,7 +475,7 @@ Run:
 
 Expected: all tests relevant to this change pass.
 
-- [ ] **Step 3: Run the full backend suite**
+- [ ] **Step 4: Run the full backend suite**
 
 Run:
 
@@ -474,7 +485,7 @@ Run:
 
 Expected: no new failure categories. Record the existing baseline failures separately if they remain.
 
-- [ ] **Step 4: Build and inspect the release artifact**
+- [ ] **Step 5: Build and inspect the release artifact**
 
 Run:
 
@@ -486,16 +497,16 @@ git diff --check
 
 Expected: package succeeds, a SHA-256 checksum is printed, and `git diff --check` has no output.
 
-- [ ] **Step 5: Commit any test-only audit corrections**
+- [ ] **Step 6: Commit the final email boundary and any audit corrections**
 
-If verification required test corrections, commit only those files:
+Commit the final interface reduction, implementation cleanup, and any required test corrections:
 
 ```bash
-git add src/test/java/com/ironside/challengesphere
-git commit -m "test: verify feature-request-only email policy"
+git add src/main/java/com/ironside/challengesphere/service/EmailService.java \
+  src/main/java/com/ironside/challengesphere/service/impl/EmailServiceImpl.java \
+  src/test/java/com/ironside/challengesphere
+git commit -m "refactor: enforce feature-request-only email policy"
 ```
-
-If no corrections were required, skip this commit.
 
 ---
 
