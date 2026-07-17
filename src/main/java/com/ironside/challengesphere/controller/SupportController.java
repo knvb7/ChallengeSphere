@@ -1,13 +1,16 @@
 package com.ironside.challengesphere.controller;
 
 import com.ironside.challengesphere.api.request.CreateSupportTicketRequest;
+import com.ironside.challengesphere.api.request.CreateFeatureRequest;
 import com.ironside.challengesphere.api.request.GeneratePresignedUrlsRequest;
+import com.ironside.challengesphere.api.response.FeatureRequestResponse;
 import com.ironside.challengesphere.api.response.PresignedUrlsResponse;
 import com.ironside.challengesphere.api.response.SupportTicketResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.security.SecurityAccess;
 import com.ironside.challengesphere.security.UserPrincipal;
 import com.ironside.challengesphere.service.SupportService;
+import com.ironside.challengesphere.service.FeatureRequestService;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -21,9 +24,14 @@ import org.springframework.web.bind.annotation.RestController;
 public class SupportController {
 
     private final SupportService supportService;
+    private final FeatureRequestService featureRequestService;
 
-    public SupportController(SupportService supportService) {
+    public SupportController(
+            SupportService supportService,
+            FeatureRequestService featureRequestService
+    ) {
         this.supportService = supportService;
+        this.featureRequestService = featureRequestService;
     }
 
     @PostMapping("/presigned-urls")
@@ -43,5 +51,13 @@ public class SupportController {
         Long userId = SecurityAccess.requireUserId(principal);
         return ResponseEntity.ok(supportService.createTicket(userId, request));
     }
-}
 
+    @PostMapping("/feature-requests")
+    public ResponseEntity<FeatureRequestResponse> createFeatureRequest(
+            @AuthenticationPrincipal UserPrincipal principal,
+            @Valid @RequestBody CreateFeatureRequest request
+    ) throws ChallengeSphereException {
+        Long userId = SecurityAccess.requireUserId(principal);
+        return ResponseEntity.ok(featureRequestService.createFeatureRequest(userId, request));
+    }
+}
