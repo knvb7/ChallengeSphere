@@ -13,7 +13,6 @@ import com.ironside.challengesphere.repository.NotificationRepository;
 import com.ironside.challengesphere.repository.UserBlockRepository;
 import com.ironside.challengesphere.repository.UserPreferencesRepository;
 import com.ironside.challengesphere.repository.UserRepository;
-import com.ironside.challengesphere.service.EmailService;
 import com.ironside.challengesphere.service.NotificationService;
 import com.ironside.challengesphere.service.PushNotificationService;
 import org.apache.logging.log4j.LogManager;
@@ -51,8 +50,6 @@ public class NotificationServiceImpl implements NotificationService {
     private static final Logger logger = LogManager.getLogger(NotificationServiceImpl.class);
 
     private static final int PUSH_NOTIFICATIONS_BIT = 1;
-    private static final int EMAIL_NOTIFICATIONS_BIT = 2;
-
     private static final String TYPE_FOLLOW = "FOLLOW";
     private static final String TYPE_SUBMISSION = "SUBMISSION";
     private static final String TYPE_GLORY = "GLORY";
@@ -93,7 +90,6 @@ public class NotificationServiceImpl implements NotificationService {
     private final FollowRepository followRepository;
     private final UserBlockRepository userBlockRepository;
     private final UserPreferencesRepository preferencesRepository;
-    private final EmailService emailService;
     private final PushNotificationService pushNotificationService;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
@@ -112,7 +108,6 @@ public class NotificationServiceImpl implements NotificationService {
                                    FollowRepository followRepository,
                                    UserBlockRepository userBlockRepository,
                                    UserPreferencesRepository preferencesRepository,
-                                   EmailService emailService,
                                    PushNotificationService pushNotificationService) {
         this.notificationRepository = notificationRepository;
         this.userRepository = userRepository;
@@ -120,7 +115,6 @@ public class NotificationServiceImpl implements NotificationService {
         this.followRepository = followRepository;
         this.userBlockRepository = userBlockRepository;
         this.preferencesRepository = preferencesRepository;
-        this.emailService = emailService;
         this.pushNotificationService = pushNotificationService;
     }
 
@@ -129,19 +123,6 @@ public class NotificationServiceImpl implements NotificationService {
     public Notification createNotification(Long userId, String type, String message, String actionObject) {
         Notification saved = notificationRepository.save(buildNotification(userId, type, message, actionObject));
         logger.info("Created notification id={} for userId={} type={}", saved.getId(), userId, type);
-        return saved;
-    }
-
-    @Override
-    @Transactional
-    public Notification createAndEmail(Long userId, String type, String message, String actionObject) {
-        Notification saved = createNotification(userId, type, message, actionObject);
-        userRepository.findById(userId).ifPresent(user -> {
-            UserPreferences prefs = preferencesRepository.findByUserId(userId).orElse(null);
-            if (allowsEmail(user, prefs, type)) {
-                emailService.sendPlainEmail(user.getEmailId(), subjectFor(type), message);
-            }
-        });
         return saved;
     }
 
@@ -221,7 +202,6 @@ public class NotificationServiceImpl implements NotificationService {
                     pushes.add(new PushDispatch(recipient.getId(), TYPE_SUBMISSION, message, actionObject));
                 }
             }
-            sendEmailIfAllowed(recipient, prefs, TYPE_SUBMISSION, message);
         }
 
         if (!toSave.isEmpty()) {
@@ -306,7 +286,6 @@ public class NotificationServiceImpl implements NotificationService {
                         pushes.add(new PushDispatch(recipient.getId(), TYPE_CHALLENGE_INVITE, message, actionObject));
                     }
                 }
-//                sendEmailIfAllowed(recipient, prefs, TYPE_CHALLENGE_INVITE, message);
             }
 
             if (!toSave.isEmpty()) {
@@ -364,7 +343,6 @@ public class NotificationServiceImpl implements NotificationService {
                     pushes.add(new PushDispatch(recipient.getId(), TYPE_CHALLENGE_UPDATE, message, actionObject));
                 }
             }
-            sendEmailIfAllowed(recipient, prefs, TYPE_CHALLENGE_UPDATE, message);
         }
 
         if (!toSave.isEmpty()) {
@@ -451,15 +429,10 @@ public class NotificationServiceImpl implements NotificationService {
         Notification saved = null;
         if (allowsInbox(recipient)) {
             saved = notificationRepository.save(buildNotification(recipient.getId(), type, message, actionObject));
-            logger.info("Created notification id={} for userId={} type={}", saved.getId(), recipient.getId(), type);
             if (allowsPush(recipient, prefs, type)) {
                 dispatchPushAfterCommit(recipient.getId(), type, message, actionObject);
             }
-        } else {
-            logger.debug("In-app notification suppressed for ineligible userId={} type={}",
-                    recipient == null ? null : recipient.getId(), type);
         }
-        sendEmailIfAllowed(recipient, prefs, type, message);
         return saved;
     }
 
@@ -499,12 +472,6 @@ public class NotificationServiceImpl implements NotificationService {
         return n;
     }
 
-    private void sendEmailIfAllowed(User user, UserPreferences prefs, String type, String message) {
-        if (allowsEmail(user, prefs, type)) {
-            emailService.sendPlainEmail(user.getEmailId(), subjectFor(type), message);
-        }
-    }
-
     private boolean allowsInbox(User user) {
         return user != null
                 && user.getId() != null
@@ -519,17 +486,6 @@ public class NotificationServiceImpl implements NotificationService {
         boolean legacyPushEnabled = mask == null || (mask & PUSH_NOTIFICATIONS_BIT) == PUSH_NOTIFICATIONS_BIT;
         return legacyPushEnabled
                 && (prefs == null || Boolean.TRUE.equals(prefs.getPushNotificationsEnabled()))
-                && allowsType(prefs, type);
-    }
-
-    private boolean allowsEmail(User user, UserPreferences prefs, String type) {
-        if (user == null || user.getEmailId() == null || user.getEmailId().isBlank()) {
-            return false;
-        }
-        Integer mask = user.getNotifications();
-        boolean legacyEmailEnabled = mask != null && (mask & EMAIL_NOTIFICATIONS_BIT) == EMAIL_NOTIFICATIONS_BIT;
-        return legacyEmailEnabled
-                && (prefs == null || Boolean.TRUE.equals(prefs.getEmailNotificationsEnabled()))
                 && allowsType(prefs, type);
     }
 
@@ -655,14 +611,6 @@ public class NotificationServiceImpl implements NotificationService {
         return user.getUsername() == null || user.getUsername().isBlank()
                 ? "Someone"
                 : "@" + user.getUsername();
-    }
-
-    private String subjectFor(String type) {
-        String normalized = safe(type).replace('_', ' ').toLowerCase();
-        if (normalized.isBlank()) {
-            return "[ChallengeSphere] New notification";
-        }
-        return "[ChallengeSphere] " + Character.toUpperCase(normalized.charAt(0)) + normalized.substring(1);
     }
 
     private String safe(String value) {

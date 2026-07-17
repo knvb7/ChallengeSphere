@@ -10,7 +10,6 @@ import com.ironside.challengesphere.repository.NotificationRepository;
 import com.ironside.challengesphere.repository.UserBlockRepository;
 import com.ironside.challengesphere.repository.UserPreferencesRepository;
 import com.ironside.challengesphere.repository.UserRepository;
-import com.ironside.challengesphere.service.EmailService;
 import com.ironside.challengesphere.service.PushNotificationService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -45,7 +44,6 @@ class NotificationInboxDeliverySeparationTest {
                 mock(FollowRepository.class),
                 mock(UserBlockRepository.class),
                 preferencesRepository,
-                mock(EmailService.class),
                 pushNotificationService
         );
         when(notificationRepository.save(any(Notification.class)))

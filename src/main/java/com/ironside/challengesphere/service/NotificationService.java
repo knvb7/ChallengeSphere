@@ -10,8 +10,6 @@ public interface NotificationService {
 
     Notification createNotification(Long userId, String type, String message, String actionObject);
 
-    Notification createAndEmail(Long userId, String type, String message, String actionObject);
-
     Notification notifyFollow(Long recipientUserId, Long actorUserId);
 
     int notifySubmission(Submission submission, Challenge challenge, Collection<Long> recipientUserIds);
