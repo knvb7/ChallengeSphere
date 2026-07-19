@@ -55,8 +55,7 @@ public class LeaderboardServiceImpl implements LeaderboardService {
     
     // Scoring weights for different activities
     private static final double SUBMISSION_POINTS = 10.0;
-    private static final double GLORY_POINTS = 1.0;
-    private static final double STREAK_BONUS_POINTS = 5.0;
+    private static final double ADDITIONAL_MEDIA_POINTS = 1.0;
     
     @Autowired
     private ChallengeRepository challengeRepository;
@@ -100,47 +99,40 @@ public class LeaderboardServiceImpl implements LeaderboardService {
 
             requireLeaderboardAccess(challenge, request.getViewerUserId());
             
-            List<LeaderboardEntryDTO> entries = getLeaderboardEntriesFromCache(challengeId, limit);
+            List<LeaderboardEntry> dbEntries =
+                    leaderboardEntryRepository.findTopWithUserByChallengeId(
+                            challengeId, PageRequest.of(0, limit));
 
-            int totalParticipants;
-            if (!entries.isEmpty()) {
-                totalParticipants = (int) cacheService.getLeaderboardSize(challengeId);
-            } else {
-                List<LeaderboardEntry> dbEntries =
-                        leaderboardEntryRepository.findTopWithUserByChallengeId(
-                                challengeId, PageRequest.of(0, limit));
-
-                if (dbEntries.isEmpty()) {
-                    logger.info("No leaderboard entries found in DB for challenge {}", challengeId);
-                    return LeaderboardResponse.success(
-                            challengeId,
-                            challenge.getTitle(),
-                            request.getType().name(),
-                            new ArrayList<>(),
-                            0
-                    );
-                }
-
-                entries = new ArrayList<>();
-                for (int i = 0; i < dbEntries.size(); i++) {
-                    LeaderboardEntry le = dbEntries.get(i);
-                    User user = le.getUser();
-                    entries.add(LeaderboardEntryDTO.builder()
-                            .userId(user.getId())
-                            .username(user.getUsername())
-                            .displayName(user.getUsername())
-                            .profilePictureUrl(readableProfilePic(user.getId(), user.getProfilePicUrl()))
-                            .rank(i + 1L)
-                            .score(le.getScore())
-                            .submissionCount(le.getSubmissionCount())
-                            .gloriesCount((long) le.getGloryPoints())
-                            .currentStreak(le.getStreakDays())
-                            .build());
-                    cacheService.addToLeaderboard(challengeId, user.getId(), le.getScore());
-                }
-
-                totalParticipants = leaderboardEntryRepository.countParticipants(challengeId).intValue();
+            if (dbEntries.isEmpty()) {
+                logger.info("No leaderboard entries found in DB for challenge {}", challengeId);
+                return LeaderboardResponse.success(
+                        challengeId,
+                        challenge.getTitle(),
+                        request.getType().name(),
+                        new ArrayList<>(),
+                        0
+                );
             }
+
+            List<LeaderboardEntryDTO> entries = new ArrayList<>();
+            for (int i = 0; i < dbEntries.size(); i++) {
+                LeaderboardEntry le = dbEntries.get(i);
+                User user = le.getUser();
+                entries.add(LeaderboardEntryDTO.builder()
+                        .userId(user.getId())
+                        .username(user.getUsername())
+                        .displayName(user.getUsername())
+                        .profilePictureUrl(readableProfilePic(user.getId(), user.getProfilePicUrl()))
+                        .rank(i + 1L)
+                        .score(le.getScore())
+                        .submissionCount(le.getSubmissionCount())
+                        .gloriesCount((long) le.getGloryPoints())
+                        .currentStreak(le.getStreakDays())
+                        .build());
+                cacheService.addToLeaderboard(challengeId, user.getId(), le.getScore());
+            }
+
+            int totalParticipants = leaderboardEntryRepository.countParticipants(challengeId).intValue();
             
             // Build response
             LeaderboardResponse response;
@@ -200,25 +192,6 @@ public class LeaderboardServiceImpl implements LeaderboardService {
         logger.debug("Getting user rank for challenge: {}, user: {}", challengeId, userId);
 
         try {
-            Optional<Long> rankOpt = cacheService.getUserRank(challengeId, userId);
-            Optional<Double> scoreOpt = cacheService.getUserScore(challengeId, userId);
-            long cachedTotalParticipants = cacheService.getLeaderboardSize(challengeId);
-
-            if (rankOpt.isPresent() && scoreOpt.isPresent() && cachedTotalParticipants > 0) {
-                long rank = rankOpt.get();
-                double score = scoreOpt.get();
-                double percentile = cachedTotalParticipants > 1
-                        ? ((double) (cachedTotalParticipants - rank) / (cachedTotalParticipants - 1)) * 100
-                        : 100.0;
-                return UserRankDTO.builder()
-                        .userId(userId)
-                        .rank(rank)
-                        .score(score)
-                        .totalParticipants(cachedTotalParticipants)
-                        .percentile(Math.round(percentile * 100.0) / 100.0)
-                        .build();
-            }
-
             Optional<LeaderboardEntry> entryOpt =
                     leaderboardEntryRepository.findByChallengeIdAndUserId(challengeId, userId);
 
@@ -447,17 +420,15 @@ public class LeaderboardServiceImpl implements LeaderboardService {
         try {
             LeaderboardEntry entry = getOrCreateLeaderboardEntry(challengeId, userId);
             double currentScore = entry.getScore() == null ? 0.0 : entry.getScore();
-            double newScore = Math.max(0.0, currentScore + scoreDelta);
             int currentGlories = entry.getGloryPoints() == null ? 0 : entry.getGloryPoints();
             int newGlories = Math.max(0, currentGlories + gloryDelta);
 
-            entry.setScore(newScore);
             entry.setGloryPoints(newGlories);
             leaderboardEntryRepository.save(entry);
 
-            logger.info("Glory score updated: challenge={}, userId={}, scoreDelta={}, gloryDelta={}, reason={}, newScore={}",
-                challengeId, userId, scoreDelta, gloryDelta, reason, newScore);
-            syncLeaderboardEntry(challengeId, userId, newScore);
+            logger.info("Glory count updated without changing points: challenge={}, userId={}, gloryDelta={}, reason={}, points={}",
+                challengeId, userId, gloryDelta, reason, currentScore);
+            syncLeaderboardEntry(challengeId, userId, currentScore);
         } catch (Exception e) {
             logger.error("Error adjusting glory score: challenge={}, user={}, scoreDelta={}, gloryDelta={}",
                 challengeId, userId, scoreDelta, gloryDelta);
@@ -507,6 +478,10 @@ public class LeaderboardServiceImpl implements LeaderboardService {
             // Get submitted-day counts per user. A challenge day counts once even if
             // it has multiple active submissions or multiple media files.
             Map<Long, Long> submissionCounts = getSubmissionCounts(challengeId, userIds);
+
+            // Points come only from submitted media: 10 points for the first image
+            // on a challenge day, then 1 point for every additional image that day.
+            Map<Long, Double> submissionScores = getSubmissionScores(challengeId, userIds);
             
             // Get glory counts per user
             Map<Long, Long> gloryCounts = getGloryCounts(challengeId, userIds);
@@ -517,7 +492,7 @@ public class LeaderboardServiceImpl implements LeaderboardService {
                 long glories = gloryCounts.getOrDefault(userId, 0L);
                 int streak = calculateStreak(challengeId, userId);
                 
-                double score = calculateOverallScore(submissions, glories, streak);
+                double score = submissionScores.getOrDefault(userId, 0.0);
                 
                 // Create/update DB entry
                 User user = userMap.get(userId);
@@ -587,17 +562,6 @@ public class LeaderboardServiceImpl implements LeaderboardService {
     // ==================== HELPER METHODS ====================
     
     /**
-     * Calculate overall score based on submissions, glories, and streak
-     */
-    private double calculateOverallScore(long submissions, long glories, int streak) {
-        double submissionScore = submissions * SUBMISSION_POINTS;
-        double gloryScore = glories * GLORY_POINTS;
-        double streakBonus = streak * STREAK_BONUS_POINTS;
-        
-        return submissionScore + gloryScore + streakBonus;
-    }
-    
-    /**
      * Get submitted-day counts per user for a challenge.
      */
     private Map<Long, Long> getSubmissionCounts(Long challengeId, List<Long> userIds) {
@@ -620,6 +584,47 @@ public class LeaderboardServiceImpl implements LeaderboardService {
             logger.error("Error getting submitted-day counts for challenge {}: {}", challengeId, e.getClass().getSimpleName());
             return new HashMap<>();
         }
+    }
+
+    private Map<Long, Double> getSubmissionScores(Long challengeId, List<Long> userIds) {
+        try {
+            return submissionRepository.findByChallengeIdAndUserIdIn(challengeId, userIds).stream()
+                    .filter(submission -> Boolean.TRUE.equals(submission.getActive()))
+                    .collect(Collectors.groupingBy(Submission::getUserId))
+                    .entrySet().stream()
+                    .collect(Collectors.toMap(
+                            Map.Entry::getKey,
+                            entry -> calculateSubmissionPoints(entry.getValue())
+                    ));
+        } catch (Exception e) {
+            logger.error("Error calculating submission points for challenge {}: {}", challengeId, e.getClass().getSimpleName());
+            return new HashMap<>();
+        }
+    }
+
+    private double calculateSubmissionPoints(List<Submission> submissions) {
+        Map<Integer, Integer> mediaCountByDay = submissions.stream()
+                .filter(submission -> Boolean.TRUE.equals(submission.getActive()))
+                .filter(submission -> submission.getDayNumber() != null)
+                .collect(Collectors.groupingBy(
+                        Submission::getDayNumber,
+                        Collectors.summingInt(submission -> countMedia(submission.getMediaUrls()))
+                ));
+
+        return mediaCountByDay.values().stream()
+                .mapToDouble(mediaCount -> SUBMISSION_POINTS
+                        + Math.max(0, mediaCount - 1) * ADDITIONAL_MEDIA_POINTS)
+                .sum();
+    }
+
+    private int countMedia(String mediaUrls) {
+        if (mediaUrls == null || mediaUrls.isBlank()) {
+            return 0;
+        }
+        return (int) List.of(mediaUrls.split(",")).stream()
+                .map(String::trim)
+                .filter(value -> !value.isBlank())
+                .count();
     }
     
     /**

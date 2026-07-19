@@ -202,8 +202,14 @@ public interface UserRepository extends JpaRepository<User, Long> {
 
     @Transactional
     @Modifying
-    @Query(value = "UPDATE challengesphere.users SET challenges_accepted = challenges_accepted + 1 WHERE id = :userId", nativeQuery = true)
-    int increaseChallengeAcceptedCountForAUser(@Param("userId") Long userId);
+    @Query(value = """
+            UPDATE challengesphere.users
+            SET challenges_accepted = GREATEST(COALESCE(challenges_accepted, 0) + :delta, 0)
+            WHERE id = :userId
+            """, nativeQuery = true)
+    int adjustChallengeAcceptedCountForAUser(
+            @Param("userId") Long userId,
+            @Param("delta") int delta);
 
     @Query(value = "SELECT * FROM challengesphere.users WHERE LOWER(email_id) = LOWER(:emailId) AND active = true", nativeQuery = true)
     Optional<User> findByEmailIdIgnoreCase(@Param("emailId") String emailId);

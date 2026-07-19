@@ -173,6 +173,9 @@ public class RateLimitingFilter extends OncePerRequestFilter {
         if ("POST".equals(method) && path.equals("/api/v1/support/tickets")) {
             return new Limit("support-ticket", 10, Duration.ofMinutes(10));
         }
+        if ("POST".equals(method) && path.equals("/api/v1/support/feature-requests")) {
+            return new Limit("feature-request", 10, Duration.ofMinutes(10));
+        }
         if ("PUT".equals(method) && path.matches("^/api/v1/submissions/\\d+$")) {
             return new Limit("submission-reupload", 10, Duration.ofMinutes(10));
         }

@@ -155,26 +155,7 @@ public class SubmissionServiceImpl implements SubmissionService {
                 );
             }
 
-            // Validate user is a participant in the challenge
-            List<UserChallenge> userChallenges = userChallengeRepository.findByUserIdAndChallengeId(userId, challengeId)
-                    .stream().toList();
-
-            if (userChallenges.isEmpty()) {
-                throw new ChallengeSphereException(
-                        "User is not a participant of this challenge. Please join the challenge first.",
-                        HttpStatus.BAD_REQUEST,
-                        logger
-                );
-            }
-
-            UserChallenge userChallenge = userChallenges.get(0);
-            if (!userChallenge.getActive()) {
-                throw new ChallengeSphereException(
-                        "User has left this challenge",
-                        HttpStatus.BAD_REQUEST,
-                        logger
-                );
-            }
+            UserChallenge userChallenge = requireActiveChallengeMembership(userId, challengeId);
 
             boolean oneOffChallenge = isOneOffChallenge(challenge);
             if (oneOffChallenge) {
@@ -210,7 +191,6 @@ public class SubmissionServiceImpl implements SubmissionService {
             long activeSubmissionCount = existingSubmissions.stream()
                     .filter(submission -> Boolean.TRUE.equals(submission.getActive()))
                     .count();
-            boolean shouldAwardLeaderboardSubmissionPoints = !oneOffChallenge && activeSubmissionCount == 0;
             if (oneOffChallenge && activeSubmissionCount >= 1) {
                 logger.warn("One-off submission already exists for user: {}, challenge: {}", userId, challengeId);
                 throw new ChallengeSphereException(
@@ -282,19 +262,15 @@ public class SubmissionServiceImpl implements SubmissionService {
 
             if (oneOffChallenge) {
                 markOneOffChallengeCompleted(userChallenge);
-            } else if (shouldAwardLeaderboardSubmissionPoints) {
+            } else {
                 try {
-                    leaderboardService.incrementScore(challengeId, userId, 10, "New submission for day " + dayNumber);
-                    logger.debug("Updated leaderboard score for user: {} in challenge: {}", userId, challengeId);
+                    leaderboardService.rebuildLeaderboard(challengeId);
+                    logger.debug("Rebuilt points leaderboard for user: {} in challenge: {}", userId, challengeId);
                 } catch (Exception e) {
                     // Don't fail the submission if leaderboard update fails
-                    logger.warn("Failed to update leaderboard score for user: {} in challenge: {}: {}",
+                    logger.warn("Failed to rebuild leaderboard points for user: {} in challenge: {}: {}",
                             userId, challengeId, e.getClass().getSimpleName());
                 }
-            } else {
-                logger.debug(
-                        "Skipped leaderboard submission points for user: {} in challenge: {}, day: {} because the day was already counted",
-                        userId, challengeId, dayNumber);
             }
 
             if (Boolean.TRUE.equals(savedSubmission.getActive())) {
@@ -457,6 +433,7 @@ public class SubmissionServiceImpl implements SubmissionService {
                             HttpStatus.NOT_FOUND,
                             logger
                     ));
+            requireActiveChallengeMembership(userId, submission.getChallengeId());
             ensureSubmissionDayAcceptsUpload(challenge, submission.getDayNumber());
 
             String storedMediaKeys = mediaUrlService.toStoredMediaUrlsString(mediaKeys);
@@ -501,6 +478,12 @@ public class SubmissionServiceImpl implements SubmissionService {
 
             Submission savedSubmission = submissionRepository.save(submission);
             invalidateSubmissionCaches(savedSubmission);
+            try {
+                leaderboardService.rebuildLeaderboard(savedSubmission.getChallengeId());
+            } catch (Exception e) {
+                logger.warn("Failed to rebuild leaderboard after reuploading submission {}: {}",
+                        submissionId, e.getClass().getSimpleName());
+            }
             logger.info("Successfully reuploaded submission: {} for user: {}", submissionId, userId);
             return SubmissionResponse.success(savedSubmission, mediaKeys);
         } catch (ChallengeSphereException e) {
@@ -946,6 +929,33 @@ public class SubmissionServiceImpl implements SubmissionService {
                     logger
             );
         }
+    }
+
+    private UserChallenge requireActiveChallengeMembership(Long userId, Long challengeId)
+            throws ChallengeSphereException {
+        UserChallenge userChallenge = userChallengeRepository.findByUserIdAndChallengeId(userId, challengeId)
+                .orElseThrow(() -> new ChallengeSphereException(
+                        "User is not a participant of this challenge. Please join the challenge first.",
+                        HttpStatus.BAD_REQUEST,
+                        logger
+                ));
+
+        if (Boolean.TRUE.equals(userChallenge.getBanned())) {
+            throw new ChallengeSphereException(
+                    "You were removed from this challenge by its creator.",
+                    HttpStatus.FORBIDDEN,
+                    logger
+            );
+        }
+        if (!Boolean.TRUE.equals(userChallenge.getActive())) {
+            throw new ChallengeSphereException(
+                    "User has left this challenge",
+                    HttpStatus.BAD_REQUEST,
+                    logger
+            );
+        }
+
+        return userChallenge;
     }
 
     private boolean isImageMediaUrl(String value) {

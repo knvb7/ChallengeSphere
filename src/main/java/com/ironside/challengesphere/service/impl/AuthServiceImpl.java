@@ -18,6 +18,7 @@ import com.ironside.challengesphere.security.AuthTokenStore;
 import com.ironside.challengesphere.security.JwtService;
 import com.ironside.challengesphere.service.AuthService;
 import com.ironside.challengesphere.service.UserService;
+import com.ironside.challengesphere.util.UsernamePolicy;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.BeanUtils;
@@ -498,9 +499,10 @@ public class AuthServiceImpl implements AuthService {
     }
 
     private String generateUsername(String email, String name) {
-        String base = (name != null && !name.isBlank())
-                ? name.toLowerCase().replaceAll("[^a-z0-9_]", "_")
-                : email.split("@")[0].replaceAll("[^a-z0-9_]", "_");
+        String rawBase = (name != null && !name.isBlank())
+                ? name
+                : email.split("@")[0];
+        String base = UsernamePolicy.sanitizeGeneratedUsernameBase(rawBase);
         base = base.length() > 20 ? base.substring(0, 20) : base;
         String candidate = base;
         // append random suffix until unique

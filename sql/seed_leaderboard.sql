@@ -4,10 +4,9 @@
 -- has joined a challenge (user_challenges table).
 --
 -- Scoring formula (mirrors LeaderboardServiceImpl logic):
---   base          = submission_count * 10
---   glory_bonus   = total glories received on those submissions * 2
---   streak_bonus  = current_streak * 5
---   score         = base + glory_bonus + streak_bonus
+--   10 points for the first image submitted on a challenge day
+--   +1 point for every additional image submitted on that day
+--   glories and streaks are tracked but do not change points
 --
 -- Safe to re-run: uses ON CONFLICT DO UPDATE to refresh scores.
 --
@@ -18,20 +17,38 @@
 BEGIN;
 
 -- ── Step 1: Compute per-user per-challenge stats from live data ───────────
-WITH submission_stats AS (
-    -- Count active submissions and sum glories received per (user, challenge)
+WITH daily_media AS (
     SELECT
         s.user_id,
         s.challenge_id,
-        COUNT(*)                   AS submission_count,
+        s.day_number,
+        SUM(
+            CASE
+                WHEN s.media_urls IS NULL OR BTRIM(s.media_urls) = '' THEN 0
+                ELSE CARDINALITY(REGEXP_SPLIT_TO_ARRAY(s.media_urls, '\s*,\s*'))
+            END
+        ) AS media_count,
         COALESCE(SUM(s.glories_count), 0) AS total_glories,
         MAX(s.submission_time)     AS last_submission_at,
-        MIN(s.submission_time)     AS first_submission_at,
-        -- streak = length of the longest consecutive day run ending at the max day
-        MAX(s.day_number)          AS max_day
+        MIN(s.submission_time)     AS first_submission_at
     FROM challengesphere.submissions s
     WHERE s.active = true
-    GROUP BY s.user_id, s.challenge_id
+      AND s.day_number IS NOT NULL
+    GROUP BY s.user_id, s.challenge_id, s.day_number
+),
+
+submission_stats AS (
+    SELECT
+        user_id,
+        challenge_id,
+        COUNT(*) AS submission_count,
+        SUM(total_glories) AS total_glories,
+        SUM(10 + GREATEST(media_count - 1, 0))::DOUBLE PRECISION AS points,
+        MAX(last_submission_at) AS last_submission_at,
+        MIN(first_submission_at) AS first_submission_at,
+        MAX(day_number) AS max_day
+    FROM daily_media
+    GROUP BY user_id, challenge_id
 ),
 
 streak_calc AS (
@@ -85,10 +102,7 @@ scored AS (
         COALESCE(st.submission_count, 0)                        AS submission_count,
         COALESCE(st.total_glories, 0)                           AS glory_points,
         COALESCE(cs.current_streak, 0)                          AS streak_days,
-        -- score formula
-        (COALESCE(st.submission_count, 0) * 10
-         + COALESCE(st.total_glories, 0) * 2
-         + COALESCE(cs.current_streak, 0) * 5)::DOUBLE PRECISION AS score,
+        COALESCE(st.points, 0)::DOUBLE PRECISION                AS score,
         st.last_submission_at,
         st.first_submission_at
     FROM challengesphere.user_challenges uc

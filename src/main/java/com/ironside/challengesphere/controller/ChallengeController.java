@@ -31,6 +31,7 @@ import com.ironside.challengesphere.api.request.GetPopularChallengesRequest;
 import com.ironside.challengesphere.api.request.GetUserChallengesRequest;
 import com.ironside.challengesphere.api.request.JoinChallengeRequest;
 import com.ironside.challengesphere.api.request.LeaveChallengeRequest;
+import com.ironside.challengesphere.api.request.RemoveParticipantRequest;
 import com.ironside.challengesphere.api.response.ChallengeCreateResponse;
 import com.ironside.challengesphere.api.response.ChallengeDetailResponse;
 import com.ironside.challengesphere.api.response.ChallengeParticipantsResponse;
@@ -166,6 +167,21 @@ public class ChallengeController {
         Long actorUserId = SecurityAccess.requireUserId(principal);
         request.setUserIds(List.of(actorUserId));
         LeaveChallengeResponse response = challengeService.leaveChallenge(request);
+        return ResponseEntity.ok(response);
+    }
+
+    @PostMapping("/{challengeId}/participants/{participantUserId}/remove")
+    public ResponseEntity<LeaveChallengeResponse> removeParticipant(
+            @AuthenticationPrincipal UserPrincipal principal,
+            @PathVariable Long challengeId,
+            @PathVariable Long participantUserId,
+            @Valid @RequestBody RemoveParticipantRequest request) throws ChallengeSphereException {
+        Long actorUserId = SecurityAccess.requireUserId(principal);
+        LeaveChallengeResponse response = challengeService.removeParticipant(
+                challengeId,
+                actorUserId,
+                participantUserId,
+                request.getReason());
         return ResponseEntity.ok(response);
     }
 

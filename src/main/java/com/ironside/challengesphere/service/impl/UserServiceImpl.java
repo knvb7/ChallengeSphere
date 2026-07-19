@@ -44,6 +44,7 @@ import com.ironside.challengesphere.repository.UserRepository;
 import com.ironside.challengesphere.security.AuthTokenStore;
 import com.ironside.challengesphere.service.NotificationService;
 import com.ironside.challengesphere.service.UserService;
+import com.ironside.challengesphere.util.UsernamePolicy;
 
 @Service
 public class UserServiceImpl implements UserService {
@@ -320,6 +321,13 @@ public class UserServiceImpl implements UserService {
 
             if (updateUserRequest.getUsername() != null && !updateUserRequest.getUsername().trim().isEmpty()) {
                 String requestedUsername = updateUserRequest.getUsername().trim();
+                if (UsernamePolicy.containsReservedKeyword(requestedUsername)) {
+                    throw new ChallengeSphereException(
+                            UsernamePolicy.RESERVED_KEYWORD_MESSAGE,
+                            HttpStatus.BAD_REQUEST,
+                            logger
+                    );
+                }
                 if (!requestedUsername.equalsIgnoreCase(user.getUsername())
                         && userRepository.existsByUsernameIgnoreCaseAndIdNot(requestedUsername, userId)) {
                     throw new ChallengeSphereException(
@@ -834,6 +842,13 @@ public class UserServiceImpl implements UserService {
         try {
             // Validate if user already exists
             if (request.getUsername() != null) {
+                if (UsernamePolicy.containsReservedKeyword(request.getUsername())) {
+                    throw new ChallengeSphereException(
+                            UsernamePolicy.RESERVED_KEYWORD_MESSAGE,
+                            HttpStatus.BAD_REQUEST,
+                            logger
+                    );
+                }
                 Optional<User> existingUser = userRepository.findByUsername(request.getUsername());
                 if (existingUser.isPresent()) {
                     logger.warn("Registration rejected because username already exists");

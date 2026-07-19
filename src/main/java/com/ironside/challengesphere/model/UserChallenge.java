@@ -32,4 +32,16 @@ public class UserChallenge {
 
     @Column(name = "active", columnDefinition = "BOOLEAN DEFAULT TRUE")
     private Boolean active = true;
+
+    @Column(name = "banned", nullable = false, columnDefinition = "BOOLEAN DEFAULT FALSE")
+    private Boolean banned = false;
+
+    @Column(name = "removal_reason", length = 500)
+    private String removalReason;
+
+    @Column(name = "removed_at", columnDefinition = "TIMESTAMP WITH TIME ZONE")
+    private Timestamp removedAt;
+
+    @Column(name = "removed_by_user_id")
+    private Long removedByUserId;
 }

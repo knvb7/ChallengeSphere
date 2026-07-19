@@ -43,6 +43,7 @@ public interface ChallengeService {
     JoinChallengeResponse joinChallenge(JoinChallengeRequest request) throws ChallengeSphereException;
     JoinChallengeResponse joinChallengeFromVerifiedInvite(JoinChallengeRequest request) throws ChallengeSphereException;
     LeaveChallengeResponse leaveChallenge(LeaveChallengeRequest request) throws ChallengeSphereException;
+    LeaveChallengeResponse removeParticipant(Long challengeId, Long actorUserId, Long participantUserId, String reason) throws ChallengeSphereException;
     ChallengeParticipantsResponse getChallengeParticipants(GetChallengeParticipantsRequest request) throws ChallengeSphereException;
     ChallengesByHashtagResponse getChallengesByHashtag(GetChallengesByHashtagRequest request) throws ChallengeSphereException;
     PopularChallengesResponse getPopularChallenges(GetPopularChallengesRequest request) throws ChallengeSphereException;

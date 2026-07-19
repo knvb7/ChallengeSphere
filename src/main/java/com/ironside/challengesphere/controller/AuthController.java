@@ -21,6 +21,7 @@ import com.ironside.challengesphere.service.AuthService;
 import com.ironside.challengesphere.service.SmsService;
 import com.ironside.challengesphere.service.UserService;
 import com.ironside.challengesphere.service.impl.RedisCacheServiceImpl;
+import com.ironside.challengesphere.util.UsernamePolicy;
 import jakarta.validation.Valid;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -80,12 +81,14 @@ public class AuthController {
     @GetMapping("/username-availability")
     public ResponseEntity<Map<String, Object>> usernameAvailability(@RequestParam String username) {
         String candidate = username == null ? "" : username.trim();
-        boolean valid = candidate.matches("^[a-zA-Z0-9_]{3,50}$");
+        boolean reserved = UsernamePolicy.containsReservedKeyword(candidate);
+        boolean valid = !reserved && candidate.matches("^[a-zA-Z0-9_]{3,50}$");
         boolean available = valid && userRepository.findByUsername(candidate).isEmpty();
         return ResponseEntity.ok(Map.of(
                 "username", candidate,
                 "valid", valid,
-                "available", available
+                "available", available,
+                "message", reserved ? UsernamePolicy.RESERVED_KEYWORD_MESSAGE : ""
         ));
     }
 

@@ -15,7 +15,10 @@ BEGIN
                 gender IS NULL OR gender IN (
                     'WOMAN',
                     'MAN',
+                    'MALE',
+                    'FEMALE',
                     'NON_BINARY',
+                    'OTHER',
                     'PREFER_NOT_TO_SAY'
                 )
             );

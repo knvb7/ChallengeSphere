@@ -180,6 +180,10 @@ public class ChallengeServiceImpl implements ChallengeService {
                         .toList();
             }
 
+            allUserChallenges = allUserChallenges.stream()
+                    .sorted(ChallengeServiceImpl::compareChallengesByCreatedAtDesc)
+                    .toList();
+
             int totalCount = allUserChallenges.size();
             int offset = (page - 1) * pageSize;
             List<Challenge> paginatedChallenges = allUserChallenges.stream()
@@ -381,7 +385,7 @@ public class ChallengeServiceImpl implements ChallengeService {
     protected void updateChallengesAcceptedCountAsync(Long userId, boolean increment) {
         try {
             logger.info("Async update challengesAccepted count for user: {}, increment: {}", userId, increment);
-            userRepository.increaseChallengeAcceptedCountForAUser(userId);
+            userRepository.adjustChallengeAcceptedCountForAUser(userId, increment ? 1 : -1);
             logger.info("Updated challengesAccepted count for userId: {}", userId);
         } catch (Exception e) {
             logger.error("Error updating challengesAccepted count for user {}: {}", userId, e.getClass().getSimpleName());
@@ -661,6 +665,19 @@ public class ChallengeServiceImpl implements ChallengeService {
             Map<Long, UserChallenge> existingByUserId = existingAssociations.stream()
                     .filter(userChallenge -> userIds.contains(userChallenge.getUserId()))
                     .collect(Collectors.toMap(UserChallenge::getUserId, userChallenge -> userChallenge, (a, b) -> a));
+
+            boolean hasBannedParticipant = existingUserIds.stream()
+                    .map(existingByUserId::get)
+                    .filter(java.util.Objects::nonNull)
+                    .anyMatch(userChallenge -> Boolean.TRUE.equals(userChallenge.getBanned()));
+            if (hasBannedParticipant) {
+                throw new ChallengeSphereException(
+                        "You were removed from this challenge by its creator.",
+                        HttpStatus.FORBIDDEN,
+                        logger
+                );
+            }
+
             Set<Long> alreadyJoinedUserIds = existingByUserId.values().stream()
                     .filter(userChallenge -> Boolean.TRUE.equals(userChallenge.getActive()))
                     .map(UserChallenge::getUserId)
@@ -779,8 +796,16 @@ public class ChallengeServiceImpl implements ChallengeService {
             List<Long> successfulUserIds = new ArrayList<>();
             List<Long> failedUserIds = new ArrayList<>();
             List<UserChallenge> toDeactivate = new ArrayList<>();
+            Long currentOwnerUserId = challenge.getCurrentOwnerId() != null
+                    ? challenge.getCurrentOwnerId()
+                    : challenge.getCreatorId();
 
             for (Long userId : userIds) {
+                if (Boolean.TRUE.equals(challenge.getActive()) && userId.equals(currentOwnerUserId)) {
+                    logger.info("Current owner {} cannot leave active challenge {}", userId, challengeId);
+                    failedUserIds.add(userId);
+                    continue;
+                }
                 if (userChallengeMap.containsKey(userId)) {
                     UserChallenge userChallenge = userChallengeMap.get(userId);
                     // Only deactivate if currently active
@@ -835,6 +860,99 @@ public class ChallengeServiceImpl implements ChallengeService {
             logger.error("Error processing leave request for challenge {}: {}", challengeId, e.getClass().getSimpleName());
             throw new ChallengeSphereException(
                     "Failed to leave challenge",
+                    HttpStatus.INTERNAL_SERVER_ERROR,
+                    logger
+            );
+        }
+    }
+
+    @Override
+    @Transactional
+    public LeaveChallengeResponse removeParticipant(
+            Long challengeId,
+            Long actorUserId,
+            Long participantUserId,
+            String reason) throws ChallengeSphereException {
+        logger.info("Processing creator remove participant request for challenge {} by actor {}", challengeId, actorUserId);
+
+        try {
+            Challenge challenge = challengeRepository.findById(challengeId)
+                    .orElseThrow(() -> new ChallengeSphereException(
+                            "Challenge not found with id: " + challengeId,
+                            HttpStatus.NOT_FOUND,
+                            logger
+                    ));
+
+            if (!challenge.getCreatorId().equals(actorUserId)) {
+                throw new ChallengeSphereException(
+                        "Only the challenge creator can remove participants",
+                        HttpStatus.FORBIDDEN,
+                        logger
+                );
+            }
+
+            if (challenge.getCreatorId().equals(participantUserId)) {
+                throw new ChallengeSphereException(
+                        "The challenge creator cannot be removed",
+                        HttpStatus.BAD_REQUEST,
+                        logger
+                );
+            }
+
+            String normalizedReason = reason == null ? "" : reason.trim();
+            if (normalizedReason.length() < 10 || normalizedReason.length() > 500) {
+                throw new ChallengeSphereException(
+                        "A removal reason must contain between 10 and 500 characters",
+                        HttpStatus.BAD_REQUEST,
+                        logger
+                );
+            }
+
+            UserChallenge membership = userChallengeRepository
+                    .findByUserIdAndChallengeId(participantUserId, challengeId)
+                    .orElseThrow(() -> new ChallengeSphereException(
+                            "User is not a participant of this challenge",
+                            HttpStatus.BAD_REQUEST,
+                            logger
+                    ));
+            if (!Boolean.TRUE.equals(membership.getActive())) {
+                throw new ChallengeSphereException(
+                        "User is not an active participant of this challenge",
+                        HttpStatus.BAD_REQUEST,
+                        logger
+                );
+            }
+
+            membership.setActive(false);
+            membership.setBanned(true);
+            membership.setRemovalReason(normalizedReason);
+            membership.setRemovedAt(new Timestamp(System.currentTimeMillis()));
+            membership.setRemovedByUserId(actorUserId);
+            userChallengeRepository.save(membership);
+
+            try {
+                cacheService.invalidateTimeline(participantUserId);
+                cacheService.invalidateChallengeParticipants(challengeId);
+            } catch (Exception cacheException) {
+                logger.warn(
+                        "Participant {} was removed from challenge {}, but cache invalidation failed: {}",
+                        participantUserId,
+                        challengeId,
+                        cacheException.getClass().getSimpleName());
+            }
+            updateChallengesAcceptedCountAsync(participantUserId, false);
+
+            return LeaveChallengeResponse.success(
+                    challengeId,
+                    challenge.getTitle(),
+                    List.of(participantUserId)
+            );
+        } catch (ChallengeSphereException e) {
+            throw e;
+        } catch (Exception e) {
+            logger.error("Error removing participant {} from challenge {}: {}", participantUserId, challengeId, e.getClass().getSimpleName());
+            throw new ChallengeSphereException(
+                    "Failed to remove participant",
                     HttpStatus.INTERNAL_SERVER_ERROR,
                     logger
             );
@@ -950,6 +1068,7 @@ public class ChallengeServiceImpl implements ChallengeService {
                     .filter(challenge -> !isExpiredChallenge(challenge))
                     .filter(challenge -> canViewChallengeDiscovery(challenge, currentUserId))
                     .distinct()
+                    .sorted(ChallengeServiceImpl::compareChallengesByCreatedAtDesc)
                     .toList();
 
             if (matchingChallenges.isEmpty()) {
@@ -969,14 +1088,13 @@ public class ChallengeServiceImpl implements ChallengeService {
             Map<Long, Long> participantCountMap = activeUserChallenges.stream()
                     .collect(Collectors.groupingBy(UserChallenge::getChallengeId, Collectors.counting()));
 
-            // Create challenge with participant count objects and sort by count (descending)
+            // Preserve newest-first challenge ordering while adding participant counts.
             List<ChallengesByHashtagResponse.ChallengeWithParticipantCount> challengeWithCounts =
                     withReadableCoverPhotoUrls(matchingChallenges).stream()
                     .map(challenge -> new ChallengesByHashtagResponse.ChallengeWithParticipantCount(
                             challenge,
                             participantCountMap.getOrDefault(challenge.getId(), 0L).intValue()
                     ))
-                    .sorted((c1, c2) -> Integer.compare(c2.getActiveParticipantCount(), c1.getActiveParticipantCount()))
                     .toList();
 
             // Apply pagination
@@ -1068,14 +1186,15 @@ public class ChallengeServiceImpl implements ChallengeService {
             Map<Long, Long> participantCountMap = userChallenges.stream()
                     .collect(Collectors.groupingBy(UserChallenge::getChallengeId, Collectors.counting()));
 
-            // Create challenge with participant count objects and sort by count (descending)
+            // Add participant counts, then order by challenge creation time before pagination.
             List<PopularChallengesResponse.ChallengeWithParticipantCount> challengeWithCounts =
                     withReadableCoverPhotoUrls(publicChallenges).stream()
                     .map(challenge -> new PopularChallengesResponse.ChallengeWithParticipantCount(
                             challenge,
                             participantCountMap.getOrDefault(challenge.getId(), 0L).intValue()
                     ))
-                    .sorted((c1, c2) -> Integer.compare(c2.getParticipantCount(), c1.getParticipantCount()))
+                    .sorted((left, right) -> compareCreatedAtDesc(
+                            left.getCreatedAt(), left.getId(), right.getCreatedAt(), right.getId()))
                     .toList();
 
             // Apply pagination
@@ -1257,6 +1376,30 @@ public class ChallengeServiceImpl implements ChallengeService {
                     mediaOwnerId, requestedCoverPhotoUrls, challenge.getCoverPhotoUrls()));
         }
 
+        if (actorUserId != null
+                && actorUserId.equals(challenge.getCreatorId())
+                && request.getInvitedUserIds() != null
+                && !request.getInvitedUserIds().isEmpty()) {
+            Set<Long> invitedUserIds = request.getInvitedUserIds().stream()
+                    .filter(java.util.Objects::nonNull)
+                    .filter(userId -> userId > 0)
+                    .collect(Collectors.toSet());
+            List<UserChallenge> reinstatedMemberships = userChallengeRepository.findByChallengeId(id).stream()
+                    .filter(membership -> invitedUserIds.contains(membership.getUserId()))
+                    .filter(membership -> !Boolean.TRUE.equals(membership.getActive()))
+                    .filter(membership -> Boolean.TRUE.equals(membership.getBanned()))
+                    .peek(membership -> {
+                        membership.setBanned(false);
+                        membership.setRemovalReason(null);
+                        membership.setRemovedAt(null);
+                        membership.setRemovedByUserId(null);
+                    })
+                    .toList();
+            if (!reinstatedMemberships.isEmpty()) {
+                userChallengeRepository.saveAll(reinstatedMemberships);
+            }
+        }
+
         Challenge updated = challengeRepository.save(challenge);
         cacheService.invalidateChallenge(id);
         cacheService.invalidateAllFeeds();
@@ -1435,6 +1578,11 @@ public class ChallengeServiceImpl implements ChallengeService {
                         .filter(summary -> summary.isCompleted() == filterCompleted)
                         .toList();
             }
+
+            summaries = summaries.stream()
+                    .sorted((left, right) -> compareCreatedAtDesc(
+                            left.getCreatedAt(), left.getId(), right.getCreatedAt(), right.getId()))
+                    .toList();
 
             int totalCount = summaries.size();
             int offset = (page - 1) * pageSize;
@@ -1793,6 +1941,37 @@ public class ChallengeServiceImpl implements ChallengeService {
             else break;
         }
         return streak;
+    }
+
+    private static int compareChallengesByCreatedAtDesc(Challenge left, Challenge right) {
+        return compareCreatedAtDesc(
+                left == null ? null : left.getCreatedAt(),
+                left == null ? null : left.getId(),
+                right == null ? null : right.getCreatedAt(),
+                right == null ? null : right.getId()
+        );
+    }
+
+    private static int compareCreatedAtDesc(
+            Timestamp leftCreatedAt,
+            Long leftId,
+            Timestamp rightCreatedAt,
+            Long rightId
+    ) {
+        if (leftCreatedAt != null && rightCreatedAt != null) {
+            int createdAtComparison = rightCreatedAt.compareTo(leftCreatedAt);
+            if (createdAtComparison != 0) {
+                return createdAtComparison;
+            }
+        } else if (leftCreatedAt == null && rightCreatedAt != null) {
+            return 1;
+        } else if (leftCreatedAt != null) {
+            return -1;
+        }
+
+        long safeLeftId = leftId == null ? 0L : leftId;
+        long safeRightId = rightId == null ? 0L : rightId;
+        return Long.compare(safeRightId, safeLeftId);
     }
 
     private int computeLongestStreak(List<Integer> days) {
