@@ -15,6 +15,7 @@ public class UpdateUserPreferencesRequest {
     private Boolean notifyOnFollow;
     private Boolean notifyOnChallengeInvite;
     private Boolean notifyOnChallengeUpdate;
+    private Boolean notifyOnMotivation;
 
     // Privacy preferences
     private Boolean privateProfile;
@@ -26,4 +27,3 @@ public class UpdateUserPreferencesRequest {
     private Boolean darkMode;
     private String language;
 }
-

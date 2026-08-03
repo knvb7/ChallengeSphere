@@ -23,7 +23,6 @@ SET row_security = off;
 ALTER TABLE IF EXISTS ONLY challengesphere.user_reports DROP CONSTRAINT IF EXISTS user_reports_reporter_user_id_fkey;
 ALTER TABLE IF EXISTS ONLY challengesphere.user_reports DROP CONSTRAINT IF EXISTS user_reports_reported_user_id_fkey;
 ALTER TABLE IF EXISTS ONLY challengesphere.user_preferences DROP CONSTRAINT IF EXISTS user_preferences_user_id_fkey;
-ALTER TABLE IF EXISTS ONLY challengesphere.user_integrations DROP CONSTRAINT IF EXISTS user_integrations_user_id_fkey;
 ALTER TABLE IF EXISTS ONLY challengesphere.user_challenges DROP CONSTRAINT IF EXISTS user_challenges_user_id_fkey;
 ALTER TABLE IF EXISTS ONLY challengesphere.user_challenges DROP CONSTRAINT IF EXISTS user_challenges_challenge_id_fkey;
 ALTER TABLE IF EXISTS ONLY challengesphere.user_blocks DROP CONSTRAINT IF EXISTS user_blocks_blocker_user_id_fkey;
@@ -60,12 +59,12 @@ DROP INDEX IF EXISTS challengesphere.idx_users_interests_active;
 DROP INDEX IF EXISTS challengesphere.idx_user_reports_reporter_created;
 DROP INDEX IF EXISTS challengesphere.idx_user_reports_reported_status;
 DROP INDEX IF EXISTS challengesphere.idx_user_preferences_user_id;
-DROP INDEX IF EXISTS challengesphere.idx_user_integrations_user_id;
 DROP INDEX IF EXISTS challengesphere.idx_user_blocks_blocker_active;
 DROP INDEX IF EXISTS challengesphere.idx_user_blocks_blocked_active;
 DROP INDEX IF EXISTS challengesphere.idx_submissions_user_time;
 DROP INDEX IF EXISTS challengesphere.idx_submissions_user_challenge_day;
 DROP INDEX IF EXISTS challengesphere.idx_submissions_challenge_public;
+DROP INDEX IF EXISTS challengesphere.idx_submissions_moderation_queue;
 DROP INDEX IF EXISTS challengesphere.idx_reports_submission_id;
 DROP INDEX IF EXISTS challengesphere.idx_push_device_tokens_user_enabled;
 DROP INDEX IF EXISTS challengesphere.idx_push_device_tokens_enabled_timezone;
@@ -91,10 +90,8 @@ ALTER TABLE IF EXISTS ONLY challengesphere.users DROP CONSTRAINT IF EXISTS users
 ALTER TABLE IF EXISTS ONLY challengesphere.users DROP CONSTRAINT IF EXISTS users_email_id_key;
 ALTER TABLE IF EXISTS ONLY challengesphere.user_reports DROP CONSTRAINT IF EXISTS user_reports_pkey;
 ALTER TABLE IF EXISTS ONLY challengesphere.user_preferences DROP CONSTRAINT IF EXISTS user_preferences_pkey;
-ALTER TABLE IF EXISTS ONLY challengesphere.user_integrations DROP CONSTRAINT IF EXISTS user_integrations_pkey;
 ALTER TABLE IF EXISTS ONLY challengesphere.user_challenges DROP CONSTRAINT IF EXISTS user_challenges_pkey;
 ALTER TABLE IF EXISTS ONLY challengesphere.user_blocks DROP CONSTRAINT IF EXISTS user_blocks_pkey;
-ALTER TABLE IF EXISTS ONLY challengesphere.user_integrations DROP CONSTRAINT IF EXISTS uk_user_integrations_user_provider;
 ALTER TABLE IF EXISTS ONLY challengesphere.user_challenges DROP CONSTRAINT IF EXISTS uk_user_challenge;
 ALTER TABLE IF EXISTS ONLY challengesphere.user_blocks DROP CONSTRAINT IF EXISTS uk_user_blocks_pair;
 ALTER TABLE IF EXISTS ONLY challengesphere.leaderboard_entries DROP CONSTRAINT IF EXISTS uk_leaderboard_challenge_user;
@@ -119,7 +116,6 @@ ALTER TABLE IF EXISTS ONLY challengesphere.challenge_invites DROP CONSTRAINT IF 
 ALTER TABLE IF EXISTS ONLY challengesphere.auth_tokens DROP CONSTRAINT IF EXISTS auth_tokens_pkey;
 ALTER TABLE IF EXISTS challengesphere.users ALTER COLUMN id DROP DEFAULT;
 ALTER TABLE IF EXISTS challengesphere.user_preferences ALTER COLUMN id DROP DEFAULT;
-ALTER TABLE IF EXISTS challengesphere.user_integrations ALTER COLUMN id DROP DEFAULT;
 ALTER TABLE IF EXISTS challengesphere.user_challenges ALTER COLUMN id DROP DEFAULT;
 ALTER TABLE IF EXISTS challengesphere.submissions ALTER COLUMN id DROP DEFAULT;
 ALTER TABLE IF EXISTS challengesphere.reports ALTER COLUMN id DROP DEFAULT;
@@ -140,8 +136,6 @@ DROP TABLE IF EXISTS challengesphere.user_reports;
 DROP SEQUENCE IF EXISTS challengesphere.user_preferences_id_seq1;
 DROP SEQUENCE IF EXISTS challengesphere.user_preferences_id_seq;
 DROP TABLE IF EXISTS challengesphere.user_preferences;
-DROP SEQUENCE IF EXISTS challengesphere.user_integrations_id_seq;
-DROP TABLE IF EXISTS challengesphere.user_integrations;
 DROP SEQUENCE IF EXISTS challengesphere.user_challenges_id_seq1;
 DROP SEQUENCE IF EXISTS challengesphere.user_challenges_id_seq;
 DROP TABLE IF EXISTS challengesphere.user_challenges;
@@ -759,10 +753,15 @@ CREATE TABLE challengesphere.submissions (
                                              created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
                                              updated_at timestamp with time zone,
                                              active boolean DEFAULT true NOT NULL,
+                                             moderation_status character varying(16) DEFAULT 'PENDING'::character varying NOT NULL,
+                                             moderation_started_at timestamp with time zone,
+                                             moderated_at timestamp with time zone,
+                                             moderation_error character varying(512),
                                              glories_count bigint DEFAULT 0 NOT NULL,
                                              comments_count bigint DEFAULT 0 NOT NULL,
                                              version integer DEFAULT 0 NOT NULL,
-                                             CONSTRAINT submissions_day_number_check CHECK ((day_number > 0))
+                                             CONSTRAINT submissions_day_number_check CHECK ((day_number > 0)),
+                                             CONSTRAINT chk_submissions_moderation_status CHECK (((moderation_status)::text = ANY ((ARRAY['PENDING'::character varying, 'PROCESSING'::character varying, 'PASSED'::character varying, 'FLAGGED'::character varying, 'FAILED'::character varying])::text[])))
 );
 
 
@@ -882,48 +881,6 @@ CREATE SEQUENCE challengesphere.user_challenges_id_seq1
 --
 
 ALTER SEQUENCE challengesphere.user_challenges_id_seq1 OWNED BY challengesphere.user_challenges.id;
-
-
---
--- Name: user_integrations; Type: TABLE; Schema: challengesphere; Owner: -
---
-
-CREATE TABLE challengesphere.user_integrations (
-                                                   id bigint NOT NULL,
-                                                   user_id bigint NOT NULL,
-                                                   provider character varying(32) NOT NULL,
-                                                   external_user_id character varying(128),
-                                                   external_username character varying(255),
-                                                   display_name character varying(255),
-                                                   avatar_url character varying(1024),
-                                                   access_token text,
-                                                   refresh_token text,
-                                                   access_token_expires_at timestamp with time zone,
-                                                   scopes character varying(512),
-                                                   snapshot_json text,
-                                                   connected_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
-                                                   updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
-                                                   last_synced_at timestamp with time zone
-);
-
-
---
--- Name: user_integrations_id_seq; Type: SEQUENCE; Schema: challengesphere; Owner: -
---
-
-CREATE SEQUENCE challengesphere.user_integrations_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
---
--- Name: user_integrations_id_seq; Type: SEQUENCE OWNED BY; Schema: challengesphere; Owner: -
---
-
-ALTER SEQUENCE challengesphere.user_integrations_id_seq OWNED BY challengesphere.user_integrations.id;
 
 
 --
@@ -1172,13 +1129,6 @@ ALTER TABLE ONLY challengesphere.user_challenges ALTER COLUMN id SET DEFAULT nex
 
 
 --
--- Name: user_integrations id; Type: DEFAULT; Schema: challengesphere; Owner: -
---
-
-ALTER TABLE ONLY challengesphere.user_integrations ALTER COLUMN id SET DEFAULT nextval('challengesphere.user_integrations_id_seq'::regclass);
-
-
---
 -- Name: user_preferences id; Type: DEFAULT; Schema: challengesphere; Owner: -
 --
 
@@ -1369,14 +1319,6 @@ ALTER TABLE ONLY challengesphere.user_challenges
 
 
 --
--- Name: user_integrations uk_user_integrations_user_provider; Type: CONSTRAINT; Schema: challengesphere; Owner: -
---
-
-ALTER TABLE ONLY challengesphere.user_integrations
-    ADD CONSTRAINT uk_user_integrations_user_provider UNIQUE (user_id, provider);
-
-
---
 -- Name: user_blocks user_blocks_pkey; Type: CONSTRAINT; Schema: challengesphere; Owner: -
 --
 
@@ -1390,14 +1332,6 @@ ALTER TABLE ONLY challengesphere.user_blocks
 
 ALTER TABLE ONLY challengesphere.user_challenges
     ADD CONSTRAINT user_challenges_pkey PRIMARY KEY (id);
-
-
---
--- Name: user_integrations user_integrations_pkey; Type: CONSTRAINT; Schema: challengesphere; Owner: -
---
-
-ALTER TABLE ONLY challengesphere.user_integrations
-    ADD CONSTRAINT user_integrations_pkey PRIMARY KEY (id);
 
 
 --
@@ -1602,6 +1536,8 @@ CREATE INDEX idx_submissions_user_challenge_day ON challengesphere.submissions U
 
 CREATE INDEX idx_submissions_user_time ON challengesphere.submissions USING btree (user_id, submission_time DESC);
 
+CREATE INDEX idx_submissions_moderation_queue ON challengesphere.submissions USING btree (id) WHERE (((moderation_status)::text = ANY ((ARRAY['PENDING'::character varying, 'FAILED'::character varying, 'PROCESSING'::character varying])::text[])) AND (NULLIF(btrim(media_urls), ''::text) IS NOT NULL));
+
 
 --
 -- Name: idx_user_blocks_blocked_active; Type: INDEX; Schema: challengesphere; Owner: -
@@ -1615,13 +1551,6 @@ CREATE INDEX idx_user_blocks_blocked_active ON challengesphere.user_blocks USING
 --
 
 CREATE INDEX idx_user_blocks_blocker_active ON challengesphere.user_blocks USING btree (blocker_user_id, active);
-
-
---
--- Name: idx_user_integrations_user_id; Type: INDEX; Schema: challengesphere; Owner: -
---
-
-CREATE INDEX idx_user_integrations_user_id ON challengesphere.user_integrations USING btree (user_id);
 
 
 --
@@ -1903,14 +1832,6 @@ ALTER TABLE ONLY challengesphere.user_challenges
 
 ALTER TABLE ONLY challengesphere.user_challenges
     ADD CONSTRAINT user_challenges_user_id_fkey FOREIGN KEY (user_id) REFERENCES challengesphere.users(id) ON DELETE CASCADE;
-
-
---
--- Name: user_integrations user_integrations_user_id_fkey; Type: FK CONSTRAINT; Schema: challengesphere; Owner: -
---
-
-ALTER TABLE ONLY challengesphere.user_integrations
-    ADD CONSTRAINT user_integrations_user_id_fkey FOREIGN KEY (user_id) REFERENCES challengesphere.users(id) ON DELETE CASCADE;
 
 
 --

@@ -14,7 +14,6 @@ import org.springframework.context.annotation.Primary;
 @ConditionalOnProperty(prefix = "app.datasource.iam-auth", name = "enabled", havingValue = "true")
 class RdsIamDataSourceConfig {
 
-    static final long RDS_IAM_TOKEN_TTL_MS = 15 * 60 * 1000L;
     static final long RDS_IAM_SAFE_MAX_LIFETIME_MS = 13 * 60 * 1000L;
     static final long RDS_IAM_SAFE_KEEPALIVE_MS = 5 * 60 * 1000L;
     private static final long HIKARI_MIN_MAX_LIFETIME_MS = 30 * 1000L;
@@ -29,7 +28,7 @@ class RdsIamDataSourceConfig {
             @Value("${app.datasource.iam-auth.port}") int port,
             @Value("${app.datasource.iam-auth.aws-profile:}") String awsProfile,
             @Value("${spring.datasource.hikari.pool-name:ChallengeSphereProdPool}") String poolName,
-            @Value("${spring.datasource.hikari.maximum-pool-size:10}") int maximumPoolSize,
+            @Value("${spring.datasource.hikari.maximum-pool-size:20}") int maximumPoolSize,
             @Value("${spring.datasource.hikari.minimum-idle:10}") int minimumIdle,
             @Value("${spring.datasource.hikari.connection-timeout:30000}") long connectionTimeout,
             @Value("${spring.datasource.hikari.validation-timeout:5000}") long validationTimeout,

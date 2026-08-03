@@ -1,8 +1,11 @@
 package com.ironside.challengesphere.service.impl;
 
 import java.sql.Timestamp;
+import java.time.Clock;
+import java.time.DateTimeException;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -27,6 +30,8 @@ import org.springframework.data.domain.Sort;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.multipart.MultipartFile;
 
 import com.ironside.challengesphere.api.request.CreateSubmissionRequest;
@@ -51,7 +56,7 @@ import com.ironside.challengesphere.repository.UserRepository;
 import com.ironside.challengesphere.repository.projection.SubmissionPreviewProjection;
 import com.ironside.challengesphere.security.IssuedUploadService;
 import com.ironside.challengesphere.security.UploadQuotaService;
-import com.ironside.challengesphere.service.ContentModerationService;
+import com.ironside.challengesphere.service.ChallengeCrewService;
 import com.ironside.challengesphere.service.LeaderboardService;
 import com.ironside.challengesphere.service.NotificationService;
 import com.ironside.challengesphere.service.SubmissionService;
@@ -62,6 +67,15 @@ public class SubmissionServiceImpl implements SubmissionService {
     private static final int SUBMISSION_GRACE_DAYS = 2;
     private static final int MAX_SUBMISSION_MEDIA_FILES = 5;
     private static final long MAX_BACKEND_UPLOAD_BYTES = 8L * 1024L * 1024L;
+    private final Clock clock;
+
+    public SubmissionServiceImpl() {
+        this(Clock.systemUTC());
+    }
+
+    SubmissionServiceImpl(Clock clock) {
+        this.clock = Objects.requireNonNull(clock, "clock");
+    }
 
     @Autowired
     private SubmissionRepository submissionRepository;
@@ -82,13 +96,13 @@ public class SubmissionServiceImpl implements SubmissionService {
     private LeaderboardService leaderboardService;
 
     @Autowired
-    private ContentModerationService contentModerationService;
-
-    @Autowired
     private RedisCacheServiceImpl cacheService;
 
     @Autowired
     private NotificationService notificationService;
+
+    @Autowired
+    private ChallengeCrewService challengeCrewService;
 
     @Autowired
     private UserBlockRepository userBlockRepository;
@@ -106,7 +120,7 @@ public class SubmissionServiceImpl implements SubmissionService {
     private IssuedUploadService issuedUploadService;
 
     @Autowired
-    private ModerationEnforcementService moderationEnforcementService;
+    private SubmissionModerationJob submissionModerationJob;
 
     @Value("${aws.s3.bucket.name}")
     private String bucketName;
@@ -154,8 +168,9 @@ public class SubmissionServiceImpl implements SubmissionService {
                         logger
                 );
             }
-
             UserChallenge userChallenge = requireActiveChallengeMembership(userId, challengeId);
+            requireChallengeStarted(challengeId);
+            validateSubmissionProof(request.getDescription(), mediaKeys);
 
             boolean oneOffChallenge = isOneOffChallenge(challenge);
             if (oneOffChallenge) {
@@ -177,7 +192,8 @@ public class SubmissionServiceImpl implements SubmissionService {
                     );
                 }
             }
-            ensureSubmissionDayAcceptsUpload(challenge, dayNumber);
+            ensureSubmissionDayAcceptsUpload(challenge, dayNumber, request.getTimezone());
+            LocalDate submissionLocalDate = getClientLocalDate(request.getTimezone());
 
             // Serialize concurrent writers for the same (user, challenge, day) tuple so the
             // 5-per-day cap is atomic. The lock is scoped to this transaction — two requests
@@ -210,24 +226,6 @@ public class SubmissionServiceImpl implements SubmissionService {
 
             issuedUploadService.consume(
                     userId, mediaKeys, IssuedUploadService.Purpose.SUBMISSION_PHOTO);
-            ContentModerationService.Result moderation = contentModerationService.scanStrict(mediaKeys);
-            if (moderation.verdict() == ContentModerationService.Verdict.BLOCK_AND_BAN) {
-                moderationEnforcementService.banUser(
-                        userId,
-                        "Content policy violation: " + summarizeFindings(moderation));
-                throw new ChallengeSphereException(
-                        "Submission rejected for content policy violation. Your account has been suspended.",
-                        HttpStatus.FORBIDDEN,
-                        logger
-                );
-            }
-            if (moderation.verdict() != ContentModerationService.Verdict.CLEAN) {
-                throw new ChallengeSphereException(
-                        "Submission photo rejected by content safety review",
-                        HttpStatus.BAD_REQUEST,
-                        logger
-                );
-            }
 
             // Create submission
             Submission submission = new Submission();
@@ -251,20 +249,27 @@ public class SubmissionServiceImpl implements SubmissionService {
             submission.setSubmissionTime(submissionTime);
             submission.setCreatedAt(new Timestamp(System.currentTimeMillis()));
             submission.setActive(true);
+            submission.setModerationStatus(Submission.MODERATION_PENDING);
+            submission.setModerationStartedAt(null);
+            submission.setModeratedAt(null);
+            submission.setModerationError(null);
             submission.setGloriesCount(0L);
             submission.setCommentsCount(0L);
             submission.setVersion(0);
 
             Submission savedSubmission = submissionRepository.save(submission);
+            scheduleSubmissionModerationAfterCommit(savedSubmission.getId());
 
             logger.info("Successfully created submission with id: {} for user: {}, challenge: {}, day: {}",
                     savedSubmission.getId(), userId, challengeId, dayNumber);
 
+            boolean leaderboardRebuilt = false;
             if (oneOffChallenge) {
                 markOneOffChallengeCompleted(userChallenge);
             } else {
                 try {
                     leaderboardService.rebuildLeaderboard(challengeId);
+                    leaderboardRebuilt = true;
                     logger.debug("Rebuilt points leaderboard for user: {} in challenge: {}", userId, challengeId);
                 } catch (Exception e) {
                     // Don't fail the submission if leaderboard update fails
@@ -280,6 +285,14 @@ public class SubmissionServiceImpl implements SubmissionService {
                 } catch (Exception e) {
                     logger.warn("Failed to create submission notifications for submissionId={}: {}",
                             savedSubmission.getId(), e.getClass().getSimpleName());
+                }
+                if (!oneOffChallenge) {
+                    notifyMomentumMilestonesAfterCommit(
+                            userId,
+                            challengeId,
+                            submissionLocalDate,
+                            leaderboardRebuilt
+                    );
                 }
             }
 
@@ -434,7 +447,10 @@ public class SubmissionServiceImpl implements SubmissionService {
                             logger
                     ));
             requireActiveChallengeMembership(userId, submission.getChallengeId());
-            ensureSubmissionDayAcceptsUpload(challenge, submission.getDayNumber());
+            requireChallengeStarted(submission.getChallengeId());
+            validateSubmissionProof(request.getDescription(), mediaKeys);
+            ensureSubmissionDayAcceptsUpload(challenge, submission.getDayNumber(), request.getTimezone());
+            LocalDate submissionLocalDate = getClientLocalDate(request.getTimezone());
 
             String storedMediaKeys = mediaUrlService.toStoredMediaUrlsString(mediaKeys);
             Set<String> existingMediaKeys = submission.getMediaUrls() == null
@@ -449,21 +465,6 @@ public class SubmissionServiceImpl implements SubmissionService {
                         newlyAttachedMediaKeys,
                         IssuedUploadService.Purpose.SUBMISSION_PHOTO);
             }
-            ContentModerationService.Result moderation = !newlyAttachedMediaKeys.isEmpty()
-                    ? contentModerationService.scanStrict(newlyAttachedMediaKeys)
-                    : new ContentModerationService.Result(
-                            ContentModerationService.Verdict.CLEAN, List.of());
-            if (moderation.verdict() == ContentModerationService.Verdict.BLOCK_AND_BAN) {
-                moderationEnforcementService.banUser(
-                        userId,
-                        "Content policy violation: " + summarizeFindings(moderation));
-                throw new ChallengeSphereException(
-                        "Submission rejected for content policy violation. Your account has been suspended.",
-                        HttpStatus.FORBIDDEN,
-                        logger
-                );
-            }
-
             submission.setDescription(request.getDescription());
             submission.setMediaUrls(storedMediaKeys);
             if (Boolean.TRUE.equals(challenge.getIsPrivate())) {
@@ -474,15 +475,33 @@ public class SubmissionServiceImpl implements SubmissionService {
             }
             submission.setSubmissionTime(Timestamp.from(Instant.now()));
             submission.setUpdatedAt(new Timestamp(System.currentTimeMillis()));
-            submission.setActive(moderation.verdict() != ContentModerationService.Verdict.FLAG_FOR_REVIEW);
+            if (!newlyAttachedMediaKeys.isEmpty()) {
+                submission.setModerationStatus(Submission.MODERATION_PENDING);
+                submission.setModerationStartedAt(null);
+                submission.setModeratedAt(null);
+                submission.setModerationError(null);
+            }
 
             Submission savedSubmission = submissionRepository.save(submission);
+            if (!newlyAttachedMediaKeys.isEmpty()) {
+                scheduleSubmissionModerationAfterCommit(savedSubmission.getId());
+            }
             invalidateSubmissionCaches(savedSubmission);
+            boolean leaderboardRebuilt = false;
             try {
                 leaderboardService.rebuildLeaderboard(savedSubmission.getChallengeId());
+                leaderboardRebuilt = true;
             } catch (Exception e) {
                 logger.warn("Failed to rebuild leaderboard after reuploading submission {}: {}",
                         submissionId, e.getClass().getSimpleName());
+            }
+            if (Boolean.TRUE.equals(savedSubmission.getActive()) && !isOneOffChallenge(challenge)) {
+                notifyMomentumMilestonesAfterCommit(
+                        userId,
+                        savedSubmission.getChallengeId(),
+                        submissionLocalDate,
+                        leaderboardRebuilt
+                );
             }
             logger.info("Successfully reuploaded submission: {} for user: {}", submissionId, userId);
             return SubmissionResponse.success(savedSubmission, mediaKeys);
@@ -921,6 +940,24 @@ public class SubmissionServiceImpl implements SubmissionService {
         }
     }
 
+    private void validateSubmissionProof(String description, List<String> mediaKeys)
+            throws ChallengeSphereException {
+        if (description == null || description.isBlank()) {
+            throw new ChallengeSphereException(
+                    "Add a short check-in before posting",
+                    HttpStatus.BAD_REQUEST,
+                    logger
+            );
+        }
+        if (mediaKeys == null || mediaKeys.isEmpty()) {
+            throw new ChallengeSphereException(
+                    "At least one submission photo is required",
+                    HttpStatus.BAD_REQUEST,
+                    logger
+            );
+        }
+    }
+
     private void requireSubmissionMedia(List<String> mediaKeys) throws ChallengeSphereException {
         if (mediaKeys == null || mediaKeys.isEmpty()) {
             throw new ChallengeSphereException(
@@ -929,6 +966,10 @@ public class SubmissionServiceImpl implements SubmissionService {
                     logger
             );
         }
+    }
+
+    private void requireChallengeStarted(Long challengeId) throws ChallengeSphereException {
+        challengeCrewService.requireStarted(challengeId);
     }
 
     private UserChallenge requireActiveChallengeMembership(Long userId, Long challengeId)
@@ -995,7 +1036,7 @@ public class SubmissionServiceImpl implements SubmissionService {
         userChallengeRepository.save(userChallenge);
     }
 
-    private void ensureSubmissionDayAcceptsUpload(Challenge challenge, Integer dayNumber) throws ChallengeSphereException {
+    void ensureSubmissionDayAcceptsUpload(Challenge challenge, Integer dayNumber, String timezone) throws ChallengeSphereException {
         if (challenge == null) {
             throw new ChallengeSphereException(
                     "Challenge not found",
@@ -1025,7 +1066,7 @@ public class SubmissionServiceImpl implements SubmissionService {
             );
         }
 
-        LocalDate today = LocalDate.now();
+        LocalDate today = getClientLocalDate(timezone);
         if (today.isBefore(challenge.getStartDate())) {
             throw new ChallengeSphereException(
                     "Submissions are not allowed before the challenge starts",
@@ -1057,6 +1098,20 @@ public class SubmissionServiceImpl implements SubmissionService {
         if (today.isAfter(lastAllowedDate)) {
             throw new ChallengeSphereException(
                     "Uploads for day " + dayNumber + " are only allowed through " + lastAllowedDate,
+                    HttpStatus.BAD_REQUEST,
+                    logger
+            );
+        }
+    }
+
+    private LocalDate getClientLocalDate(String timezone) throws ChallengeSphereException {
+        String timezoneValue = timezone == null || timezone.isBlank() ? "UTC" : timezone.trim();
+        try {
+            ZoneId zoneId = ZoneId.of(timezoneValue);
+            return LocalDate.now(clock.withZone(zoneId));
+        } catch (DateTimeException exception) {
+            throw new ChallengeSphereException(
+                    "Invalid timezone",
                     HttpStatus.BAD_REQUEST,
                     logger
             );
@@ -1120,7 +1175,8 @@ public class SubmissionServiceImpl implements SubmissionService {
         }
 
         return userChallengeRepository.findByUserIdAndChallengeId(callerId, submission.getChallengeId())
-                .map(UserChallenge::getActive)
+                .map(userChallenge -> Boolean.TRUE.equals(userChallenge.getActive())
+                        && !Boolean.TRUE.equals(userChallenge.getBanned()))
                 .orElse(false);
     }
 
@@ -1182,17 +1238,53 @@ public class SubmissionServiceImpl implements SubmissionService {
         return challengeMemberIds;
     }
 
-    private static String summarizeFindings(ContentModerationService.Result result) {
-        if (result.findings().isEmpty()) return "unspecified";
-        StringBuilder sb = new StringBuilder();
-        int n = Math.min(3, result.findings().size());
-        for (int i = 0; i < n; i++) {
-            ContentModerationService.Finding f = result.findings().get(i);
-            if (i > 0) sb.append(", ");
-            sb.append(f.category()).append('=').append(f.severity());
+    private void notifyMomentumMilestonesAfterCommit(
+            Long userId,
+            Long challengeId,
+            LocalDate currentDate,
+            boolean evaluateRank
+    ) {
+        Runnable notify = () -> {
+            try {
+                notificationService.notifyMomentumMilestonesAfterSubmissionAsync(
+                        userId, challengeId, currentDate, evaluateRank);
+            } catch (RuntimeException exception) {
+                logger.warn("Failed to schedule momentum milestones for userId={} challengeId={}: {}",
+                        userId, challengeId, exception.getClass().getSimpleName());
+            }
+        };
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    notify.run();
+                }
+            });
+            return;
         }
-        if (result.findings().size() > n) sb.append(", +").append(result.findings().size() - n).append(" more");
-        return sb.toString();
+        notify.run();
+    }
+
+    private void scheduleSubmissionModerationAfterCommit(Long submissionId) {
+        Runnable dispatch = () -> {
+            try {
+                submissionModerationJob.moderateSubmissionAsync(submissionId);
+            } catch (RuntimeException exception) {
+                // Leave the row PENDING. The moderation scheduler will retry it.
+                logger.warn("Failed to dispatch moderation for submissionId={}: {}",
+                        submissionId, exception.getClass().getSimpleName());
+            }
+        };
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    dispatch.run();
+                }
+            });
+            return;
+        }
+        dispatch.run();
     }
 
     // Derive a stable 64-bit key from (userId, challengeId, dayNumber) for the advisory lock.

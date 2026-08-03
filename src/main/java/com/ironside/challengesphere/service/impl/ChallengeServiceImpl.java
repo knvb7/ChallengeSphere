@@ -3,6 +3,7 @@ package com.ironside.challengesphere.service.impl;
 import java.sql.Timestamp;
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -21,6 +22,8 @@ import org.springframework.http.HttpStatus;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import com.ironside.challengesphere.api.request.ChallengeCreateRequest;
 import com.ironside.challengesphere.api.request.ChallengeUpdateRequest;
@@ -35,7 +38,9 @@ import com.ironside.challengesphere.api.response.ChallengeCreateResponse;
 import com.ironside.challengesphere.api.response.ChallengeDetailResponse;
 import com.ironside.challengesphere.api.response.ChallengeParticipantsResponse;
 import com.ironside.challengesphere.api.response.ChallengeProgressResponse;
+import com.ironside.challengesphere.api.response.ChallengeMomentumResponse;
 import com.ironside.challengesphere.api.response.ChallengesByHashtagResponse;
+import com.ironside.challengesphere.api.response.LeaderboardResponse;
 import com.ironside.challengesphere.api.response.JoinChallengeResponse;
 import com.ironside.challengesphere.api.response.LeaveChallengeResponse;
 import com.ironside.challengesphere.api.response.MyChallengesResponse;
@@ -46,10 +51,12 @@ import com.ironside.challengesphere.api.response.UserChallengesResponse;
 import com.ironside.challengesphere.config.ChallengeParticipationProperties;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.model.Challenge;
+import com.ironside.challengesphere.model.ChallengeCrewLifecycle;
 import com.ironside.challengesphere.model.Submission;
 import com.ironside.challengesphere.model.User;
 import com.ironside.challengesphere.model.UserChallenge;
 import com.ironside.challengesphere.repository.ChallengeRepository;
+import com.ironside.challengesphere.repository.ChallengeCrewLifecycleRepository;
 import com.ironside.challengesphere.repository.FollowRepository;
 import com.ironside.challengesphere.repository.SubmissionRepository;
 import com.ironside.challengesphere.repository.UserChallengeRepository;
@@ -58,6 +65,7 @@ import com.ironside.challengesphere.security.IssuedUploadService;
 import com.ironside.challengesphere.security.UploadQuotaService;
 import com.ironside.challengesphere.service.ChallengeService;
 import com.ironside.challengesphere.service.ContentModerationService;
+import com.ironside.challengesphere.service.LeaderboardService;
 import com.ironside.challengesphere.service.NotificationService;
 import com.ironside.challengesphere.util.GetSignedUrlForS3;
 
@@ -78,10 +86,19 @@ public class ChallengeServiceImpl implements ChallengeService {
     private UserChallengeRepository userChallengeRepository;
 
     @Autowired
+    private ChallengeCrewLifecycleRepository challengeCrewLifecycleRepository;
+
+    @Autowired
     private ChallengeParticipationProperties challengeParticipationProperties;
 
     @Autowired
     private SubmissionRepository submissionRepository;
+
+    @Autowired
+    private ChallengeMomentumPolicy challengeMomentumPolicy;
+
+    @Autowired
+    private LeaderboardService leaderboardService;
 
     @Autowired
     private FollowRepository followRepository;
@@ -100,6 +117,9 @@ public class ChallengeServiceImpl implements ChallengeService {
 
     @Autowired
     private ContentModerationService contentModerationService;
+
+    @Autowired
+    private ModerationEnforcementService moderationEnforcementService;
 
     @Autowired
     private UploadQuotaService uploadQuotaService;
@@ -285,6 +305,7 @@ public class ChallengeServiceImpl implements ChallengeService {
             challenge.setCreatedAt(new Timestamp(System.currentTimeMillis()));
             String challengeMode = normalizeChallengeMode(request.getChallengeMode());
             challenge.setChallengeMode(challengeMode);
+            challenge.setProofMode(normalizeProofMode(request.getProofMode()));
             challenge.setNumberOfDays(resolveChallengeDuration(request.getNumberOfDays(), challengeMode));
             List<String> requestedCoverPhotoUrls = getRequestedCoverPhotoUrls(request);
             if (requestedCoverPhotoUrls != null) {
@@ -309,7 +330,7 @@ public class ChallengeServiceImpl implements ChallengeService {
             }
             // Update user's challengesCreated count asynchronously
             updateChallengesCreatedCountAsync(request.getCreatorUserId());
-            notificationService.notifyChallengeInvitesAsync(
+            notifyChallengeInvitesAfterCommit(
                     savedChallenge,
                     request.getCreatorUserId(),
                     request.getInvitedUserIds()
@@ -331,6 +352,7 @@ public class ChallengeServiceImpl implements ChallengeService {
                     savedChallenge.getCurrentOwnerId(),
                     savedChallenge.getNumberOfDays(),
                     savedChallenge.getChallengeMode(),
+                    savedChallenge.getProofMode(),
                     toReadableCoverPhotoUrls(savedChallenge)
             );
 
@@ -1348,6 +1370,9 @@ public class ChallengeServiceImpl implements ChallengeService {
         if (request.getChallengeMode() != null) {
             challenge.setChallengeMode(normalizeChallengeMode(request.getChallengeMode()));
         }
+        // Flexible/text-only proof is paused. Preserve the request field for a
+        // future rollout, but persist the current universal photo requirement.
+        challenge.setProofMode(normalizeProofMode(request.getProofMode()));
         if (request.getNumberOfDays() != null) {
             challenge.setNumberOfDays(resolveChallengeDuration(request.getNumberOfDays(), challenge.getChallengeMode()));
         } else if (Challenge.isOneOffMode(challenge.getChallengeMode())) {
@@ -1403,13 +1428,113 @@ public class ChallengeServiceImpl implements ChallengeService {
         Challenge updated = challengeRepository.save(challenge);
         cacheService.invalidateChallenge(id);
         cacheService.invalidateAllFeeds();
-        notificationService.notifyChallengeInvitesAsync(
+        notifyChallengeInvitesAfterCommit(
                 updated,
                 actorUserId,
                 request.getInvitedUserIds()
         );
         logger.info("Challenge {} updated successfully", id);
         return withReadableCoverPhotoUrls(updated);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void inviteChallengeUsers(Long challengeId, Long actorUserId, List<Long> invitedUserIds)
+            throws ChallengeSphereException {
+        Challenge challenge = challengeRepository.findById(challengeId)
+                .orElseThrow(() -> new ChallengeSphereException(
+                        "Challenge not found with id: " + challengeId,
+                        HttpStatus.NOT_FOUND,
+                        logger
+                ));
+
+        boolean owner = actorUserId != null && (
+                actorUserId.equals(challenge.getCreatorId())
+                        || actorUserId.equals(challenge.getCurrentOwnerId())
+        );
+        UserChallenge actorMembership = owner || actorUserId == null
+                ? null
+                : userChallengeRepository.findByUserIdAndChallengeId(actorUserId, challengeId).orElse(null);
+        boolean activeParticipant = actorMembership != null
+                && Boolean.TRUE.equals(actorMembership.getActive())
+                && !Boolean.TRUE.equals(actorMembership.getBanned());
+        if (!owner && !activeParticipant) {
+            throw new ChallengeSphereException(
+                    "Only the challenge creator or active participants can invite app friends",
+                    HttpStatus.FORBIDDEN,
+                    logger
+            );
+        }
+        if (!Boolean.TRUE.equals(challenge.getActive()) || isExpiredChallenge(challenge)) {
+            throw new ChallengeSphereException(
+                    "This challenge is no longer accepting invitations",
+                    HttpStatus.BAD_REQUEST,
+                    logger
+            );
+        }
+
+        Set<Long> requestedRecipientIds = invitedUserIds == null
+                ? Set.of()
+                : invitedUserIds.stream()
+                        .filter(java.util.Objects::nonNull)
+                        .filter(userId -> userId > 0)
+                        .filter(userId -> !userId.equals(actorUserId))
+                        .collect(Collectors.toCollection(java.util.LinkedHashSet::new));
+        if (requestedRecipientIds.isEmpty()) {
+            throw new ChallengeSphereException(
+                    "Select at least one friend to invite",
+                    HttpStatus.BAD_REQUEST,
+                    logger
+            );
+        }
+
+        List<UserChallenge> recipientMemberships = userChallengeRepository.findByChallengeId(challengeId).stream()
+                .filter(membership -> requestedRecipientIds.contains(membership.getUserId()))
+                .toList();
+        Set<Long> alreadyActiveRecipientIds = recipientMemberships.stream()
+                .filter(membership -> Boolean.TRUE.equals(membership.getActive()))
+                .map(UserChallenge::getUserId)
+                .collect(Collectors.toSet());
+        Set<Long> bannedRecipientIds = recipientMemberships.stream()
+                .filter(membership -> Boolean.TRUE.equals(membership.getBanned()))
+                .map(UserChallenge::getUserId)
+                .collect(Collectors.toSet());
+
+        boolean originalCreator = actorUserId != null && actorUserId.equals(challenge.getCreatorId());
+        if (originalCreator && !bannedRecipientIds.isEmpty()) {
+            List<UserChallenge> reinstatedMemberships = recipientMemberships.stream()
+                    .filter(membership -> bannedRecipientIds.contains(membership.getUserId()))
+                    .filter(membership -> !Boolean.TRUE.equals(membership.getActive()))
+                    .peek(membership -> {
+                        membership.setBanned(false);
+                        membership.setRemovalReason(null);
+                        membership.setRemovedAt(null);
+                        membership.setRemovedByUserId(null);
+                    })
+                    .toList();
+            if (!reinstatedMemberships.isEmpty()) {
+                userChallengeRepository.saveAll(reinstatedMemberships);
+            }
+            bannedRecipientIds.removeAll(
+                    reinstatedMemberships.stream().map(UserChallenge::getUserId).toList()
+            );
+        }
+
+        requestedRecipientIds.removeAll(alreadyActiveRecipientIds);
+        requestedRecipientIds.removeAll(bannedRecipientIds);
+        if (requestedRecipientIds.isEmpty()) {
+            throw new ChallengeSphereException(
+                    "No selected friends are available to invite",
+                    HttpStatus.BAD_REQUEST,
+                    logger
+            );
+        }
+
+        notifyChallengeInvitesAfterCommit(
+                challenge,
+                actorUserId,
+                requestedRecipientIds
+        );
     }
 
     @Override
@@ -1451,7 +1576,21 @@ public class ChallengeServiceImpl implements ChallengeService {
     @Override
     @Transactional(readOnly = true)
     public ChallengeProgressResponse getChallengeProgress(Long challengeId, Long userId) throws ChallengeSphereException {
-        logger.info("Fetching challenge progress: challengeId={}, userId={}", challengeId, userId);
+        return getChallengeProgress(challengeId, userId, LocalDate.now(java.time.ZoneOffset.UTC));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public ChallengeProgressResponse getChallengeProgress(
+            Long challengeId,
+            Long userId,
+            LocalDate currentDate
+    ) throws ChallengeSphereException {
+        LocalDate effectiveCurrentDate = currentDate != null
+                ? currentDate
+                : LocalDate.now(java.time.ZoneOffset.UTC);
+        logger.info("Fetching challenge progress: challengeId={}, userId={}, localDate={}",
+                challengeId, userId, effectiveCurrentDate);
         try {
             Challenge challenge = challengeRepository.findById(challengeId)
                     .orElseThrow(() -> new ChallengeSphereException(
@@ -1496,6 +1635,24 @@ public class ChallengeServiceImpl implements ChallengeService {
             int daysCompleted = submittedDayNumbers.size();
             int completionPct = totalDays > 0 ? (int) Math.round((daysCompleted * 100.0) / totalDays) : 0;
 
+            UserChallenge participation = userChallengeRepository
+                    .findByUserIdAndChallengeId(userId, challengeId)
+                    .filter(membership -> Boolean.TRUE.equals(membership.getActive())
+                            && !Boolean.TRUE.equals(membership.getBanned()))
+                    .orElse(null);
+            boolean privateLobby = isPrivateLobby(challenge,
+                    Boolean.TRUE.equals(challenge.getIsPrivate())
+                            ? challengeCrewLifecycleRepository.findById(challengeId).orElse(null)
+                            : null);
+            ChallengeMomentumResponse momentum = buildMomentum(
+                    challenge,
+                    participation,
+                    submittedDayNumbers,
+                    totalDays,
+                    privateLobby,
+                    effectiveCurrentDate
+            );
+
             ChallengeProgressResponse response = new ChallengeProgressResponse();
             response.setChallengeId(challengeId);
             response.setChallengeTitle(challenge.getTitle());
@@ -1504,6 +1661,7 @@ public class ChallengeServiceImpl implements ChallengeService {
             response.setCompletionPercentage(completionPct);
             response.setCurrentStreak(currentStreak);
             response.setLongestStreak(longestStreak);
+            response.setMomentum(momentum);
             response.setDays(days);
             return response;
         } catch (ChallengeSphereException e) {
@@ -1517,10 +1675,40 @@ public class ChallengeServiceImpl implements ChallengeService {
     @Override
     @Transactional(readOnly = true)
     public MyChallengesResponse getMyChallenges(Long userId, Long currentUserId, String status, int page, int pageSize) throws ChallengeSphereException {
-        logger.info("Fetching my challenges: userId={}, viewerId={}, status={}, page={}, pageSize={}",
-                userId, currentUserId, status, page, pageSize);
+        return getMyChallenges(
+                userId,
+                currentUserId,
+                status,
+                page,
+                pageSize,
+                LocalDate.now(java.time.ZoneOffset.UTC)
+        );
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public MyChallengesResponse getMyChallenges(
+            Long userId,
+            Long currentUserId,
+            String status,
+            int page,
+            int pageSize,
+            LocalDate currentDate
+    ) throws ChallengeSphereException {
+        LocalDate requestedCurrentDate = currentDate != null
+                ? currentDate
+                : LocalDate.now(java.time.ZoneOffset.UTC);
+        logger.info("Fetching my challenges: userId={}, viewerId={}, status={}, page={}, pageSize={}, localDate={}",
+                userId, currentUserId, status, page, pageSize, requestedCurrentDate);
         try {
             ensureFollowAccess(userId, currentUserId, "challenges");
+            boolean selfView = java.util.Objects.equals(userId, currentUserId);
+            // The supplied device timezone belongs to the authenticated viewer. Keep legacy
+            // cross-profile completion status on the server fallback date and expose no
+            // participant-only motivation for those views.
+            LocalDate effectiveCurrentDate = selfView
+                    ? requestedCurrentDate
+                    : LocalDate.now(java.time.ZoneOffset.UTC);
 
             if (page < 1) page = 1;
             if (pageSize < 1) pageSize = 10;
@@ -1541,7 +1729,17 @@ public class ChallengeServiceImpl implements ChallengeService {
             }
             Map<Long, Challenge> challengeMap = withReadableCoverPhotoUrls(visibleChallenges)
                     .stream().collect(Collectors.toMap(Challenge::getId, c -> c));
-
+            List<Long> privateChallengeIds = challengeMap.values().stream()
+                    .filter(challenge -> Boolean.TRUE.equals(challenge.getIsPrivate()))
+                    .map(Challenge::getId)
+                    .toList();
+            Map<Long, ChallengeCrewLifecycle> privateLifecycleMap = privateChallengeIds.isEmpty()
+                    ? Map.of()
+                    : challengeCrewLifecycleRepository.findAllById(privateChallengeIds).stream()
+                            .collect(Collectors.toMap(
+                                    ChallengeCrewLifecycle::getChallengeId,
+                                    lifecycle -> lifecycle
+                            ));
             List<MyChallengesResponse.ChallengeSummary> summaries = new ArrayList<>();
             for (UserChallenge uc : userChallenges) {
                 Challenge c = challengeMap.get(uc.getChallengeId());
@@ -1565,10 +1763,28 @@ public class ChallengeServiceImpl implements ChallengeService {
                 summary.setJoinedAt(uc.getJoinedAt());
                 summary.setCompleted(oneOff
                         ? daysCompleted == 1
-                        : Boolean.TRUE.equals(uc.getCompleted()) || isExpiredChallenge(c));
+                        : Boolean.TRUE.equals(uc.getCompleted())
+                                || isExpiredChallenge(c, effectiveCurrentDate));
                 int participantCount = activeParticipantCountMap.getOrDefault(c.getId(), 0L).intValue();
                 summary.setParticipantCount(participantCount);
                 summary.setActiveParticipantCount(participantCount);
+                boolean privateLobby = isPrivateLobby(c, privateLifecycleMap.get(c.getId()));
+                summary.setMomentum(selfView ? buildMomentum(
+                        c,
+                        uc,
+                        submittedDays,
+                        totalDays,
+                        privateLobby,
+                        effectiveCurrentDate
+                ) : null);
+                summary.setPrivateRank(selfView ? resolvePrivateRank(
+                        c,
+                        userId,
+                        currentUserId,
+                        oneOff,
+                        summary.isCompleted(),
+                        privateLobby
+                ) : null);
                 summaries.add(summary);
             }
 
@@ -1671,6 +1887,12 @@ public class ChallengeServiceImpl implements ChallengeService {
         );
     }
 
+    private String normalizeProofMode(String proofMode) throws ChallengeSphereException {
+        // Keep accepting the field so old clients remain compatible, while the
+        // temporary product policy makes every newly written challenge photo-only.
+        return Challenge.PROOF_MODE_PHOTO_REQUIRED;
+    }
+
     private int resolveChallengeDuration(Integer requestedDays, String challengeMode)
             throws ChallengeSphereException {
         if (Challenge.isOneOffMode(challengeMode)) {
@@ -1692,6 +1914,10 @@ public class ChallengeServiceImpl implements ChallengeService {
     }
 
     private boolean isExpiredChallenge(Challenge challenge) {
+        return isExpiredChallenge(challenge, LocalDate.now());
+    }
+
+    private boolean isExpiredChallenge(Challenge challenge, LocalDate currentDate) {
         if (challenge == null || Challenge.isOneOffMode(challenge.getChallengeMode())) {
             return false;
         }
@@ -1700,7 +1926,76 @@ public class ChallengeServiceImpl implements ChallengeService {
         if (startDate == null || numberOfDays == null || numberOfDays <= 0) {
             return false;
         }
-        return !LocalDate.now().isBefore(startDate.plusDays(numberOfDays));
+        LocalDate effectiveCurrentDate = currentDate == null ? LocalDate.now() : currentDate;
+        return !effectiveCurrentDate.isBefore(startDate.plusDays(numberOfDays));
+    }
+
+    private ChallengeMomentumResponse buildMomentum(
+            Challenge challenge,
+            UserChallenge participation,
+            List<Integer> submittedDays,
+            int totalDays,
+            boolean privateLobby,
+            LocalDate currentDate
+    ) {
+        if (challenge == null || participation == null) {
+            return null;
+        }
+        int currentDay = challenge.getStartDate() == null
+                ? -1
+                : (int) java.time.temporal.ChronoUnit.DAYS.between(challenge.getStartDate(), currentDate) + 1;
+        boolean submittedToday = submittedDays != null && submittedDays.contains(currentDay);
+        ChallengeMomentumPolicy.Input input = new ChallengeMomentumPolicy.Input(
+                challenge.getChallengeMode(),
+                Boolean.TRUE.equals(challenge.getActive()),
+                Boolean.TRUE.equals(participation.getCompleted()),
+                Boolean.TRUE.equals(challenge.getIsPrivate()),
+                privateLobby,
+                challenge.getStartDate(),
+                totalDays,
+                submittedDays == null ? 0 : submittedDays.size(),
+                submittedToday,
+                currentDate
+        );
+        return challengeMomentumPolicy.evaluate(input)
+                .map(ChallengeMomentumResponse::from)
+                .orElse(null);
+    }
+
+    private boolean isPrivateLobby(Challenge challenge, ChallengeCrewLifecycle lifecycle) {
+        return challenge != null
+                && Boolean.TRUE.equals(challenge.getIsPrivate())
+                && (lifecycle == null || lifecycle.getStartedAt() == null);
+    }
+
+    private MyChallengesResponse.PrivateRank resolvePrivateRank(
+            Challenge challenge,
+            Long userId,
+            Long viewerUserId,
+            boolean oneOff,
+            boolean completed,
+            boolean privateLobby
+    ) {
+        if (challenge == null
+                || !Boolean.TRUE.equals(challenge.getIsPrivate())
+                || !Boolean.TRUE.equals(challenge.getActive())
+                || oneOff
+                || completed
+                || privateLobby) {
+            return null;
+        }
+        try {
+            LeaderboardResponse.UserRankDTO userRank = leaderboardService.getUserRank(
+                    challenge.getId(), userId, viewerUserId);
+            if (userRank == null || userRank.getRank() == null || userRank.getTotalParticipants() == null) {
+                return null;
+            }
+            return MyChallengesResponse.PrivateRank.of(userRank.getRank(), userRank.getTotalParticipants());
+        } catch (ChallengeSphereException | RuntimeException exception) {
+            logger.warn("Skipping private rank for challengeId={} userId={}: {}",
+                    challenge.getId(), userId, exception.getClass().getSimpleName());
+            return null;
+        }
     }
 
     private List<Integer> distinctSubmittedDays(List<Submission> submissions, int totalDays) {
@@ -1773,7 +2068,10 @@ public class ChallengeServiceImpl implements ChallengeService {
         copy.setCurrentOwnerId(challenge.getCurrentOwnerId());
         copy.setNumberOfDays(challenge.getNumberOfDays());
         copy.setChallengeMode(challenge.getChallengeMode());
+        copy.setProofMode(challenge.getProofMode());
         copy.setCoverPhotoUrls(toReadableCoverPhotoUrls(challenge));
+        copy.setOfficialTemplateKey(challenge.getOfficialTemplateKey());
+        copy.setCohortKey(challenge.getCohortKey());
         return copy;
     }
 
@@ -1786,7 +2084,7 @@ public class ChallengeServiceImpl implements ChallengeService {
             return mediaUrlService.toReadableProfilePhoto(userId, profilePicUrl);
         } catch (Exception e) {
             logger.warn("Failed to prepare readable creator profile photo URL: {}", e.getClass().getSimpleName());
-            return profilePicUrl;
+            return null;
         }
     }
 
@@ -1923,8 +2221,9 @@ public class ChallengeServiceImpl implements ChallengeService {
             );
         }
         if (moderationResult.verdict() != ContentModerationService.Verdict.CLEAN) {
+            moderationEnforcementService.removeFlaggedMediaAndWarn(ownerUserId, moderationResult);
             throw new ChallengeSphereException(
-                    "One or more challenge cover photos violate the media policy",
+                    "Challenge cover image removed for violating the media policy. A warning was sent to your notifications.",
                     HttpStatus.BAD_REQUEST,
                     logger
             );
@@ -2028,7 +2327,8 @@ public class ChallengeServiceImpl implements ChallengeService {
             return true;
         }
         return userChallengeRepository.findByUserIdAndChallengeId(currentUserId, challenge.getId())
-                .map(UserChallenge::getActive)
+                .map(userChallenge -> Boolean.TRUE.equals(userChallenge.getActive())
+                        && !Boolean.TRUE.equals(userChallenge.getBanned()))
                 .orElse(false);
     }
 
@@ -2061,13 +2361,50 @@ public class ChallengeServiceImpl implements ChallengeService {
             return;
         }
 
-        for (Long joinedUserId : successfulUserIds) {
-            try {
-                notificationService.notifyChallengeJoined(challenge, joinedUserId, recipientUserIds);
-            } catch (Exception e) {
-                logger.warn("Failed to notify challenge owner(s) for challengeId={} joinedUserId={}: {}",
-                        challenge.getId(), joinedUserId, e.getClass().getSimpleName());
+        Set<Long> recipients = Set.copyOf(recipientUserIds);
+        List<Long> joinedUsers = List.copyOf(successfulUserIds);
+        runAfterCommit(() -> {
+            for (Long joinedUserId : joinedUsers) {
+                try {
+                    notificationService.notifyChallengeJoinedAsync(challenge, joinedUserId, recipients);
+                } catch (Exception e) {
+                    logger.warn("Failed to notify challenge owner(s) for challengeId={} joinedUserId={}: {}",
+                            challenge.getId(), joinedUserId, e.getClass().getSimpleName());
+                }
             }
+        });
+    }
+
+    private void notifyChallengeInvitesAfterCommit(
+            Challenge challenge,
+            Long actorUserId,
+            Collection<Long> requestedRecipientUserIds
+    ) {
+        if (requestedRecipientUserIds == null || requestedRecipientUserIds.isEmpty()) {
+            return;
         }
+        List<Long> recipients = new ArrayList<>(requestedRecipientUserIds);
+        runAfterCommit(() -> {
+            try {
+                notificationService.notifyChallengeInvitesAsync(challenge, actorUserId, recipients);
+            } catch (Exception exception) {
+                logger.warn("Failed to schedule challenge invite notifications for challengeId={}: {}",
+                        challenge == null ? null : challenge.getId(),
+                        exception.getClass().getSimpleName());
+            }
+        });
+    }
+
+    private void runAfterCommit(Runnable task) {
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    task.run();
+                }
+            });
+            return;
+        }
+        task.run();
     }
 }

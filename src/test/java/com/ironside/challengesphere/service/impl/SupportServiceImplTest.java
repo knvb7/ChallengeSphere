@@ -28,6 +28,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
@@ -330,7 +331,7 @@ class SupportServiceImplTest {
     }
 
     @Test
-    void unsafeScreenshotBansUserAndStopsEmailDelivery() throws Exception {
+    void unsafeScreenshotIsRemovedAndWarnsUserWithoutSendingEmail() throws Exception {
         allowSupportRequest();
         String key = "support/user_42/screenshots/1721234567890_"
                 + "123e4567-e89b-12d3-a456-426614174000.png";
@@ -357,11 +358,9 @@ class SupportServiceImplTest {
                 () -> service.createTicket(42L, request)
         );
 
-        assertEquals(HttpStatus.FORBIDDEN, error.getStatus());
-        verify(moderationEnforcementService).banUser(
-                42L,
-                "Content policy violation in support attachment"
-        );
+        assertEquals(HttpStatus.BAD_REQUEST, error.getStatus());
+        verify(moderationEnforcementService).removeFlaggedMediaAndWarn(
+                eq(42L), any(ContentModerationService.Result.class));
         verify(emailService, never()).sendSupportRequestEmail(anyString(), anyString());
     }
 

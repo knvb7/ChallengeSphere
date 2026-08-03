@@ -91,6 +91,19 @@ public final class ChallengeCreationContentPolicy {
         );
     }
 
+    /**
+     * Separates the persisted legacy description format for read-only previews.
+     * The benefits column is the fallback because older rows may not contain the
+     * benefits marker while newer rows keep both representations in sync.
+     */
+    public static PreviewContent parseStoredContent(String storedDescription, String fallbackBenefits) {
+        LegacyDescription legacy = parseLegacyDescription(trim(storedDescription));
+        String benefits = legacy.benefits().isEmpty()
+                ? trim(fallbackBenefits)
+                : legacy.benefits();
+        return new PreviewContent(legacy.description(), legacy.rules(), benefits);
+    }
+
     private static String normalizeCategories(ChallengeCreateRequest request) throws ChallengeSphereException {
         if (request.getCategoryValues() != null) {
             return normalizeCategoryValues(request.getCategoryValues(), true);
@@ -171,6 +184,9 @@ public final class ChallengeCreationContentPolicy {
             String categories,
             String storedDescription
     ) {
+    }
+
+    public record PreviewContent(String description, String rules, String benefits) {
     }
 
     private record LegacyDescription(String description, String rules, String benefits) {

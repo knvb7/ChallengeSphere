@@ -1,5 +1,6 @@
 package com.ironside.challengesphere.service;
 
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
 
@@ -35,6 +36,7 @@ public interface ChallengeService {
     UserChallengesResponse getPublicChallengesByCreator(Long creatorId, int page, int pageSize, Long currentUserId) throws ChallengeSphereException;
     ChallengeCreateResponse createChallenge(ChallengeCreateRequest request) throws ChallengeSphereException;
     Challenge updateChallenge(Long id, ChallengeUpdateRequest request, Long actorUserId, boolean admin) throws ChallengeSphereException;
+    void inviteChallengeUsers(Long challengeId, Long actorUserId, List<Long> invitedUserIds) throws ChallengeSphereException;
     Optional<Challenge> getChallengeById(Long challengeId) throws ChallengeSphereException;
     List<Challenge> getChallengeByIds(List<Long> challengeId, Long currentUserId) throws ChallengeSphereException;
     void deleteChallenge(Long challengeId, Long actorUserId) throws ChallengeSphereException;
@@ -51,6 +53,8 @@ public interface ChallengeService {
     List<Long> getTrendingChallengeIds(int limit);
     ChallengeDetailResponse getChallengeDetail(Long challengeId, Long currentUserId) throws ChallengeSphereException;
     ChallengeProgressResponse getChallengeProgress(Long challengeId, Long userId) throws ChallengeSphereException;
+    ChallengeProgressResponse getChallengeProgress(Long challengeId, Long userId, LocalDate currentDate) throws ChallengeSphereException;
     MyChallengesResponse getMyChallenges(Long userId, Long currentUserId, String status, int page, int pageSize) throws ChallengeSphereException;
+    MyChallengesResponse getMyChallenges(Long userId, Long currentUserId, String status, int page, int pageSize, LocalDate currentDate) throws ChallengeSphereException;
     PresignedUrlsResponse generateChallengePresignedUrls(GeneratePresignedUrlsRequest request) throws ChallengeSphereException;
 }

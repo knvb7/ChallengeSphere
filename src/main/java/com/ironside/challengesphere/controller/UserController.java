@@ -5,6 +5,8 @@ import com.ironside.challengesphere.api.request.GetFollowersFollowingRequest;
 import com.ironside.challengesphere.api.request.GeneratePresignedUrlsRequest;
 import com.ironside.challengesphere.api.request.GetUserPayload;
 import com.ironside.challengesphere.api.request.UpdateUserRequest;
+import com.ironside.challengesphere.api.request.DeleteAccountRequest;
+import com.ironside.challengesphere.api.response.AccountDeletionResponse;
 import com.ironside.challengesphere.api.request.UserRegistrationRequest;
 import com.ironside.challengesphere.api.response.ToggleUserActivationResponse;
 import com.ironside.challengesphere.api.response.FollowActionResponse;
@@ -21,6 +23,7 @@ import com.ironside.challengesphere.security.SecurityAccess;
 import com.ironside.challengesphere.security.UserPrincipal;
 import com.ironside.challengesphere.service.UserService;
 import com.ironside.challengesphere.service.impl.ProfilePhotoService;
+import com.ironside.challengesphere.service.impl.AccountDeletionService;
 import lombok.RequiredArgsConstructor;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -48,6 +51,9 @@ public class UserController {
 
     @Autowired
     private ProfilePhotoService profilePhotoService;
+
+    @Autowired
+    private AccountDeletionService accountDeletionService;
 
 //    @Autowired
 //    private AuthService authService;
@@ -124,6 +130,16 @@ public class UserController {
         Long actorUserId = SecurityAccess.requireUserId(principal);
         User updatedUser = userService.updateUserDetails(actorUserId, updateUserRequest);
         return ResponseEntity.ok(SelfUserResponse.from(updatedUser));
+    }
+
+    @DeleteMapping("/me/account")
+    public ResponseEntity<AccountDeletionResponse> deleteOwnAccount(
+            @AuthenticationPrincipal UserPrincipal principal,
+            @Valid @RequestBody DeleteAccountRequest request) throws ChallengeSphereException {
+        Long actorUserId = SecurityAccess.requireUserId(principal);
+        return ResponseEntity.ok(
+                accountDeletionService.deleteAccount(actorUserId, request.getConfirmation())
+        );
     }
 
     /**

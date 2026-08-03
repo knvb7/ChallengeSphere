@@ -24,6 +24,9 @@ public class ChallengeDetailResponse {
     private Long currentOwnerId;
     private Integer numberOfDays;
     private String challengeMode;
+    private String proofMode;
+    private String officialTemplateKey;
+    private String cohortKey;
     private String coverPhotoUrls;
     private int participantCount;
     private boolean isJoined;
@@ -46,6 +49,9 @@ public class ChallengeDetailResponse {
         r.currentOwnerId = challenge.getCurrentOwnerId();
         r.numberOfDays = challenge.getNumberOfDays();
         r.challengeMode = challenge.getChallengeMode();
+        r.proofMode = challenge.getProofMode();
+        r.officialTemplateKey = challenge.getOfficialTemplateKey();
+        r.cohortKey = challenge.getCohortKey();
         r.coverPhotoUrls = challenge.getCoverPhotoUrls();
         r.participantCount = participantCount;
         r.isJoined = isJoined;

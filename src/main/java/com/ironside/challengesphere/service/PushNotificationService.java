@@ -4,6 +4,8 @@ import com.ironside.challengesphere.api.request.RegisterPushTokenRequest;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.model.PushDeviceToken;
 
+import java.util.Set;
+
 public interface PushNotificationService {
 
     PushDeviceToken registerToken(Long userId, RegisterPushTokenRequest request) throws ChallengeSphereException;
@@ -13,4 +15,6 @@ public interface PushNotificationService {
     void sendInteractionPush(Long userId, String type, String message, String actionObject);
 
     int sendDailyUploadReminders();
+
+    int sendDailyUploadReminders(Set<Long> excludedUserIds);
 }

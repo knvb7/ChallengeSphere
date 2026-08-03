@@ -43,8 +43,8 @@ public class RedisCacheServiceImpl {
     private ObjectMapper objectMapper;
 
     @Autowired
-    @Qualifier("cacheExecutor")
-    private Executor cacheExecutor;
+    @Qualifier("asyncExecutor")
+    private Executor asyncExecutor;
 
     private static final String CHALLENGE_PREFIX = "challenge:";
     private static final String USER_PREFIX = "user:";
@@ -336,7 +336,7 @@ public class RedisCacheServiceImpl {
      * Use this for all write operations (save, delete, invalidate)
      */
     private void executeAsync(Runnable task) {
-        cacheExecutor.execute(() -> {
+        asyncExecutor.execute(() -> {
             try {
                 task.run();
             } catch (Exception e) {

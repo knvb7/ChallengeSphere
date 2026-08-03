@@ -21,7 +21,7 @@ public final class SecurityAccess {
 
     public static void requireSelf(UserPrincipal principal, Long targetUserId) throws ChallengeSphereException {
         Long actorUserId = requireUserId(principal);
-        if (targetUserId == null || !actorUserId.equals(targetUserId)) {
+        if (!actorUserId.equals(targetUserId)) {
             throw new ChallengeSphereException("You can only act as the authenticated user", HttpStatus.FORBIDDEN, logger);
         }
     }

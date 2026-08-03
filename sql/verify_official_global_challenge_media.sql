@@ -5,7 +5,7 @@ BEGIN
     IF NOT EXISTS (
         SELECT 1
         FROM challengesphere.users
-        WHERE lower(username) = 'challengesphere'
+        WHERE lower(username) = 'challengesphere_official'
           AND profile_pic_url IS NOT NULL
           AND profile_pic_url <> ''
     ) THEN
@@ -17,7 +17,7 @@ BEGIN
         FROM challengesphere.challenges challenge
         JOIN challengesphere.users app_user
             ON app_user.id = challenge.creator_id
-        WHERE lower(app_user.username) = 'challengesphere'
+        WHERE lower(app_user.username) = 'challengesphere_official'
           AND challenge.active = TRUE
           AND (
               challenge.cover_photo_urls IS NULL
@@ -30,7 +30,7 @@ END $$;
 
 SELECT 'official_profile_with_logo=' || COUNT(*)
 FROM challengesphere.users
-WHERE lower(username) = 'challengesphere'
+WHERE lower(username) = 'challengesphere_official'
   AND profile_pic_url IS NOT NULL
   AND profile_pic_url <> '';
 
@@ -38,7 +38,7 @@ SELECT 'official_challenges_with_covers=' || COUNT(*)
 FROM challengesphere.challenges challenge
 JOIN challengesphere.users app_user
     ON app_user.id = challenge.creator_id
-WHERE lower(app_user.username) = 'challengesphere'
+WHERE lower(app_user.username) = 'challengesphere_official'
   AND challenge.active = TRUE
   AND challenge.cover_photo_urls IS NOT NULL
   AND challenge.cover_photo_urls <> '';

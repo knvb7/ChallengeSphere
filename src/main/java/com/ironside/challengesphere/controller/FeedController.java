@@ -73,6 +73,22 @@ public class FeedController {
     }
 
     /**
+     * Get connections feed - activity from followers and people the current user follows.
+     * GET /api/v1/feed/connections/{userId}
+     */
+    @GetMapping("/connections/{userId}")
+    public ResponseEntity<FeedResponse> getConnectionsFeed(
+            @AuthenticationPrincipal UserPrincipal principal,
+            @PathVariable Long userId,
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "20") @Min(1) @Max(100) int pageSize) throws ChallengeSphereException {
+        Long actorUserId = SecurityAccess.requireUserId(principal);
+        logger.info("Connections feed request: userId={}, page={}, pageSize={}", actorUserId, page, pageSize);
+        FeedResponse response = feedService.getConnectionsFeed(actorUserId, page, pageSize);
+        return ResponseEntity.ok(response);
+    }
+
+    /**
      * Get trending feed - popular submissions based on engagement
      * GET /api/v1/feed/trending
      */

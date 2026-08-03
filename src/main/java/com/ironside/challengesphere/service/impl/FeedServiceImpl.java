@@ -152,6 +152,47 @@ public class FeedServiceImpl implements FeedService {
 
     @Override
     @Transactional(readOnly = true)
+    public FeedResponse getConnectionsFeed(Long userId, int page, int pageSize) throws ChallengeSphereException {
+        logger.info("Getting connections feed for userId: {}, page: {}, pageSize: {}", userId, page, pageSize);
+
+        if (userId == null) {
+            throw new ChallengeSphereException("User ID is required for connections feed", HttpStatus.BAD_REQUEST, logger);
+        }
+
+        try {
+            if (!userRepository.existsById(userId)) {
+                throw new ChallengeSphereException("User not found: " + userId, HttpStatus.NOT_FOUND, logger);
+            }
+
+            int normalizedPage = Math.max(1, page);
+            Pageable pageable = PageRequest.of(normalizedPage - 1, pageSize);
+            Page<Submission> submissionsPage = submissionRepository.findConnectionsFeedForUser(userId, pageable);
+
+            if (submissionsPage.isEmpty()) {
+                logger.debug("No submissions found in connections feed for userId: {}", userId);
+                return FeedResponse.empty(page, pageSize, "CONNECTIONS");
+            }
+
+            List<FeedItemResponse> feedItems = enrichSubmissions(submissionsPage.getContent(), userId);
+            logger.info("Returning {} connections feed items for userId={}, page={}",
+                    feedItems.size(), userId, page);
+            return FeedResponse.create(
+                    feedItems,
+                    page,
+                    pageSize,
+                    submissionsPage.getTotalElements(),
+                    "CONNECTIONS"
+            );
+        } catch (ChallengeSphereException e) {
+            throw e;
+        } catch (Exception e) {
+            logger.error("Error getting connections feed for userId {}: {}", userId, e.getClass().getSimpleName());
+            throw new ChallengeSphereException("Failed to get connections feed", HttpStatus.INTERNAL_SERVER_ERROR, logger);
+        }
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public FeedResponse getTrendingFeed(int page, int pageSize, Long currentUserId) throws ChallengeSphereException {
         logger.info("Getting trending feed, page: {}, pageSize: {}", page, pageSize);
 

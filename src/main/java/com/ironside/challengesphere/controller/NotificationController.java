@@ -12,6 +12,7 @@ import com.ironside.challengesphere.repository.NotificationRepository;
 import com.ironside.challengesphere.security.UserPrincipal;
 import com.ironside.challengesphere.service.ChallengeService;
 import com.ironside.challengesphere.service.PushNotificationService;
+import com.ironside.challengesphere.service.impl.RedisCacheServiceImpl;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -19,10 +20,13 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 import java.util.Map;
+import java.time.Duration;
 
 @RestController
 @RequestMapping("/api/v1/notifications")
@@ -41,6 +45,9 @@ public class NotificationController {
     @Autowired
     private PushNotificationService pushNotificationService;
 
+    @Autowired(required = false)
+    private RedisCacheServiceImpl cacheService;
+
     /**
      * GET /api/v1/notifications/{userId}
      * Returns recent notifications for a user (up to 50).
@@ -55,7 +62,7 @@ public class NotificationController {
         logger.info("Fetching notifications for userId: {}, limit: {}", userId, limit);
         List<Notification> notifications = notificationRepository.findRecentNotificationsByUserId(userId, safeLimit);
         long total = notificationRepository.countNotificationsByUserId(userId);
-        long unreadCount = notificationRepository.countUnreadNotificationsByUserId(userId);
+        long unreadCount = unreadCount(userId);
         return ResponseEntity.ok(Map.of(
                 "notifications", notifications,
                 "total", total,
@@ -75,7 +82,7 @@ public class NotificationController {
             @PathVariable Long userId,
             @AuthenticationPrincipal UserPrincipal principal) throws ChallengeSphereException {
         assertOwnInbox(userId, principal);
-        long unreadCount = notificationRepository.countUnreadNotificationsByUserId(userId);
+        long unreadCount = unreadCount(userId);
         return ResponseEntity.ok(Map.of("unreadCount", unreadCount));
     }
 
@@ -92,6 +99,7 @@ public class NotificationController {
             @AuthenticationPrincipal UserPrincipal principal) throws ChallengeSphereException {
         assertOwnInbox(userId, principal);
         int updated = notificationRepository.markAllAsReadByUserId(userId);
+        invalidateUnreadCount(userId);
         return ResponseEntity.ok(Map.of("updated", updated));
     }
 
@@ -103,6 +111,7 @@ public class NotificationController {
             @AuthenticationPrincipal UserPrincipal principal) throws ChallengeSphereException {
         assertOwnInbox(userId, principal);
         int updated = notificationRepository.markAsRead(userId, notificationId);
+        invalidateUnreadCount(userId);
         return ResponseEntity.ok(Map.of("updated", updated));
     }
 
@@ -118,6 +127,7 @@ public class NotificationController {
         assertOwnInbox(userId, principal);
         logger.info("Clearing notifications for userId: {}", userId);
         notificationRepository.deleteByUserId(userId);
+        invalidateUnreadCount(userId);
         return ResponseEntity.ok().build();
     }
 
@@ -136,6 +146,7 @@ public class NotificationController {
 
         JoinChallengeResponse response = challengeService.joinChallengeFromVerifiedInvite(request);
         notificationRepository.markAsRead(userId, notificationId);
+        invalidateUnreadCount(userId);
         return ResponseEntity.ok(response);
     }
 
@@ -147,6 +158,7 @@ public class NotificationController {
         Long userId = requireUserId(principal);
         requireOwnChallengeInvite(notificationId, userId);
         notificationRepository.markAsRead(userId, notificationId);
+        invalidateUnreadCount(userId);
         return ResponseEntity.ok(Map.of(
                 "handled", true,
                 "notificationId", notificationId
@@ -177,6 +189,36 @@ public class NotificationController {
 
     private int clampLimit(int limit) {
         return Math.max(1, Math.min(limit, 100));
+    }
+
+    private long unreadCount(Long userId) {
+        String key = "notifications:unread:" + userId;
+        Long cached = cacheService == null ? null : cacheService.get(key, Long.class);
+        if (cached != null) {
+            return cached;
+        }
+        long count = notificationRepository.countUnreadNotificationsByUserId(userId);
+        if (cacheService != null) {
+            cacheService.save(key, count, Duration.ofSeconds(60));
+        }
+        return count;
+    }
+
+    private void invalidateUnreadCount(Long userId) {
+        if (cacheService == null) {
+            return;
+        }
+        Runnable invalidate = () -> cacheService.delete("notifications:unread:" + userId);
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    invalidate.run();
+                }
+            });
+        } else {
+            invalidate.run();
+        }
     }
 
     private Long requireUserId(UserPrincipal principal) throws ChallengeSphereException {

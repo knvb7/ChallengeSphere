@@ -27,6 +27,19 @@ public interface FeedService {
     FeedResponse getFollowingFeed(Long userId, int page, int pageSize) throws ChallengeSphereException;
 
     /**
+     * Get activity from the current user's social connections (followers and following).
+     * Public submissions are visible from either relationship direction. Private-challenge
+     * submissions are returned only when the current user is an active participant in the
+     * same challenge.
+     *
+     * @param userId Current user's ID
+     * @param page Page number (1-based)
+     * @param pageSize Number of items per page
+     * @return FeedResponse with privacy-filtered connection activity
+     */
+    FeedResponse getConnectionsFeed(Long userId, int page, int pageSize) throws ChallengeSphereException;
+
+    /**
      * Get trending feed - popular submissions based on engagement
      * @param page Page number (1-based)
      * @param pageSize Number of items per page
@@ -64,4 +77,3 @@ public interface FeedService {
      */
     FeedResponse getUserFeed(Long targetUserId, int page, int pageSize, Long currentUserId) throws ChallengeSphereException;
 }
-

@@ -1,5 +1,10 @@
 package com.ironside.challengesphere.controller;
 
+import java.time.Clock;
+import java.time.DateTimeException;
+import java.time.LocalDate;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.util.List;
 
 import org.apache.logging.log4j.LogManager;
@@ -30,6 +35,7 @@ import com.ironside.challengesphere.api.request.GetChallengesByHashtagRequest;
 import com.ironside.challengesphere.api.request.GetPopularChallengesRequest;
 import com.ironside.challengesphere.api.request.GetUserChallengesRequest;
 import com.ironside.challengesphere.api.request.JoinChallengeRequest;
+import com.ironside.challengesphere.api.request.InviteChallengeUsersRequest;
 import com.ironside.challengesphere.api.request.LeaveChallengeRequest;
 import com.ironside.challengesphere.api.request.RemoveParticipantRequest;
 import com.ironside.challengesphere.api.response.ChallengeCreateResponse;
@@ -68,6 +74,9 @@ public class ChallengeController {
 
     @Autowired
     private ChallengeParticipationProperties challengeParticipationProperties;
+
+    /** UTC is the safe contract fallback when a device timezone is absent or invalid. */
+    private Clock clock = Clock.systemUTC();
 
     @PostMapping
     public ResponseEntity<ChallengeCreateResponse> createChallenge(
@@ -151,6 +160,16 @@ public class ChallengeController {
         request.setUserIds(List.of(actorUserId));
         JoinChallengeResponse response = challengeService.joinChallenge(request);
         return ResponseEntity.ok(response);
+    }
+
+    @PostMapping("/{challengeId}/invites")
+    public ResponseEntity<Void> inviteChallengeUsers(
+            @AuthenticationPrincipal UserPrincipal principal,
+            @PathVariable Long challengeId,
+            @Valid @RequestBody InviteChallengeUsersRequest request) throws ChallengeSphereException {
+        Long actorUserId = SecurityAccess.requireUserId(principal);
+        challengeService.inviteChallengeUsers(challengeId, actorUserId, request.getInvitedUserIds());
+        return ResponseEntity.accepted().build();
     }
 
     @GetMapping("/participation-policy")
@@ -287,10 +306,14 @@ public class ChallengeController {
     public ResponseEntity<ChallengeProgressResponse> getChallengeProgress(
             @AuthenticationPrincipal UserPrincipal principal,
             @PathVariable Long challengeId,
-            @RequestParam(required = false) Long userId) throws ChallengeSphereException {
+            @RequestParam(required = false) Long userId,
+            @RequestParam(name = "timezone", required = false) String timezone) throws ChallengeSphereException {
         Long actorUserId = SecurityAccess.requireUserId(principal);
-        logger.info("GET /api/v1/challenges/{}/my-progress?userId={}", challengeId, actorUserId);
-        return ResponseEntity.ok(challengeService.getChallengeProgress(challengeId, actorUserId));
+        LocalDate currentDate = resolveCurrentDate(timezone);
+        logger.info("GET /api/v1/challenges/{}/my-progress?userId={} localDate={}",
+                challengeId, actorUserId, currentDate);
+        return ResponseEntity.ok(challengeService.getChallengeProgress(
+                challengeId, actorUserId, currentDate));
     }
 
     @GetMapping("/my")
@@ -299,12 +322,15 @@ public class ChallengeController {
             @RequestParam(required = false) Long userId,
             @RequestParam(required = false) String status,
             @RequestParam(defaultValue = "1") int page,
-            @RequestParam(defaultValue = "10") int pageSize) throws ChallengeSphereException {
+            @RequestParam(defaultValue = "10") int pageSize,
+            @RequestParam(name = "timezone", required = false) String timezone) throws ChallengeSphereException {
         Long actorUserId = SecurityAccess.requireUserId(principal);
         Long targetUserId = userId != null ? userId : actorUserId;
-        logger.info("GET /api/v1/challenges/my?userId={}&status={}&page={}&pageSize={} actor={}",
-                targetUserId, status, page, pageSize, actorUserId);
-        return ResponseEntity.ok(challengeService.getMyChallenges(targetUserId, actorUserId, status, page, pageSize));
+        LocalDate currentDate = resolveCurrentDate(timezone);
+        logger.info("GET /api/v1/challenges/my?userId={}&status={}&page={}&pageSize={} actor={} localDate={}",
+                targetUserId, status, page, pageSize, actorUserId, currentDate);
+        return ResponseEntity.ok(challengeService.getMyChallenges(
+                targetUserId, actorUserId, status, page, pageSize, currentDate));
     }
 
     @PostMapping("/presigned-urls")
@@ -314,6 +340,18 @@ public class ChallengeController {
         request.setUserId(SecurityAccess.requireUserId(principal));
         logger.info("POST /api/v1/challenges/presigned-urls for userId={}", request.getUserId());
         return ResponseEntity.ok(challengeService.generateChallengePresignedUrls(request));
+    }
+
+    LocalDate resolveCurrentDate(String timezone) {
+        ZoneId zoneId = ZoneOffset.UTC;
+        if (timezone != null && !timezone.isBlank()) {
+            try {
+                zoneId = ZoneId.of(timezone.trim());
+            } catch (DateTimeException exception) {
+                logger.debug("Invalid device timezone; using UTC fallback");
+            }
+        }
+        return LocalDate.now(clock.withZone(zoneId));
     }
 
 }

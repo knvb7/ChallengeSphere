@@ -12,6 +12,7 @@ import java.util.List;
 import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class S3DeletionCapabilityTest {
@@ -22,30 +23,29 @@ class S3DeletionCapabilityTest {
             Pattern.compile("::\\s*deleteObjects?\\b"));
 
     @Test
-    void runtimeExposesNoS3DeletionApi() {
+    void runtimeExposesOnlyTheNarrowModerationDeletionApi() {
         assertFalse(hasMethod(MediaUrlService.class, "deleteMediaObjects"));
         assertFalse(hasMethod(GetSignedUrlForS3.class, "deleteObject"));
+        assertTrue(hasMethod(ModeratedMediaObjectStore.class, "delete"));
     }
 
     @Test
-    void productionSourceContainsNoS3DeletionCapability() throws IOException {
+    void productionDeletionCapabilityIsConfinedToTheS3Utility() throws IOException {
         Path sourceRoot = Path.of("src", "main", "java");
         List<String> violations = new ArrayList<>();
 
         try (var paths = Files.walk(sourceRoot)) {
             for (Path source : paths.filter(path -> path.toString().endsWith(".java")).toList()) {
                 String content = Files.readString(source);
-                for (Pattern pattern : FORBIDDEN_DELETION_PATTERNS) {
-                    if (pattern.matcher(content).find()) {
-                        violations.add(source + " matches " + pattern.pattern());
-                    }
+                if (FORBIDDEN_DELETION_PATTERNS.stream().anyMatch(pattern -> pattern.matcher(content).find())) {
+                    violations.add(source.toString());
                 }
             }
         }
 
-        assertTrue(
-                violations.isEmpty(),
-                () -> "S3 deletion capability found in production source: " + String.join(", ", violations));
+        assertEquals(
+                List.of(Path.of("src", "main", "java", "com", "ironside", "challengesphere", "service", "impl", "ModeratedMediaObjectStore.java").toString()),
+                violations);
     }
 
     @Test

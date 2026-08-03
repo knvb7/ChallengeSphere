@@ -11,6 +11,7 @@ import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.model.Challenge;
 import com.ironside.challengesphere.model.ChallengeInvite;
 import com.ironside.challengesphere.model.InviteUsage;
+import com.ironside.challengesphere.model.User;
 import com.ironside.challengesphere.model.UserChallenge;
 import com.ironside.challengesphere.repository.ChallengeInviteRepository;
 import com.ironside.challengesphere.repository.ChallengeRepository;
@@ -42,7 +43,7 @@ public class InviteServiceImpl implements InviteService {
     private static final int INVITE_CODE_LENGTH = 12;
     private static final int MIN_LEGACY_INVITE_CODE_LENGTH = 8;
     private static final String INVITE_UNAVAILABLE_MESSAGE = "Invite is invalid or unavailable";
-    private static final int DEFAULT_EXPIRY_HOURS = 168; // 7 days
+    private static final int DEFAULT_EXPIRY_HOURS = 720; // 30 days
 
     private final SecureRandom secureRandom = new SecureRandom();
 
@@ -253,7 +254,7 @@ public class InviteServiceImpl implements InviteService {
 
         String inviteUrl = inviteBaseUrl + "/" + invite.getInviteCode();
 
-        return InviteLinkResponse.from(
+        InviteLinkResponse response = InviteLinkResponse.from(
                 invite.getId(),
                 invite.getInviteCode(),
                 inviteUrl,
@@ -265,6 +266,32 @@ public class InviteServiceImpl implements InviteService {
                 invite.getActive(),
                 invite.getCreatedAt()
         );
+
+        ChallengeCreationContentPolicy.PreviewContent content =
+                ChallengeCreationContentPolicy.parseStoredContent(
+                        challenge.getDescription(), challenge.getBenefits());
+        User inviter = userRepository.findById(invite.getCreatedBy()).orElse(null);
+        int acceptedCount = invite.getUseCount() == null ? 0 : invite.getUseCount();
+
+        response.setInviterName(inviter == null ? null : firstNonBlank(inviter.getName(), inviter.getUsername()));
+        response.setInviterUsername(inviter == null ? null : blankToNull(inviter.getUsername()));
+        response.setChallengeDescription(blankToNull(content.description()));
+        response.setChallengeRules(blankToNull(content.rules()));
+        response.setChallengeBenefits(blankToNull(content.benefits()));
+        response.setChallengeCategories(blankToNull(challenge.getCategories()));
+        response.setChallengeMode(blankToNull(challenge.getChallengeMode()));
+        response.setProofMode(blankToNull(challenge.getProofMode()));
+        response.setChallengeStartDate(challenge.getStartDate());
+        response.setChallengeDurationDays(challenge.getNumberOfDays());
+        response.setParticipantCount(userChallengeRepository.countActiveByChallengeId(challenge.getId()));
+        response.setAcceptedCount(acceptedCount);
+        // Share links have no recipient roster, so a pending count would be fabricated.
+        response.setPendingCount(null);
+        response.setRemainingUses(invite.getMaxUses() == null
+                ? null
+                : Math.max(0, invite.getMaxUses() - acceptedCount));
+        response.setPrivateChallenge(Boolean.TRUE.equals(challenge.getIsPrivate()));
+        return response;
     }
 
     @Override
@@ -404,6 +431,18 @@ public class InviteServiceImpl implements InviteService {
             }
         }
         return true;
+    }
+
+    private String firstNonBlank(String preferred, String fallback) {
+        String normalizedPreferred = blankToNull(preferred);
+        return normalizedPreferred == null ? blankToNull(fallback) : normalizedPreferred;
+    }
+
+    private String blankToNull(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        return value.strip();
     }
 
     private ChallengeSphereException inviteUnavailable() {

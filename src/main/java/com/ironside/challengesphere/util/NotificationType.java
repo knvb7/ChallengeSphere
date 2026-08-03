@@ -10,5 +10,6 @@ public enum NotificationType {
     REMINDER,
     INVITE,
     SUBMISSION_UPDATE,
+    CONTENT_WARNING,
     ANNOUNCEMENT
 }

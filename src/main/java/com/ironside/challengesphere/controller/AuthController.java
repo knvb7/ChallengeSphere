@@ -82,7 +82,9 @@ public class AuthController {
     public ResponseEntity<Map<String, Object>> usernameAvailability(@RequestParam String username) {
         String candidate = username == null ? "" : username.trim();
         boolean reserved = UsernamePolicy.containsReservedKeyword(candidate);
-        boolean valid = !reserved && candidate.matches("^[a-zA-Z0-9_]{3,50}$");
+        boolean valid = !reserved
+                && UsernamePolicy.hasValidLength(candidate)
+                && candidate.matches("^[a-zA-Z0-9_]+$");
         boolean available = valid && userRepository.findByUsername(candidate).isEmpty();
         return ResponseEntity.ok(Map.of(
                 "username", candidate,
@@ -130,10 +132,12 @@ public class AuthController {
     }
 
     @GetMapping("/me")
-    public ResponseEntity<SelfUserResponse> me(@AuthenticationPrincipal UserPrincipal principal)
+    public ResponseEntity<SelfUserResponse> me(
+            @AuthenticationPrincipal UserPrincipal principal,
+            @RequestHeader(value = "Authorization", required = false) String authorization)
             throws ChallengeSphereException {
-        Long userId = SecurityAccess.requireUserId(principal);
-        User user = userService.getUserDetails(userId, null, null);
+        SecurityAccess.requireUserId(principal);
+        User user = authService.getCurrentUser(extractBearerToken(authorization));
         return ResponseEntity.ok(SelfUserResponse.from(user));
     }
 

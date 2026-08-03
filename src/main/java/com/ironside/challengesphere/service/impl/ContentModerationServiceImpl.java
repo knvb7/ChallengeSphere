@@ -31,6 +31,12 @@ public class ContentModerationServiceImpl implements ContentModerationService {
     private static final Set<String> IMAGE_EXTS = Set.of(
             ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".heic", ".heif"
     );
+    private static final Set<String> BANNED_CONTENT_CATEGORIES = Set.of(
+            "explicit nudity",
+            "nudity",
+            "suggestive",
+            "rude gestures"
+    );
 
     @Value("${aws.region}")
     private String awsRegion;
@@ -228,7 +234,7 @@ public class ContentModerationServiceImpl implements ContentModerationService {
 
     private boolean[] recordHit(List<Finding> out, String url, ModerationLabel label) {
         Float confidence = label.confidence();
-        if (confidence == null) {
+        if (confidence == null || !isBannedContentCategory(label)) {
             return new boolean[]{false, false};
         }
 
@@ -248,5 +254,15 @@ public class ContentModerationServiceImpl implements ContentModerationService {
             return new boolean[]{false, true};
         }
         return new boolean[]{false, false};
+    }
+
+    private boolean isBannedContentCategory(ModerationLabel label) {
+        String name = label.name() == null ? "" : label.name().toLowerCase(Locale.ROOT);
+        String parent = label.parentName() == null ? "" : label.parentName().toLowerCase(Locale.ROOT);
+        return BANNED_CONTENT_CATEGORIES.stream()
+                .anyMatch(category -> name.equals(category)
+                        || parent.equals(category)
+                        || name.contains(category)
+                        || parent.contains(category));
     }
 }

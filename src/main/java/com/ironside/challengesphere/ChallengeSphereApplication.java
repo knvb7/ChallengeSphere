@@ -18,12 +18,12 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 				version = "1.0",
 				description = "ChallengeSphere – The Ultimate way to challenge yourself!",
 				contact = @Contact(
-						name = "IronSide",
+						name = "ChallengeSphere",
 						email = "ironside-dev@challengesphere.com"
 				),
 				license = @License(
 						name = "License",
-						url = "https://ironside.com/license"
+						url = "https://challengesphere.com/license"
 				)
 		)
 )

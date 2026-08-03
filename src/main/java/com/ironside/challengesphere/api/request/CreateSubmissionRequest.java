@@ -25,8 +25,11 @@ public class CreateSubmissionRequest {
     private String description;
 
     @NotEmpty(message = "At least one submission photo is required")
-    @Size(min = 1, max = 5, message = "A submission must include between 1 and 5 media files")
+    @Size(min = 1, max = 5, message = "A submission must include between 1 and 5 photos")
     private List<String> mediaUrls; // Owned S3 photo keys issued by the upload flow
 
     private Boolean isPrivate = false; // Default to public submission
+
+    @Size(max = 64, message = "Timezone cannot exceed 64 characters")
+    private String timezone; // IANA timezone reported by the submitting device
 }

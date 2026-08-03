@@ -1,5 +1,6 @@
 package com.ironside.challengesphere.api.response;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.ironside.challengesphere.model.Challenge;
 import lombok.Data;
 
@@ -33,6 +34,9 @@ public class MyChallengesResponse {
         private Long currentOwnerId;
         private Integer numberOfDays;
         private String challengeMode;
+        private String proofMode;
+        private String officialTemplateKey;
+        private String cohortKey;
         private String coverPhotoUrls;
         private int daysCompleted;
         private int currentStreak;
@@ -41,6 +45,10 @@ public class MyChallengesResponse {
         private boolean completed;
         private int participantCount;
         private int activeParticipantCount;
+        @JsonInclude(JsonInclude.Include.NON_NULL)
+        private ChallengeMomentumResponse momentum;
+        @JsonInclude(JsonInclude.Include.NON_NULL)
+        private PrivateRank privateRank;
 
         public static ChallengeSummary from(Challenge challenge) {
             ChallengeSummary summary = new ChallengeSummary();
@@ -60,8 +68,24 @@ public class MyChallengesResponse {
             summary.currentOwnerId = challenge.getCurrentOwnerId();
             summary.numberOfDays = challenge.getNumberOfDays();
             summary.challengeMode = challenge.getChallengeMode();
+            summary.proofMode = challenge.getProofMode();
+            summary.officialTemplateKey = challenge.getOfficialTemplateKey();
+            summary.cohortKey = challenge.getCohortKey();
             summary.coverPhotoUrls = challenge.getCoverPhotoUrls();
             return summary;
+        }
+    }
+
+    @Data
+    public static class PrivateRank {
+        private long rank;
+        private long totalParticipants;
+
+        public static PrivateRank of(long rank, long totalParticipants) {
+            PrivateRank privateRank = new PrivateRank();
+            privateRank.rank = rank;
+            privateRank.totalParticipants = totalParticipants;
+            return privateRank;
         }
     }
 

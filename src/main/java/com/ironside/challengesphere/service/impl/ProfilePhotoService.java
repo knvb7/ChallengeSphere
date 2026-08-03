@@ -31,18 +31,21 @@ public class ProfilePhotoService {
     private final ContentModerationService contentModerationService;
     private final UploadQuotaService uploadQuotaService;
     private final IssuedUploadService issuedUploadService;
+    private final ModerationEnforcementService moderationEnforcementService;
 
     public ProfilePhotoService(
             UserRepository userRepository,
             MediaUrlService mediaUrlService,
             ContentModerationService contentModerationService,
             UploadQuotaService uploadQuotaService,
-            IssuedUploadService issuedUploadService) {
+            IssuedUploadService issuedUploadService,
+            ModerationEnforcementService moderationEnforcementService) {
         this.userRepository = userRepository;
         this.mediaUrlService = mediaUrlService;
         this.contentModerationService = contentModerationService;
         this.uploadQuotaService = uploadQuotaService;
         this.issuedUploadService = issuedUploadService;
+        this.moderationEnforcementService = moderationEnforcementService;
     }
 
     public PresignedUrlsResponse generateUpload(
@@ -119,8 +122,11 @@ public class ProfilePhotoService {
             );
         }
         if (moderation == null || moderation.verdict() != ContentModerationService.Verdict.CLEAN) {
+            if (moderation != null) {
+                moderationEnforcementService.removeFlaggedMediaAndWarn(userId, moderation);
+            }
             throw new ChallengeSphereException(
-                    "Profile photo rejected by content safety review",
+                    "Profile photo removed for violating the content policy. A warning was sent to your notifications.",
                     HttpStatus.BAD_REQUEST,
                     logger
             );

@@ -13,6 +13,8 @@ import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+import org.springframework.security.web.util.matcher.RegexRequestMatcher;
+import org.springframework.security.web.util.matcher.RequestMatcher;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
@@ -21,6 +23,9 @@ import org.springframework.http.MediaType;
 @Configuration
 @EnableMethodSecurity
 public class SecurityConfig {
+
+    static final RequestMatcher PUBLIC_INVITE_PREVIEW =
+            new RegexRequestMatcher("^/api/v1/invites/[A-Za-z0-9]{8,12}/?$", "GET");
 
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
     private final RateLimitingFilter rateLimitingFilter;
@@ -47,6 +52,7 @@ public class SecurityConfig {
                             "/api/v1/auth/**",
                             "/actuator/health"
                     ).permitAll();
+                    auth.requestMatchers(PUBLIC_INVITE_PREVIEW).permitAll();
                     if (publicDocsEnabled) {
                         auth.requestMatchers(
                                 "/v3/api-docs/**",

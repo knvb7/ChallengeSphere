@@ -69,6 +69,9 @@ public class UserPreferencesServiceImpl {
         if (req.getNotifyOnChallengeUpdate() != null) {
             preferencesRepository.updateNotifyOnChallengeUpdate(userId, req.getNotifyOnChallengeUpdate());
         }
+        if (req.getNotifyOnMotivation() != null) {
+            preferencesRepository.updateNotifyOnMotivation(userId, req.getNotifyOnMotivation());
+        }
 
         // Privacy prefs
         if (req.getPrivateProfile() != null) {
@@ -114,6 +117,12 @@ public class UserPreferencesServiceImpl {
     private UserPreferences createDefaults(Long userId) {
         UserPreferences prefs = new UserPreferences();
         prefs.setUserId(userId);
+        userRepository.findById(userId).ifPresent(user -> {
+            Integer notificationMask = user.getNotifications();
+            boolean legacyGlobalPushEnabled = notificationMask == null
+                    || (notificationMask & 1) == 1;
+            prefs.setNotifyOnMotivation(legacyGlobalPushEnabled);
+        });
         UserPreferences saved = preferencesRepository.save(prefs);
         logger.info("Created default preferences for userId: {}", userId);
         return saved;
@@ -126,4 +135,3 @@ public class UserPreferencesServiceImpl {
         }
     }
 }
-

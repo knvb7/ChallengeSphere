@@ -44,7 +44,7 @@ public class RedisRateLimitStore implements RateLimitStore {
                 List.of(key),
                 Long.toString(window.toMillis())
         );
-        if (result == null || result.size() < 2) {
+        if (result.size() < 2) {
             throw new IllegalStateException("Distributed rate-limit store returned no result");
         }
 

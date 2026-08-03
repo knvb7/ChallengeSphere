@@ -35,7 +35,7 @@ public interface GloryService {
     /**
      * Get glory count for a submission
      */
-    Long getGloryCount(Long submissionId) throws ChallengeSphereException;
+    Long getGloryCount(Long submissionId, Long viewerUserId) throws ChallengeSphereException;
 
     /**
      * Toggle unglory (not genuine) for a submission.

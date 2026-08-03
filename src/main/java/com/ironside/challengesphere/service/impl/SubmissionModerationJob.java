@@ -2,11 +2,8 @@ package com.ironside.challengesphere.service.impl;
 
 import com.ironside.challengesphere.model.ModerationFlag;
 import com.ironside.challengesphere.model.Submission;
-import com.ironside.challengesphere.model.User;
 import com.ironside.challengesphere.repository.ModerationFlagRepository;
 import com.ironside.challengesphere.repository.SubmissionRepository;
-import com.ironside.challengesphere.repository.UserRepository;
-import com.ironside.challengesphere.security.AuthTokenStore;
 import com.ironside.challengesphere.service.ContentModerationService;
 import com.ironside.challengesphere.service.LeaderboardService;
 import org.apache.logging.log4j.LogManager;
@@ -29,9 +26,6 @@ public class SubmissionModerationJob {
     private SubmissionRepository submissionRepository;
 
     @Autowired
-    private UserRepository userRepository;
-
-    @Autowired
     private ModerationFlagRepository moderationFlagRepository;
 
     @Autowired
@@ -44,56 +38,61 @@ public class SubmissionModerationJob {
     private LeaderboardService leaderboardService;
 
     @Autowired
-    private AuthTokenStore authTokenStore;
+    private ModerationEnforcementService moderationEnforcementService;
 
-    @Async("cacheExecutor")
+    @Async("moderationExecutor")
     @Transactional
     public void moderateSubmissionAsync(Long submissionId) {
+        moderateIfPending(submissionId);
+    }
+
+    /**
+     * Atomically claims and moderates one queued submission. The conditional
+     * update makes concurrent application instances safe: only one can process
+     * a given row, while stale claims are eligible again after 30 minutes.
+     */
+    @Transactional
+    public boolean moderateIfPending(Long submissionId) {
         if (submissionId == null) {
-            logger.warn("Skipping async moderation without a submission id");
-            return;
+            logger.warn("Skipping moderation without a submission id");
+            return false;
+        }
+        if (submissionRepository.claimForModeration(submissionId) != 1) {
+            return false;
         }
 
         Submission submission = submissionRepository.findById(submissionId).orElse(null);
         if (submission == null) {
-            logger.warn("Skipping async moderation; submission {} was not found", submissionId);
-            return;
-        }
-        if (!Boolean.TRUE.equals(submission.getActive())) {
-            logger.info("Skipping async moderation; submission {} is no longer active", submission.getId());
-            return;
+            logger.warn("Skipping moderation; claimed submission {} was not found", submissionId);
+            return false;
         }
 
         try {
             ContentModerationService.Result result = contentModerationService.scanStrict(
                     storedMediaUrls(submission.getMediaUrls()));
             if (result.verdict() == ContentModerationService.Verdict.CLEAN) {
-                logger.info("Async moderation passed for submission {}", submission.getId());
-                return;
+                markPassed(submission);
+                logger.info("Moderation passed for submission {}", submission.getId());
+                return true;
             }
 
-            if (result.verdict() == ContentModerationService.Verdict.FLAG_FOR_REVIEW) {
-                hideSubmission(submission);
-                saveModerationFlags(submission, result);
-                invalidateAfterRemoval(submission);
-                logger.warn("Submission {} hidden for moderation review", submission.getId());
-                return;
-            }
-
-            hideSubmission(submission);
-            banUser(submission.getUserId(), result);
+            markFlagged(submission);
+            saveModerationFlags(submission, result);
+            moderationEnforcementService.removeFlaggedMediaAndWarn(submission.getUserId(), result);
             invalidateAfterRemoval(submission);
             logger.warn(
-                    "Submission {} hidden and user {} banned after async moderation",
+                    "Submission {} flagged; offending image removed and user {} warned",
                     submission.getId(),
                     submission.getUserId());
+            return true;
         } catch (Exception e) {
             logger.error(
-                    "Async moderation failed for submission {}; uploaded media retained for administrative cleanup: {}",
+                    "Moderation failed for submission {}; it will be retried: {}",
                     submission.getId(),
                     e.getClass().getSimpleName());
-            hideSubmission(submission);
+            markFailed(submission, e);
             invalidateAfterRemoval(submission);
+            return false;
         }
     }
 
@@ -108,9 +107,34 @@ public class SubmissionModerationJob {
                 .toList();
     }
 
-    private void hideSubmission(Submission submission) {
+    private void markPassed(Submission submission) {
+        Timestamp now = new Timestamp(System.currentTimeMillis());
+        submission.setModerationStatus(Submission.MODERATION_PASSED);
+        submission.setModerationStartedAt(null);
+        submission.setModeratedAt(now);
+        submission.setModerationError(null);
+        submission.setUpdatedAt(now);
+        submissionRepository.save(submission);
+    }
+
+    private void markFlagged(Submission submission) {
+        Timestamp now = new Timestamp(System.currentTimeMillis());
         submission.setActive(false);
-        submission.setUpdatedAt(new Timestamp(System.currentTimeMillis()));
+        submission.setModerationStatus(Submission.MODERATION_FLAGGED);
+        submission.setModerationStartedAt(null);
+        submission.setModeratedAt(now);
+        submission.setModerationError(null);
+        submission.setUpdatedAt(now);
+        submissionRepository.save(submission);
+    }
+
+    private void markFailed(Submission submission, Exception error) {
+        Timestamp now = new Timestamp(System.currentTimeMillis());
+        submission.setActive(false);
+        submission.setModerationStatus(Submission.MODERATION_FAILED);
+        submission.setModerationStartedAt(null);
+        submission.setModerationError(truncate(error.getClass().getSimpleName() + ": " + error.getMessage(), 512));
+        submission.setUpdatedAt(now);
         submissionRepository.save(submission);
     }
 
@@ -125,23 +149,6 @@ public class SubmissionModerationJob {
             flag.setCreatedAt(new Timestamp(System.currentTimeMillis()));
             moderationFlagRepository.save(flag);
         }
-    }
-
-    private void banUser(Long userId, ContentModerationService.Result result) {
-        if (userId == null) {
-            return;
-        }
-
-        User user = userRepository.findById(userId).orElse(null);
-        if (user == null) {
-            return;
-        }
-
-        user.setActive(false);
-        user.setBannedAt(new Timestamp(System.currentTimeMillis()));
-        user.setBanReason("Content policy violation: " + summarizeFindings(result));
-        userRepository.save(user);
-        authTokenStore.revokeAllForUser(userId);
     }
 
     private void invalidateAfterRemoval(Submission submission) {
@@ -161,23 +168,10 @@ public class SubmissionModerationJob {
         }
     }
 
-    private static String summarizeFindings(ContentModerationService.Result result) {
-        if (result.findings().isEmpty()) {
-            return "unspecified";
+    private static String truncate(String value, int maxLength) {
+        if (value == null || value.length() <= maxLength) {
+            return value;
         }
-
-        StringBuilder sb = new StringBuilder();
-        int n = Math.min(3, result.findings().size());
-        for (int i = 0; i < n; i++) {
-            ContentModerationService.Finding finding = result.findings().get(i);
-            if (i > 0) {
-                sb.append(", ");
-            }
-            sb.append(finding.category()).append('=').append(finding.severity());
-        }
-        if (result.findings().size() > n) {
-            sb.append(", +").append(result.findings().size() - n).append(" more");
-        }
-        return sb.toString();
+        return value.substring(0, maxLength);
     }
 }

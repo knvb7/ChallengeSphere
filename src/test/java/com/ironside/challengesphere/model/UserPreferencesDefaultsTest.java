@@ -11,5 +11,6 @@ class UserPreferencesDefaultsTest {
         UserPreferences preferences = new UserPreferences();
 
         assertTrue(preferences.getNotifyOnGlory());
+        assertTrue(preferences.getNotifyOnMotivation());
     }
 }

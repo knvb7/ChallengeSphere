@@ -29,8 +29,8 @@ class SubmissionMediaKeyPolicyTest {
     private final SubmissionMediaKeyPolicy policy = new SubmissionMediaKeyPolicy();
 
     @Test
-    void acceptsCanonicalOwnedPhotoAndVideo() throws Exception {
-        assertEquals(List.of(PHOTO, VIDEO), policy.validateAndNormalize(7L, List.of(PHOTO, VIDEO)));
+    void acceptsCanonicalOwnedPhoto() throws Exception {
+        assertEquals(List.of(PHOTO), policy.validateAndNormalize(7L, List.of(PHOTO)));
     }
 
     @ParameterizedTest
@@ -51,7 +51,7 @@ class SubmissionMediaKeyPolicyTest {
     }
 
     @Test
-    void allowsTextOnlySubmission() throws Exception {
+    void normalizesMissingMediaBeforeServiceAppliesRequiredPhotoRule() throws Exception {
         assertEquals(List.of(), policy.validateAndNormalize(7L, null));
         assertEquals(List.of(), policy.validateAndNormalize(7L, List.of()));
     }
@@ -67,6 +67,7 @@ class SubmissionMediaKeyPolicyTest {
             "submissions/user_7/../user_8/SUBMISSION_PHOTO/victim.jpg",
             "submissions/user_7/SUBMISSION_PHOTO/1752148800000_123e4567-e89b-12d3-a456-426614174000.jpg?x=1",
             "submissions/user_7/SUBMISSION_PHOTO/1752148800000_123e4567-e89b-12d3-a456-426614174000.mp4",
+            "submissions/user_7/SUBMISSION_VIDEO/1752148800000_123e4567-e89b-12d3-a456-426614174000.mp4",
             "submissions/user_7/SUBMISSION_VIDEO/1752148800000_123e4567-e89b-12d3-a456-426614174000.jpg"
     })
     void rejectsNonCanonicalOrForeignKeys(String key) {
@@ -96,8 +97,7 @@ class SubmissionMediaKeyPolicyTest {
     @CsvSource({
             "SUBMISSION_PHOTO,IMAGE_JPEG,.jpg",
             "SUBMISSION_PHOTO,IMAGE_PNG,.png",
-            "SUBMISSION_PHOTO,IMAGE_GIF,.gif",
-            "SUBMISSION_VIDEO,VIDEO_MP4,.mp4"
+            "SUBMISSION_PHOTO,IMAGE_GIF,.gif"
     })
     void createsCanonicalKeyFromValidatedMediaTypeAndContentType(
             MediaTypes mediaType,

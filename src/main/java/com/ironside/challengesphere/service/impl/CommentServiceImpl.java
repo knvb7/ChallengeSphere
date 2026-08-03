@@ -237,7 +237,8 @@ public class CommentServiceImpl implements CommentService {
         }
 
         return userChallengeRepository.findByUserIdAndChallengeId(viewerId, submission.getChallengeId())
-                .map(UserChallenge::getActive)
+                .map(userChallenge -> Boolean.TRUE.equals(userChallenge.getActive())
+                        && !Boolean.TRUE.equals(userChallenge.getBanned()))
                 .orElse(false);
     }
 

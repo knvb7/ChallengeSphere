@@ -1,5 +1,8 @@
 package com.ironside.challengesphere.config;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.ironside.challengesphere.exception.BaseException;
 import jakarta.servlet.http.HttpServletRequest;
 import org.apache.logging.log4j.LogManager;
@@ -18,16 +21,29 @@ import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
 
 import java.lang.reflect.Method;
+import java.lang.reflect.Parameter;
+import java.util.Iterator;
+import java.util.Map;
 
 /**
  * AOP Aspect that logs every API call across all controllers.
- * Logs only stable route metadata, response status, and execution time.
+ * Logs stable route metadata, a bounded redacted request body, response status,
+ * exception details, and execution time.
  */
 @Aspect
 @Component
 public class ApiLoggingAspect {
 
     private static final Logger logger = LogManager.getLogger(ApiLoggingAspect.class);
+    private static final int MAX_EXCEPTION_DETAIL_LENGTH = 500;
+    private static final int MAX_REQUEST_PAYLOAD_LENGTH = 2_000;
+    private static final String REDACTED_VALUE = "[REDACTED]";
+
+    private final ObjectMapper objectMapper;
+
+    public ApiLoggingAspect(ObjectMapper objectMapper) {
+        this.objectMapper = objectMapper;
+    }
 
     /**
      * Pointcut matching all public methods in any class under the controller package
@@ -74,8 +90,9 @@ public class ApiLoggingAspect {
             }
         }
 
-        logger.info("API called | method={} route={} handler={}.{}",
-                httpMethod, routePattern, className, methodName);
+        String requestPayload = safeRequestPayload(method, joinPoint.getArgs());
+        logger.info("API called | method={} route={} handler={}.{} payload={}",
+                httpMethod, routePattern, className, methodName, requestPayload);
 
         Object result;
         try {
@@ -98,18 +115,123 @@ public class ApiLoggingAspect {
             HttpStatus status = ex instanceof BaseException baseException && baseException.getStatus() != null
                     ? baseException.getStatus()
                     : HttpStatus.INTERNAL_SERVER_ERROR;
+            String exceptionDetail = safeExceptionDetail(ex);
             if (status.is5xxServerError()) {
-                logger.error("API failed | method={} route={} handler={}.{} status={} exception={} durationMs={}",
+                Throwable loggedThrowable = loggingThrowable(ex);
+                logger.error("API failed | method={} route={} handler={}.{} status={} exception={} reason={} durationMs={}",
                         httpMethod, routePattern, className, methodName, status.value(),
-                        ex.getClass().getSimpleName(), duration);
+                        ex.getClass().getSimpleName(), exceptionDetail, duration, loggedThrowable);
             } else {
-                logger.warn("API rejected | method={} route={} handler={}.{} status={} exception={} durationMs={}",
+                logger.warn("API rejected | method={} route={} handler={}.{} status={} exception={} reason={} durationMs={}",
                         httpMethod, routePattern, className, methodName, status.value(),
-                        ex.getClass().getSimpleName(), duration);
+                        ex.getClass().getSimpleName(), exceptionDetail, duration);
             }
-
             throw ex;
         }
     }
 
+    static String safeExceptionDetail(Exception exception) {
+        String detail = exception instanceof BaseException baseException
+                ? baseException.getResponseMessage()
+                : exception.getMessage();
+        if (detail == null || detail.isBlank()) {
+            return "No exception detail available";
+        }
+
+        String sanitized = detail
+                .replace('\r', ' ')
+                .replace('\n', ' ')
+                .replace('\t', ' ')
+                .trim();
+        if (sanitized.length() <= MAX_EXCEPTION_DETAIL_LENGTH) {
+            return sanitized;
+        }
+        return sanitized.substring(0, MAX_EXCEPTION_DETAIL_LENGTH) + "...";
+    }
+
+    static Throwable loggingThrowable(Exception exception) {
+        if (exception instanceof BaseException baseException && baseException.getE() != null) {
+            return baseException.getE();
+        }
+        return exception;
+    }
+
+    String safeRequestPayload(Method method, Object[] arguments) {
+        if (arguments == null || arguments.length == 0) {
+            return "none";
+        }
+
+        try {
+            Parameter[] parameters = method.getParameters();
+            JsonNode payload = null;
+            for (int index = 0; index < Math.min(parameters.length, arguments.length); index++) {
+                if (!parameters[index].isAnnotationPresent(RequestBody.class)) {
+                    continue;
+                }
+
+                Object argument = arguments[index];
+                if (argument == null) {
+                    payload = objectMapper.nullNode();
+                } else {
+                    payload = objectMapper.valueToTree(argument);
+                    redactSensitiveFields(payload);
+                }
+                break;
+            }
+
+            if (payload == null) {
+                return "none";
+            }
+
+            String serialized = payload.toString()
+                    .replace('\r', ' ')
+                    .replace('\n', ' ')
+                    .replace('\t', ' ');
+            if (serialized.length() <= MAX_REQUEST_PAYLOAD_LENGTH) {
+                return serialized;
+            }
+            return serialized.substring(0, MAX_REQUEST_PAYLOAD_LENGTH) + "...";
+        } catch (RuntimeException serializationFailure) {
+            return "[UNAVAILABLE:" + serializationFailure.getClass().getSimpleName() + "]";
+        }
+    }
+
+    private void redactSensitiveFields(JsonNode node) {
+        if (node == null) {
+            return;
+        }
+        if (node.isObject()) {
+            ObjectNode objectNode = (ObjectNode) node;
+            Iterator<Map.Entry<String, JsonNode>> fields = objectNode.fields();
+            while (fields.hasNext()) {
+                Map.Entry<String, JsonNode> field = fields.next();
+                if (isSensitiveField(field.getKey())) {
+                    objectNode.put(field.getKey(), REDACTED_VALUE);
+                } else {
+                    redactSensitiveFields(field.getValue());
+                }
+            }
+        } else if (node.isArray()) {
+            node.forEach(this::redactSensitiveFields);
+        }
+    }
+
+    private boolean isSensitiveField(String fieldName) {
+        String normalized = fieldName == null
+                ? ""
+                : fieldName.replaceAll("[^A-Za-z0-9]", "").toLowerCase();
+        return normalized.contains("password")
+                || normalized.contains("token")
+                || normalized.contains("secret")
+                || normalized.contains("credential")
+                || normalized.contains("authorization")
+                || normalized.contains("apikey")
+                || normalized.contains("otp")
+                || normalized.contains("code")
+                || normalized.contains("email")
+                || normalized.contains("phone")
+                || normalized.contains("address")
+                || normalized.contains("url")
+                || normalized.contains("cookie");
+    }
 }

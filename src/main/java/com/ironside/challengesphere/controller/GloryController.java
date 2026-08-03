@@ -96,9 +96,11 @@ public class GloryController {
      * GET /api/v1/glories/count/{submissionId}
      */
     @GetMapping("/count/{submissionId}")
-    public ResponseEntity<Long> getGloryCount(@PathVariable Long submissionId) throws ChallengeSphereException {
+    public ResponseEntity<Long> getGloryCount(
+            @AuthenticationPrincipal UserPrincipal principal,
+            @PathVariable Long submissionId) throws ChallengeSphereException {
         logger.info("Get glory count for submission: {}", submissionId);
-        Long count = gloryService.getGloryCount(submissionId);
+        Long count = gloryService.getGloryCount(submissionId, SecurityAccess.requireUserId(principal));
         return ResponseEntity.ok(count);
     }
 }

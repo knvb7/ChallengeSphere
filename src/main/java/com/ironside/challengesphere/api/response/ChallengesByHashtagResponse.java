@@ -34,6 +34,9 @@ public class ChallengesByHashtagResponse {
         private Long currentOwnerId;
         private Integer numberOfDays;
         private String challengeMode;
+        private String proofMode;
+        private String officialTemplateKey;
+        private String cohortKey;
         private String coverPhotoUrls;
         private int activeParticipantCount;
 
@@ -54,6 +57,9 @@ public class ChallengesByHashtagResponse {
             this.currentOwnerId = challenge.getCurrentOwnerId();
             this.numberOfDays = challenge.getNumberOfDays();
             this.challengeMode = challenge.getChallengeMode();
+            this.proofMode = challenge.getProofMode();
+            this.officialTemplateKey = challenge.getOfficialTemplateKey();
+            this.cohortKey = challenge.getCohortKey();
             this.coverPhotoUrls = challenge.getCoverPhotoUrls();
             this.activeParticipantCount = activeParticipantCount;
         }

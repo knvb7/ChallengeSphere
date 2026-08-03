@@ -56,11 +56,15 @@ public class NotificationServiceImpl implements NotificationService {
     private static final String TYPE_COMMENT = "COMMENT";
     private static final String TYPE_CHALLENGE_INVITE = "CHALLENGE_INVITE";
     private static final String TYPE_CHALLENGE_UPDATE = "CHALLENGE_UPDATE";
+    private static final String TYPE_MOMENTUM_MILESTONE = "MOMENTUM_MILESTONE";
+    private static final Set<String> IMMEDIATE_PUSH_TYPES = Set.of(
+            TYPE_FOLLOW, TYPE_GLORY, TYPE_COMMENT, TYPE_CHALLENGE_INVITE);
     private static final int MAX_CHALLENGE_INVITES_PER_REQUEST = 20;
     private static final int MAX_CHALLENGE_INVITES_PER_UTC_DAY = 50;
     private static final long INVITE_DELIVERY_RESERVED = 1L;
     private static final long INVITE_DELIVERY_QUOTA_EXHAUSTED = -1L;
     private static final DefaultRedisScript<Long> RESERVE_CHALLENGE_INVITE_SCRIPT;
+    private static final DefaultRedisScript<Long> RELEASE_CHALLENGE_INVITE_SCRIPT;
 
     static {
         RESERVE_CHALLENGE_INVITE_SCRIPT = new DefaultRedisScript<>();
@@ -82,6 +86,21 @@ public class NotificationServiceImpl implements NotificationService {
                 redis.call('SET', KEYS[2], '1', 'PX', ARGV[3])
                 return 1
                 """);
+
+        RELEASE_CHALLENGE_INVITE_SCRIPT = new DefaultRedisScript<>();
+        RELEASE_CHALLENGE_INVITE_SCRIPT.setResultType(Long.class);
+        RELEASE_CHALLENGE_INVITE_SCRIPT.setScriptText("""
+                if redis.call('DEL', KEYS[2]) == 0 then
+                    return 0
+                end
+                local current = tonumber(redis.call('GET', KEYS[1]) or '0')
+                if current <= 1 then
+                    redis.call('DEL', KEYS[1])
+                else
+                    redis.call('DECR', KEYS[1])
+                end
+                return 1
+                """);
     }
 
     private final NotificationRepository notificationRepository;
@@ -99,7 +118,16 @@ public class NotificationServiceImpl implements NotificationService {
     @Autowired
     private StringRedisTemplate redisTemplate;
 
+    @Autowired
+    private MotivationMilestoneService motivationMilestoneService;
+
+    @Autowired(required = false)
+    private RedisCacheServiceImpl cacheService;
+
     private record PushDispatch(Long userId, String type, String message, String actionObject) {
+    }
+
+    private record ChallengeInviteReservation(long status, String quotaKey, String dedupeKey) {
     }
 
     public NotificationServiceImpl(NotificationRepository notificationRepository,
@@ -122,8 +150,23 @@ public class NotificationServiceImpl implements NotificationService {
     @Transactional
     public Notification createNotification(Long userId, String type, String message, String actionObject) {
         Notification saved = notificationRepository.save(buildNotification(userId, type, message, actionObject));
+        invalidateUnreadCount(userId);
         logger.info("Created notification id={} for userId={} type={}", saved.getId(), userId, type);
         return saved;
+    }
+
+    @Override
+    @Transactional
+    public Notification notifyChallengeUpdate(Long recipientUserId, String message, String actionObject) {
+        return userRepository.findById(recipientUserId)
+                .map(recipient -> deliver(
+                        recipient,
+                        preferencesRepository.findByUserId(recipientUserId).orElse(null),
+                        TYPE_CHALLENGE_UPDATE,
+                        message,
+                        actionObject
+                ))
+                .orElse(null);
     }
 
     @Override
@@ -153,6 +196,35 @@ public class NotificationServiceImpl implements NotificationService {
                 TYPE_FOLLOW,
                 actorName + " started following you",
                 toJson(data));
+    }
+
+    @Override
+    @Async("asyncExecutor")
+    @Transactional
+    public void notifyFollowAsync(Long recipientUserId, Long actorUserId) {
+        try {
+            notifyFollow(recipientUserId, actorUserId);
+        } catch (Exception exception) {
+            logger.warn("Failed to create follow notification for recipient={} actor={}: {}",
+                    recipientUserId, actorUserId, exception.getClass().getSimpleName());
+        }
+    }
+
+    @Override
+    @Async("asyncExecutor")
+    public void notifyMomentumMilestonesAfterSubmissionAsync(
+            Long userId,
+            Long challengeId,
+            LocalDate currentDate,
+            boolean evaluateRank
+    ) {
+        try {
+            motivationMilestoneService.evaluateAfterSubmission(
+                    userId, challengeId, currentDate, evaluateRank);
+        } catch (RuntimeException exception) {
+            logger.warn("Failed to create momentum milestones for userId={} challengeId={}: {}",
+                    userId, challengeId, exception.getClass().getSimpleName());
+        }
     }
 
     @Override
@@ -206,6 +278,7 @@ public class NotificationServiceImpl implements NotificationService {
 
         if (!toSave.isEmpty()) {
             notificationRepository.saveAll(toSave);
+            toSave.stream().map(Notification::getUserId).distinct().forEach(this::invalidateUnreadCount);
             dispatchPushesAfterCommit(pushes);
         }
         logger.info("Created {} submission notification(s) for submissionId={}", toSave.size(), submission.getId());
@@ -213,9 +286,11 @@ public class NotificationServiceImpl implements NotificationService {
     }
 
     @Override
-    @Async("cacheExecutor")
+    @Async("asyncExecutor")
     @Transactional
     public void notifyChallengeInvitesAsync(Challenge challenge, Long actorUserId, Collection<Long> requestedRecipientUserIds) {
+        List<ChallengeInviteReservation> deliveryReservations = new ArrayList<>();
+        boolean notificationsPersisted = false;
         try {
             if (challenge == null || actorUserId == null || requestedRecipientUserIds == null || requestedRecipientUserIds.isEmpty())
                 return;
@@ -268,16 +343,15 @@ public class NotificationServiceImpl implements NotificationService {
                     continue;
                 }
                 UserPreferences prefs = prefsByUserId.get(recipient.getId());
-                if (!allowsChallengeInvites(prefs))
-                    continue;
-                long reservation = reserveChallengeInviteDelivery(
+                ChallengeInviteReservation reservation = reserveChallengeInviteDelivery(
                         actorUserId, challenge.getId(), recipient.getId());
-                if (reservation == INVITE_DELIVERY_QUOTA_EXHAUSTED) {
+                if (reservation.status() == INVITE_DELIVERY_QUOTA_EXHAUSTED) {
                     logger.warn("Daily challenge invite quota exhausted for actor userId={}", actorUserId);
                     break;
                 }
-                if (reservation != INVITE_DELIVERY_RESERVED)
+                if (reservation.status() != INVITE_DELIVERY_RESERVED)
                     continue;
+                deliveryReservations.add(reservation);
 
                 String actionObject = toJson(baseChallengeInvitePayload(actor, recipient, challenge));
                 if (allowsInbox(recipient)) {
@@ -289,11 +363,17 @@ public class NotificationServiceImpl implements NotificationService {
             }
 
             if (!toSave.isEmpty()) {
+                releaseChallengeInviteReservationsAfterRollback(deliveryReservations);
                 notificationRepository.saveAll(toSave);
+                toSave.stream().map(Notification::getUserId).distinct().forEach(this::invalidateUnreadCount);
+                notificationsPersisted = true;
                 dispatchPushesAfterCommit(pushes);
             }
             logger.info("Created {} challenge invite notification(s) for challengeId={}", toSave.size(), challenge.getId());
         } catch (Exception e) {
+            if (!notificationsPersisted) {
+                releaseChallengeInviteReservations(deliveryReservations);
+            }
             logger.warn("Failed to create challenge invite notifications for challengeId={}: {}",
                     challenge == null ? null : challenge.getId(), e.getClass().getSimpleName());
         }
@@ -347,10 +427,29 @@ public class NotificationServiceImpl implements NotificationService {
 
         if (!toSave.isEmpty()) {
             notificationRepository.saveAll(toSave);
+            toSave.stream().map(Notification::getUserId).distinct().forEach(this::invalidateUnreadCount);
             dispatchPushesAfterCommit(pushes);
         }
         logger.info("Created {} challenge join notification(s) for challengeId={}", toSave.size(), challenge.getId());
         return toSave.size();
+    }
+
+    @Override
+    @Async("asyncExecutor")
+    @Transactional
+    public void notifyChallengeJoinedAsync(
+            Challenge challenge,
+            Long joiningUserId,
+            Collection<Long> recipientUserIds
+    ) {
+        try {
+            notifyChallengeJoined(challenge, joiningUserId, recipientUserIds);
+        } catch (Exception exception) {
+            logger.warn("Failed to create challenge join notifications for challengeId={} joiningUserId={}: {}",
+                    challenge == null ? null : challenge.getId(),
+                    joiningUserId,
+                    exception.getClass().getSimpleName());
+        }
     }
 
     @Override
@@ -359,7 +458,21 @@ public class NotificationServiceImpl implements NotificationService {
         if (submission == null || Objects.equals(submission.getUserId(), actorUserId)) {
             return null;
         }
-        return notifySubmissionOwner(submission, actorUserId, null, TYPE_GLORY, "liked your submission");
+        return notifySubmissionOwner(submission, actorUserId, null, TYPE_GLORY, "gloried your submission");
+    }
+
+    @Override
+    @Async("asyncExecutor")
+    @Transactional
+    public void notifyGloryAsync(Submission submission, Long actorUserId) {
+        try {
+            notifyGlory(submission, actorUserId);
+        } catch (Exception exception) {
+            logger.warn("Failed to create glory notification for submissionId={} actorUserId={}: {}",
+                    submission == null ? null : submission.getId(),
+                    actorUserId,
+                    exception.getClass().getSimpleName());
+        }
     }
 
     @Override
@@ -372,7 +485,7 @@ public class NotificationServiceImpl implements NotificationService {
     }
 
     @Override
-    @Async("cacheExecutor")
+    @Async("asyncExecutor")
     @Transactional
     public void notifyCommentAsync(Submission submission, Long actorUserId, Long commentId) {
         try {
@@ -429,11 +542,18 @@ public class NotificationServiceImpl implements NotificationService {
         Notification saved = null;
         if (allowsInbox(recipient)) {
             saved = notificationRepository.save(buildNotification(recipient.getId(), type, message, actionObject));
+            invalidateUnreadCount(recipient.getId());
             if (allowsPush(recipient, prefs, type)) {
                 dispatchPushAfterCommit(recipient.getId(), type, message, actionObject);
             }
         }
         return saved;
+    }
+
+    private void invalidateUnreadCount(Long userId) {
+        if (cacheService != null && userId != null) {
+            runAfterCommit(() -> cacheService.delete("notifications:unread:" + userId));
+        }
     }
 
     private void dispatchPushesAfterCommit(List<PushDispatch> pushes) {
@@ -482,11 +602,16 @@ public class NotificationServiceImpl implements NotificationService {
         if (!allowsInbox(user)) {
             return false;
         }
+        String normalizedType = safe(type).toUpperCase();
+        if (!IMMEDIATE_PUSH_TYPES.contains(normalizedType)) {
+            return false;
+        }
         Integer mask = user.getNotifications();
         boolean legacyPushEnabled = mask == null || (mask & PUSH_NOTIFICATIONS_BIT) == PUSH_NOTIFICATIONS_BIT;
         return legacyPushEnabled
                 && (prefs == null || Boolean.TRUE.equals(prefs.getPushNotificationsEnabled()))
-                && allowsType(prefs, type);
+                && (!TYPE_CHALLENGE_INVITE.equals(normalizedType) || allowsChallengeInvites(prefs))
+                && allowsType(prefs, normalizedType);
     }
 
     private boolean allowsChallengeInvites(UserPreferences prefs) {
@@ -503,6 +628,7 @@ public class NotificationServiceImpl implements NotificationService {
             case TYPE_COMMENT -> Boolean.TRUE.equals(prefs.getNotifyOnComment());
             case "INVITE", TYPE_CHALLENGE_INVITE -> Boolean.TRUE.equals(prefs.getNotifyOnChallengeInvite());
             case TYPE_SUBMISSION, "SUBMISSION_UPDATE", "CHALLENGE_UPDATE" -> Boolean.TRUE.equals(prefs.getNotifyOnChallengeUpdate());
+            case TYPE_MOMENTUM_MILESTONE -> Boolean.TRUE.equals(prefs.getNotifyOnMotivation());
             default -> true;
         };
     }
@@ -540,31 +666,65 @@ public class NotificationServiceImpl implements NotificationService {
         return data;
     }
 
-    private long reserveChallengeInviteDelivery(
+    private ChallengeInviteReservation reserveChallengeInviteDelivery(
             Long actorUserId,
             Long challengeId,
             Long recipientUserId
     ) {
         if (actorUserId == null || challengeId == null || recipientUserId == null) {
-            return INVITE_DELIVERY_QUOTA_EXHAUSTED;
+            return new ChallengeInviteReservation(
+                    INVITE_DELIVERY_QUOTA_EXHAUSTED, "", "");
         }
 
         Instant now = Instant.now();
         LocalDate utcDate = now.atZone(ZoneOffset.UTC).toLocalDate();
         Instant nextUtcDay = utcDate.plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant();
         long quotaTtlMillis = Math.max(1_000L, Duration.between(now, nextUtcDay).toMillis());
+        String quotaKey = "notification-quota:challenge-invite:{" + actorUserId + "}:" + utcDate;
+        String dedupeKey = "notification-dedupe:challenge-invite:{" + actorUserId + "}:"
+                + challengeId + ":" + recipientUserId;
         Long result = redisTemplate.execute(
                 RESERVE_CHALLENGE_INVITE_SCRIPT,
-                List.of(
-                        "notification-quota:challenge-invite:{" + actorUserId + "}:" + utcDate,
-                        "notification-dedupe:challenge-invite:{" + actorUserId + "}:"
-                                + challengeId + ":" + recipientUserId
-                ),
+                List.of(quotaKey, dedupeKey),
                 Integer.toString(MAX_CHALLENGE_INVITES_PER_UTC_DAY),
                 Long.toString(quotaTtlMillis),
                 Long.toString(Duration.ofHours(24).toMillis())
         );
-        return result == null ? INVITE_DELIVERY_QUOTA_EXHAUSTED : result;
+        return new ChallengeInviteReservation(
+                result == null ? INVITE_DELIVERY_QUOTA_EXHAUSTED : result,
+                quotaKey,
+                dedupeKey
+        );
+    }
+
+    private void releaseChallengeInviteReservationsAfterRollback(
+            List<ChallengeInviteReservation> reservations
+    ) {
+        if (reservations.isEmpty() || !TransactionSynchronizationManager.isSynchronizationActive()) {
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCompletion(int status) {
+                if (status != TransactionSynchronization.STATUS_COMMITTED) {
+                    releaseChallengeInviteReservations(reservations);
+                }
+            }
+        });
+    }
+
+    private void releaseChallengeInviteReservations(List<ChallengeInviteReservation> reservations) {
+        for (ChallengeInviteReservation reservation : reservations) {
+            try {
+                redisTemplate.execute(
+                        RELEASE_CHALLENGE_INVITE_SCRIPT,
+                        List.of(reservation.quotaKey(), reservation.dedupeKey())
+                );
+            } catch (RuntimeException exception) {
+                logger.warn("Failed to release challenge invite reservation: {}",
+                        exception.getClass().getSimpleName());
+            }
+        }
     }
 
     private Map<String, Object> baseChallengeJoinedPayload(User actor, User recipient, Challenge challenge) {

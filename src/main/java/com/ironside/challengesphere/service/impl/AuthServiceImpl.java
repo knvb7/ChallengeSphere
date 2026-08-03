@@ -129,10 +129,11 @@ public class AuthServiceImpl implements AuthService {
         if (googleUser.isPresent()) {
             user = googleUser.get();
             ensureAccountMayAuthenticate(user);
+            user = backfillGoogleName(user, profile.name());
         } else if (emailUser.isPresent()) {
             user = emailUser.get();
             ensureAccountMayAuthenticate(user);
-            user = linkGoogleId(user, googleId, pictureUrl);
+            user = linkGoogleId(user, googleId, profile.name(), pictureUrl);
         } else {
             user = createGoogleUser(email, googleId, name, pictureUrl);
         }
@@ -465,8 +466,19 @@ public class AuthServiceImpl implements AuthService {
                 .collect(Collectors.toList());
     }
 
-    private User linkGoogleId(User user, String googleId, String pictureUrl) {
+    private User backfillGoogleName(User user, String googleName) {
+        if (!StringUtils.hasText(user.getName()) && StringUtils.hasText(googleName)) {
+            user.setName(normalizeGoogleName(googleName));
+            return userRepository.save(user);
+        }
+        return user;
+    }
+
+    private User linkGoogleId(User user, String googleId, String googleName, String pictureUrl) {
         user.setGoogleId(googleId);
+        if (!StringUtils.hasText(user.getName()) && StringUtils.hasText(googleName)) {
+            user.setName(normalizeGoogleName(googleName));
+        }
         if (user.getProfilePicUrl() == null && pictureUrl != null) {
             user.setProfilePicUrl(pictureUrl);
         }
@@ -474,15 +486,13 @@ public class AuthServiceImpl implements AuthService {
         return userRepository.save(user);
     }
 
-    private User createGoogleUser(String email, String googleId, String name, String pictureUrl) {
+    private User createGoogleUser(String email, String googleId, String googleName, String pictureUrl) {
         User user = new User();
         user.setEmailId(email);
         user.setGoogleId(googleId);
         user.setProfilePicUrl(pictureUrl);
-        user.setUsername(generateUsername(email, name));
-        if (name != null && !name.isBlank()) {
-            user.setName(name.trim());
-        }
+        user.setUsername(generateUsername(email, googleName));
+        user.setName(normalizeGoogleName(googleName));
         user.setHashedPassword(null);
         user.setCreatedAt(new Timestamp(System.currentTimeMillis()));
         user.setLastLoginAt(new Timestamp(System.currentTimeMillis()));
@@ -498,16 +508,27 @@ public class AuthServiceImpl implements AuthService {
         return userRepository.save(user);
     }
 
+    private String normalizeGoogleName(String googleName) {
+        if (!StringUtils.hasText(googleName)) {
+            return null;
+        }
+        String normalized = googleName.trim().replaceAll("\\s+", " ");
+        return normalized.length() <= 120 ? normalized : normalized.substring(0, 120).trim();
+    }
+
     private String generateUsername(String email, String name) {
-        String rawBase = (name != null && !name.isBlank())
-                ? name
-                : email.split("@")[0];
+        String rawBase = StringUtils.hasText(name) ? name : email.split("@")[0];
         String base = UsernamePolicy.sanitizeGeneratedUsernameBase(rawBase);
-        base = base.length() > 20 ? base.substring(0, 20) : base;
+        if (base.length() < UsernamePolicy.MIN_LENGTH) {
+            base += "_user";
+        }
+        base = base.substring(0, Math.min(base.length(), UsernamePolicy.MAX_LENGTH));
+
         String candidate = base;
-        // append random suffix until unique
         while (userRepository.findByUsername(candidate).isPresent()) {
-            candidate = base + "_" + UUID.randomUUID().toString().substring(0, 5);
+            String suffix = "_" + UUID.randomUUID().toString().substring(0, 5);
+            int prefixLength = Math.min(base.length(), UsernamePolicy.MAX_LENGTH - suffix.length());
+            candidate = base.substring(0, prefixLength) + suffix;
         }
         return candidate;
     }

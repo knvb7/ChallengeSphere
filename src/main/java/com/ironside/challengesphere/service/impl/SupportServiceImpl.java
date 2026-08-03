@@ -183,20 +183,10 @@ public class SupportServiceImpl implements SupportService {
                     logger
             );
         }
-        if (moderation.verdict() == ContentModerationService.Verdict.BLOCK_AND_BAN) {
-            moderationEnforcementService.banUser(
-                    userId,
-                    "Content policy violation in support attachment"
-            );
-            throw new ChallengeSphereException(
-                    "Support attachment rejected for content policy violation. Your account has been suspended.",
-                    HttpStatus.FORBIDDEN,
-                    logger
-            );
-        }
         if (moderation.verdict() != ContentModerationService.Verdict.CLEAN) {
+            moderationEnforcementService.removeFlaggedMediaAndWarn(userId, moderation);
             throw new ChallengeSphereException(
-                    "Support attachment rejected by content safety review",
+                    "Support attachment removed for violating the content policy. A warning was sent to your notifications.",
                     HttpStatus.BAD_REQUEST,
                     logger
             );

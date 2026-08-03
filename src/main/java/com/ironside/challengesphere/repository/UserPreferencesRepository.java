@@ -53,6 +53,10 @@ public interface UserPreferencesRepository extends JpaRepository<UserPreferences
     void updateNotifyOnChallengeUpdate(@Param("userId") Long userId, @Param("val") Boolean val);
 
     @Modifying
+    @Query(value = "UPDATE challengesphere.user_preferences SET notify_on_motivation = :val, updated_at = NOW() WHERE user_id = :userId", nativeQuery = true)
+    void updateNotifyOnMotivation(@Param("userId") Long userId, @Param("val") Boolean val);
+
+    @Modifying
     @Query(value = "UPDATE challengesphere.user_preferences SET private_profile = :val, updated_at = NOW() WHERE user_id = :userId", nativeQuery = true)
     void updatePrivateProfile(@Param("userId") Long userId, @Param("val") Boolean val);
 

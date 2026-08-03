@@ -94,6 +94,9 @@ public class User {
     @Column(name = "gender", length = 32)
     private UserGender gender;
 
+    @Column(name = "country", length = 100)
+    private String country;
+
     @Convert(converter = StringListConverter.class)
     @Column(name = "interests")
     private List<String> interests;
@@ -106,6 +109,9 @@ public class User {
 
     @Column(name = "ban_reason", length = 512)
     private String banReason;
+
+    @Column(name = "deleted_at")
+    private Timestamp deletedAt;
 
     @Transient
     private Integer submissionsCount;

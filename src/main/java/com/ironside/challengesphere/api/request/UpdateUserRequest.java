@@ -1,6 +1,7 @@
 package com.ironside.challengesphere.api.request;
 
 import com.ironside.challengesphere.util.UserGender;
+import com.ironside.challengesphere.util.UsernamePolicy;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.Size;
@@ -12,7 +13,11 @@ import java.util.List;
 @Data
 @NoArgsConstructor
 public class UpdateUserRequest {
-    @Size(max = 50, message = "Username must be between 3 and 50 characters")
+    @Size(
+            min = UsernamePolicy.MIN_LENGTH,
+            max = UsernamePolicy.MAX_LENGTH,
+            message = UsernamePolicy.LENGTH_MESSAGE
+    )
     private String username;
 
     @Size(max = 120, message = "Name should not exceed 120 characters")
@@ -38,6 +43,9 @@ public class UpdateUserRequest {
     private Integer age;
 
     private UserGender gender;
+
+    @Size(min = 2, max = 100, message = "Country must be between 2 and 100 characters")
+    private String country;
 
     private List<String> interests;
 }

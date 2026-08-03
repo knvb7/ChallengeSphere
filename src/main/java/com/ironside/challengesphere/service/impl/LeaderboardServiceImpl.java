@@ -250,7 +250,8 @@ public class LeaderboardServiceImpl implements LeaderboardService {
         }
         boolean activeParticipant = userChallengeRepository
                 .findByUserIdAndChallengeId(viewerUserId, challenge.getId())
-                .map(UserChallenge::getActive)
+                .map(userChallenge -> Boolean.TRUE.equals(userChallenge.getActive())
+                        && !Boolean.TRUE.equals(userChallenge.getBanned()))
                 .orElse(false);
         if (!activeParticipant) {
             throw new ChallengeSphereException(

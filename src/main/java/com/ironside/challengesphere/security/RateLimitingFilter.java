@@ -6,6 +6,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
+import org.springframework.lang.NonNull;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Component;
@@ -50,7 +51,7 @@ public class RateLimitingFilter extends OncePerRequestFilter {
     }
 
     @Override
-    protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
+    protected void doFilterInternal(@NonNull HttpServletRequest request, @NonNull HttpServletResponse response, @NonNull FilterChain filterChain)
             throws ServletException, IOException {
         String path = applicationPath(request);
         if (isAmbiguousPath(path)) {
@@ -151,17 +152,20 @@ public class RateLimitingFilter extends OncePerRequestFilter {
         }
         if ("POST".equals(method) && (path.equals("/api/v1/users/follow")
                 || path.equals("/api/v1/users/unfollow"))) {
-            return new Limit("follow", 60, Duration.ofMinutes(1));
+            return new Limit("follow", 30, Duration.ofMinutes(1));
         }
         if (path.startsWith("/api/v1/comments") && ("POST".equals(method) || "PUT".equals(method) || "DELETE".equals(method))) {
-            return new Limit("comment", 40, Duration.ofMinutes(1));
+            return new Limit("comment", 10, Duration.ofMinutes(1));
         }
         if (path.startsWith("/api/v1/glories") && "POST".equals(method)) {
-            return new Limit("glory", 120, Duration.ofMinutes(1));
+            return new Limit("glory", 20, Duration.ofMinutes(1));
         }
         if ("POST".equals(method) && (path.equals("/api/v1/challenges/join")
                 || path.equals("/api/v1/challenges/leave"))) {
             return new Limit("challenge-membership", 30, Duration.ofMinutes(1));
+        }
+        if ("POST".equals(method) && path.matches("^/api/v1/challenges/\\d+/invites$")) {
+            return new Limit("challenge-invite", 10, Duration.ofMinutes(1));
         }
         if ("POST".equals(method) && (path.equals("/api/v1/challenges/presigned-urls")
                 || path.equals("/api/v1/submissions/presigned-urls")
@@ -209,8 +213,11 @@ public class RateLimitingFilter extends OncePerRequestFilter {
     }
 
     private String clientIpKey(HttpServletRequest request) {
-        String remoteAddr = request.getRemoteAddr();
-        if (!isTrustedProxy(remoteAddr)) {
+        String remoteAddr = normalizeIpLiteral(request.getRemoteAddr());
+        if (remoteAddr == null) {
+            return "unknown";
+        }
+        if (isTrustedProxy(remoteAddr)) {
             return remoteAddr;
         }
 
@@ -221,8 +228,8 @@ public class RateLimitingFilter extends OncePerRequestFilter {
 
         List<String> chain = new ArrayList<>();
         for (String entry : forwardedFor.split(",")) {
-            String ip = entry.trim();
-            if (!ip.isEmpty()) {
+            String ip = normalizeIpLiteral(entry.trim());
+            if (ip != null) {
                 chain.add(ip);
             }
         }
@@ -230,11 +237,11 @@ public class RateLimitingFilter extends OncePerRequestFilter {
 
         for (int i = chain.size() - 1; i >= 0; i--) {
             String candidate = chain.get(i);
-            if (!isTrustedProxy(candidate)) {
+            if (isTrustedProxy(candidate)) {
                 return candidate;
             }
         }
-        return remoteAddr;
+        return chain.get(0);
     }
 
     private String applicationPath(HttpServletRequest request) {
@@ -277,7 +284,26 @@ public class RateLimitingFilter extends OncePerRequestFilter {
     }
 
     private boolean isTrustedProxy(String ipAddress) {
-        return trustedProxyRanges.stream().anyMatch(range -> range.contains(ipAddress));
+        return trustedProxyRanges.stream().noneMatch(range -> range.contains(ipAddress));
+    }
+
+    private String normalizeIpLiteral(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        String candidate = value.trim();
+        if (!candidate.contains(":") && !candidate.matches("[0-9.]+")) {
+            return null;
+        }
+        try {
+            InetAddress parsed = InetAddress.getByName(candidate);
+            if (!candidate.contains(":") && parsed.getAddress().length != 4) {
+                return null;
+            }
+            return parsed.getHostAddress();
+        } catch (UnknownHostException ex) {
+            return null;
+        }
     }
 
     private String rateLimitKey(String bucket, String clientIdentity) {

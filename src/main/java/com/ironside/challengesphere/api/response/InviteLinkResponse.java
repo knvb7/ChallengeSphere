@@ -6,6 +6,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.sql.Timestamp;
+import java.time.LocalDate;
 
 @Data
 @Builder
@@ -22,6 +23,21 @@ public class InviteLinkResponse {
     private Integer useCount;
     private boolean active;
     private Timestamp createdAt;
+    private String inviterName;
+    private String inviterUsername;
+    private String challengeDescription;
+    private String challengeRules;
+    private String challengeBenefits;
+    private String challengeCategories;
+    private String challengeMode;
+    private String proofMode;
+    private LocalDate challengeStartDate;
+    private Integer challengeDurationDays;
+    private Integer participantCount;
+    private Integer acceptedCount;
+    private Integer pendingCount;
+    private Integer remainingUses;
+    private Boolean privateChallenge;
 
     public static InviteLinkResponse from(Long inviteId, String inviteCode, String inviteUrl,
                                            Long challengeId, String challengeTitle,
@@ -41,4 +57,3 @@ public class InviteLinkResponse {
                 .build();
     }
 }
-

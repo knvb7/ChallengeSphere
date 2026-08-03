@@ -6,6 +6,7 @@ import io.jsonwebtoken.SignatureAlgorithm;
 import io.jsonwebtoken.io.Decoders;
 import io.jsonwebtoken.security.Keys;
 import jakarta.annotation.PostConstruct;
+import lombok.Getter;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.env.Environment;
@@ -15,6 +16,8 @@ import org.springframework.util.StringUtils;
 
 import java.nio.charset.StandardCharsets;
 import java.security.Key;
+import java.util.Locale;
+import java.util.Set;
 import java.util.Date;
 
 @Service
@@ -27,9 +30,11 @@ public class JwtService {
     @Value("${jwt.secret}")
     private String jwtSecret;
 
+    @Getter
     @Value("${jwt.access-token.expiration:3600000}")
     private long accessTokenExpiryMs;
 
+    @Getter
     @Value("${jwt.refresh-token.expiration:604800000}")
     private long refreshTokenExpiryMs;
 
@@ -41,11 +46,6 @@ public class JwtService {
     public JwtService(Environment environment, JwtSigningSecretProvider signingSecretProvider) {
         this.environment = environment;
         this.signingSecretProvider = signingSecretProvider;
-    }
-
-    public JwtService() {
-        this.environment = null;
-        this.signingSecretProvider = null;
     }
 
     @PostConstruct
@@ -75,10 +75,6 @@ public class JwtService {
         return claims.get("uid", Long.class);
     }
 
-    public String extractUsername(String token) {
-        return extractClaims(token).getSubject();
-    }
-
     public boolean isRefreshToken(String token) {
         return isTokenType(token, "refresh");
     }
@@ -89,14 +85,6 @@ public class JwtService {
 
     public boolean isValidAccessToken(String token) {
         return isValidToken(token) && isAccessToken(token);
-    }
-
-    public long getAccessTokenExpiryMs() {
-        return accessTokenExpiryMs;
-    }
-
-    public long getRefreshTokenExpiryMs() {
-        return refreshTokenExpiryMs;
     }
 
     private String generateToken(Long userId, String username, String type, long ttlMs) {
@@ -144,10 +132,6 @@ public class JwtService {
         if (!StringUtils.hasText(configuredSecret)) {
             throw new IllegalStateException("jwt.secret must be configured");
         }
-        if (isProdProfile() && LOCAL_DEV_FALLBACK_SECRET.equals(configuredSecret)) {
-            throw new IllegalStateException("Production jwt.secret must not use the local development fallback");
-        }
-
         byte[] keyBytes;
         try {
             keyBytes = Decoders.BASE64.decode(configuredSecret);
@@ -159,7 +143,29 @@ public class JwtService {
             throw new IllegalStateException("jwt.secret must be at least "
                     + MIN_HMAC_KEY_BYTES + " bytes for HS256");
         }
+        if (isProdProfile() && isUnsafeProductionSecret(configuredSecret, keyBytes)) {
+            throw new IllegalStateException("Production jwt.secret is a default, placeholder, or low-diversity value");
+        }
         return Keys.hmacShaKeyFor(keyBytes);
+    }
+
+    private boolean isUnsafeProductionSecret(String configuredSecret, byte[] keyBytes) {
+        String normalized = configuredSecret.trim().toLowerCase(Locale.ROOT);
+        if (LOCAL_DEV_FALLBACK_SECRET.equals(configuredSecret)
+                || normalized.contains("change-me")
+                || normalized.contains("changeme")
+                || normalized.contains("default")
+                || normalized.contains("placeholder")
+                || normalized.contains("example")
+                || normalized.contains("local-dev")
+                || normalized.matches("^(secret|password|jwtsecret|test)+.*")) {
+            return true;
+        }
+        Set<Byte> distinctBytes = new java.util.HashSet<>();
+        for (byte keyByte : keyBytes) {
+            distinctBytes.add(keyByte);
+        }
+        return distinctBytes.size() < 8;
     }
 
     private boolean isProdProfile() {

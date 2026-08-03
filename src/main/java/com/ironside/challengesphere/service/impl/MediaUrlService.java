@@ -25,12 +25,27 @@ import java.util.regex.Pattern;
 public class MediaUrlService {
 
     private static final Logger logger = LogManager.getLogger(MediaUrlService.class);
-    private static final long READ_SIGNED_URL_TTL_SECONDS = 6 * 60 * 60;
+    // Keep read URLs comfortably inside the lifetime of temporary EC2 role
+    // credentials. A URL cannot outlive the session credentials that signed it.
+    private static final long READ_SIGNED_URL_TTL_SECONDS = 30 * 60;
     private static final long READ_SIGNED_URL_CACHE_SAFETY_SECONDS = 5 * 60;
     private static final int MAX_READ_URL_CACHE_ENTRIES = 10_000;
     private static final Pattern PROFILE_OBJECT_KEY = Pattern.compile(
             "^profiles/user_(\\d+)/\\d{10,17}_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-"
                     + "[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\\.(?:jpg|png|gif)$"
+    );
+    private static final Pattern SIGNABLE_PRIVATE_OBJECT_KEY = Pattern.compile(
+            "^(?:"
+                    + "submissions/user_\\d+/SUBMISSION_(?:PHOTO|VIDEO)/"
+                    + "\\d{13}_[0-9a-fA-F-]{36}\\.(?:jpg|jpeg|png|gif|mp4)"
+                    + "|challenges/user_\\d+/covers/"
+                    + "\\d{13}_[0-9a-fA-F-]{36}\\.(?:jpg|png|gif)"
+                    + "|profiles/user_\\d+/"
+                    + "\\d{10,17}_[0-9a-fA-F-]{36}\\.(?:jpg|png|gif)"
+                    + "|support/user_\\d+/screenshots/"
+                    + "\\d{13}_[0-9a-fA-F-]{36}\\.(?:jpg|png|gif)"
+                    + "|official/global-challenges/[A-Za-z0-9._-]+\\.(?:jpg|png|gif)"
+                    + ")$"
     );
     private static final Set<String> GOOGLE_AVATAR_HOSTS = Set.of(
             "lh3.googleusercontent.com",
@@ -63,7 +78,10 @@ public class MediaUrlService {
         for (String rawUrl : urls) {
             String url = rawUrl == null ? "" : rawUrl.trim();
             if (!url.isEmpty()) {
-                readableUrls.add(toReadableMediaUrl(url));
+                String readableUrl = toReadableMediaUrl(url);
+                if (readableUrl != null && !readableUrl.isBlank()) {
+                    readableUrls.add(readableUrl);
+                }
             }
         }
         return readableUrls;
@@ -73,6 +91,10 @@ public class MediaUrlService {
         String objectName = extractS3ObjectName(mediaUrl);
         if (objectName == null || objectName.isBlank()) {
             return mediaUrl;
+        }
+        if (!SIGNABLE_PRIVATE_OBJECT_KEY.matcher(objectName).matches()) {
+            logger.warn("Refused to sign media object outside approved namespaces");
+            return null;
         }
 
         try {
@@ -106,8 +128,10 @@ public class MediaUrlService {
             }
             return resolved.url();
         } catch (Exception e) {
-            logger.warn("Failed to sign readable media URL");
-            return mediaUrl;
+            // Never expose the unsigned URL for a private S3 object. Doing so
+            // only causes clients to retry a URL that S3 must reject.
+            logger.warn("Failed to sign readable media URL: {}", e.getClass().getSimpleName());
+            return null;
         }
     }
 

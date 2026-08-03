@@ -12,7 +12,7 @@ INSERT INTO challengesphere.users (
 )
 SELECT
     'official-global@challengesphere.app',
-    'challengesphere',
+    'challengesphere_official',
     'OFFICIAL_ACCOUNT_NO_LOGIN',
     TRUE,
     'Official ChallengeSphere global challenges',
@@ -20,13 +20,13 @@ SELECT
 WHERE NOT EXISTS (
     SELECT 1
     FROM challengesphere.users
-    WHERE lower(username) = 'challengesphere'
+    WHERE lower(username) = 'challengesphere_official'
 );
 
 DO $$
 BEGIN
     IF NOT EXISTS (
-        SELECT 1 FROM challengesphere.users WHERE lower(username) = 'challengesphere'
+        SELECT 1 FROM challengesphere.users WHERE lower(username) = 'challengesphere_official'
     ) THEN
         RAISE EXCEPTION 'Unable to create or locate official challengesphere user';
     END IF;
@@ -35,12 +35,12 @@ END $$;
 UPDATE challengesphere.users
 SET profile_pic_url = 'official/global-challenges/Challengesphere-logo.png',
     bio = 'Official ChallengeSphere global challenges'
-WHERE lower(username) = 'challengesphere';
+WHERE lower(username) = 'challengesphere_official';
 
 WITH official AS (
     SELECT id
     FROM challengesphere.users
-    WHERE lower(username) = 'challengesphere'
+    WHERE lower(username) = 'challengesphere_official'
     ORDER BY id
     LIMIT 1
 ),
@@ -68,7 +68,7 @@ source (
         ('LeetCode', 'LeetCode Review Your Mistakes', 'Re-solve previous failed or slow LeetCode attempts.', 'Daily', '1 Week', 'Pick one old problem daily, solve it again, then compare with your first approach.', 'Converts mistakes into durable skill gains.'),
         ('Codeforces', 'Codeforces A Problem Streak', 'Solve one Codeforces A problem every day.', 'Daily', '1 Week', 'Submit an accepted solution daily. Prefer contests you have not practiced before.', 'Builds speed with implementation and basic math.'),
         ('Codeforces', 'Codeforces Rating 800-1000 Ladder', 'Climb a beginner Codeforces ladder with accepted submissions.', 'Daily', '2 Weeks', 'Solve one 800-1000 rated problem per day. Upsolve if your first attempt fails.', 'Improves fundamentals and contest confidence.'),
-        ('Codeforces', 'Codeforces Constructive Practice', 'Practice constructive algorithms on Codeforces.', 'Daily', '1 Week', 'Solve one constructive problem daily and write the construction idea before coding.', 'Strengthens proof-driven implementation.'),
+        ('Codeforces', 'Codeforces Constructive Practice', 'Practice constructive algorithms on Codeforces.', 'Daily', '1 Week', 'Solve one constructive problem daily and write the construction idea before coding.', 'Strengthens reasoning-driven implementation.'),
         ('Codeforces', 'Codeforces Greedy Week', 'Solve greedy problems from Codeforces.', 'Daily', '1 Week', 'Complete one accepted greedy problem daily and note the exchange or ordering argument.', 'Builds intuition for local-choice correctness.'),
         ('Codeforces', 'Codeforces Div 3 Upsolve', 'Upsolve problems from a Codeforces Div 3 round.', 'Daily', '1 Week', 'Pick one unsolved or slow problem daily from a Div 3 contest and submit accepted code.', 'Turns contest misses into measurable progress.'),
         ('Codeforces', 'Codeforces Virtual Contest', 'Run one Codeforces virtual contest under timed conditions.', 'One-off', '1 Day', 'Choose a past Div 3 or Div 4 round. Compete honestly, then upsolve one missed problem.', 'Practices contest pacing and pressure management.'),
@@ -142,7 +142,7 @@ WHERE NOT EXISTS (
 WITH official AS (
     SELECT id
     FROM challengesphere.users
-    WHERE lower(username) = 'challengesphere'
+    WHERE lower(username) = 'challengesphere_official'
     ORDER BY id
     LIMIT 1
 )
@@ -194,7 +194,7 @@ SET active = TRUE;
 WITH official AS (
     SELECT id
     FROM challengesphere.users
-    WHERE lower(username) = 'challengesphere'
+    WHERE lower(username) = 'challengesphere_official'
     ORDER BY id
     LIMIT 1
 )

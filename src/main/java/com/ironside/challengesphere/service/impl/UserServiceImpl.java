@@ -19,6 +19,8 @@ import org.springframework.http.HttpStatus;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import com.ironside.challengesphere.api.request.GetFollowersFollowingRequest;
 import com.ironside.challengesphere.api.request.GetUserPayload;
@@ -321,6 +323,13 @@ public class UserServiceImpl implements UserService {
 
             if (updateUserRequest.getUsername() != null && !updateUserRequest.getUsername().trim().isEmpty()) {
                 String requestedUsername = updateUserRequest.getUsername().trim();
+                if (!UsernamePolicy.hasValidLength(requestedUsername)) {
+                    throw new ChallengeSphereException(
+                            UsernamePolicy.LENGTH_MESSAGE,
+                            HttpStatus.BAD_REQUEST,
+                            logger
+                    );
+                }
                 if (UsernamePolicy.containsReservedKeyword(requestedUsername)) {
                     throw new ChallengeSphereException(
                             UsernamePolicy.RESERVED_KEYWORD_MESSAGE,
@@ -377,6 +386,10 @@ public class UserServiceImpl implements UserService {
             if (updateUserRequest.getGender() != null) {
                 user.setGender(updateUserRequest.getGender());
                 logger.debug("Updated gender for user {}", userId);
+            }
+            if (updateUserRequest.getCountry() != null) {
+                user.setCountry(updateUserRequest.getCountry().trim());
+                logger.debug("Updated country for user {}", userId);
             }
             if (updateUserRequest.getInterests() != null) {
                 user.setInterests(updateUserRequest.getInterests());
@@ -488,12 +501,7 @@ public class UserServiceImpl implements UserService {
             cacheService.invalidateTimeline(followerId);
             cacheService.invalidateAllFeeds();
 
-            try {
-                notificationService.notifyFollow(following.getId(), follower.getId());
-            } catch (Exception e) {
-                logger.warn("Failed to create follow notification for followerId={}, followingId={}: {}",
-                        followerId, followingId, e.getClass().getSimpleName());
-            }
+            notifyFollowAfterCommit(following.getId(), follower.getId());
 
             logger.info("User {} successfully followed user {}", followerId, followingId);
             return FollowActionResponse.success(followerId, followingId, true);
@@ -509,6 +517,27 @@ public class UserServiceImpl implements UserService {
                     logger
             );
         }
+    }
+
+    private void notifyFollowAfterCommit(Long recipientUserId, Long actorUserId) {
+        Runnable notify = () -> {
+            try {
+                notificationService.notifyFollowAsync(recipientUserId, actorUserId);
+            } catch (Exception exception) {
+                logger.warn("Failed to schedule follow notification for recipientUserId={}, actorUserId={}: {}",
+                        recipientUserId, actorUserId, exception.getClass().getSimpleName());
+            }
+        };
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    notify.run();
+                }
+            });
+            return;
+        }
+        notify.run();
     }
 
     @Override
@@ -841,15 +870,23 @@ public class UserServiceImpl implements UserService {
 
         try {
             // Validate if user already exists
-            if (request.getUsername() != null) {
-                if (UsernamePolicy.containsReservedKeyword(request.getUsername())) {
+            String requestedUsername = request.getUsername() == null ? null : request.getUsername().trim();
+            if (requestedUsername != null) {
+                if (UsernamePolicy.containsReservedKeyword(requestedUsername)) {
                     throw new ChallengeSphereException(
                             UsernamePolicy.RESERVED_KEYWORD_MESSAGE,
                             HttpStatus.BAD_REQUEST,
                             logger
                     );
                 }
-                Optional<User> existingUser = userRepository.findByUsername(request.getUsername());
+                if (!UsernamePolicy.hasValidLength(requestedUsername)) {
+                    throw new ChallengeSphereException(
+                            UsernamePolicy.LENGTH_MESSAGE,
+                            HttpStatus.BAD_REQUEST,
+                            logger
+                    );
+                }
+                Optional<User> existingUser = userRepository.findByUsername(requestedUsername);
                 if (existingUser.isPresent()) {
                     logger.warn("Registration rejected because username already exists");
                     throw new ChallengeSphereException(
@@ -886,7 +923,7 @@ public class UserServiceImpl implements UserService {
 
             // Create new user
             User newUser = new User();
-            newUser.setUsername(request.getUsername());
+            newUser.setUsername(requestedUsername);
             newUser.setEmailId(request.getEmailId());
             newUser.setPhone(request.getPhone());
             newUser.setBio(request.getBio());
@@ -1010,6 +1047,7 @@ public class UserServiceImpl implements UserService {
                     mediaUrlService.toReadableProfilePhoto(user.getId(), user.getProfilePicUrl()));
         } catch (Exception e) {
             logger.warn("Failed to prepare readable profile photo URL for userId={}: {}", user.getId(), e.getClass().getSimpleName());
+            readableUser.setProfilePicUrl(null);
         }
         return readableUser;
     }

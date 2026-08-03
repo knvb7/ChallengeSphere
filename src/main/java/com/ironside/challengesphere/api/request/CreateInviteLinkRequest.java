@@ -17,7 +17,7 @@ public class CreateInviteLinkRequest {
     private Integer maxUses;
 
     /**
-     * Number of hours until the invite expires. Null means no expiration (defaults to 7 days).
+     * Number of hours until the invite expires. Null uses the 30-day service default.
      */
     private Integer expiresInHours;
 }

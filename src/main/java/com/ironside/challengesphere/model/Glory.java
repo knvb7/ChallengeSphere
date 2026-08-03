@@ -6,7 +6,8 @@ import lombok.Data;
 import java.sql.Timestamp;
 
 @Entity
-@Table(name = "glories")
+@Table(name = "glories", uniqueConstraints = @UniqueConstraint(
+        name = "uk_glories", columnNames = {"submission_id", "user_id"}))
 @Data
 public class Glory {
     @Id
@@ -28,4 +29,3 @@ public class Glory {
     @Column(name = "ungloried", nullable = false)
     private Boolean ungloried = false;
 }
-

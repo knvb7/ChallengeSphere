@@ -11,6 +11,13 @@ key.json
 *AccessKeys.csv
 .tools/
 
+### Local and sensitive files ###
+.DS_Store
+**/.DS_Store
+.claude/settings.local.json
+google-services.json
+logs/
+
 ### STS ###
 .apt_generated
 .classpath

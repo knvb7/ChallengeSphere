@@ -4,17 +4,20 @@ import com.ironside.challengesphere.model.Glory;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
 import java.util.Optional;
+import jakarta.persistence.LockModeType;
 
 @Repository
 public interface GloryRepository extends JpaRepository<Glory, Long> {
 
-    @Query(value = "SELECT * FROM challengesphere.glories WHERE submission_id = :submissionId AND user_id = :userId", nativeQuery = true)
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT g FROM Glory g WHERE g.submissionId = :submissionId AND g.userId = :userId")
     Optional<Glory> findBySubmissionIdAndUserId(@Param("submissionId") Long submissionId, @Param("userId") Long userId);
 
     @Query(value = "SELECT * FROM challengesphere.glories WHERE submission_id = :submissionId AND active = true ORDER BY created_at DESC", nativeQuery = true)

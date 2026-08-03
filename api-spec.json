@@ -2486,8 +2486,8 @@
           },
           "username": {
             "type": "string",
-            "maxLength": 50,
-            "minLength": 0
+            "maxLength": 20,
+            "minLength": 5
           },
           "hashedPassword": {
             "type": "string"
@@ -2722,8 +2722,8 @@
           },
           "username": {
             "type": "string",
-            "maxLength": 50,
-            "minLength": 3,
+            "maxLength": 20,
+            "minLength": 5,
             "pattern": "^[a-zA-Z0-9_]+$"
           },
           "password": {
@@ -2797,6 +2797,11 @@
           },
           "isPrivate": {
             "type": "boolean"
+          },
+          "timezone": {
+            "type": "string",
+            "description": "IANA timezone of the submitting device, used for challenge-day validation",
+            "maxLength": 64
           },
           "submissionDate": {
             "type": "string",

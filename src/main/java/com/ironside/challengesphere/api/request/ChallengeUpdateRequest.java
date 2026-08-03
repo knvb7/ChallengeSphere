@@ -24,6 +24,7 @@ public class ChallengeUpdateRequest {
     @Max(value = 365, message = "Number of days must not exceed 365")
     private Integer numberOfDays;
     private String challengeMode;
+    private String proofMode;
     private String reminderTime;
     private Boolean active;
     @Size(max = 20, message = "A challenge can invite at most 20 users at once")

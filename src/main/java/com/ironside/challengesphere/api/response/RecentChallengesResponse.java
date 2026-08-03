@@ -51,6 +51,9 @@ public class RecentChallengesResponse {
         private Long currentOwnerId;
         private Integer numberOfDays;
         private String challengeMode;
+        private String proofMode;
+        private String officialTemplateKey;
+        private String cohortKey;
         private String coverPhotoUrls;
         private long viewCount;
         private long engagementScore;
@@ -74,6 +77,9 @@ public class RecentChallengesResponse {
                     .currentOwnerId(challenge.getCurrentOwnerId())
                     .numberOfDays(challenge.getNumberOfDays())
                     .challengeMode(challenge.getChallengeMode())
+                    .proofMode(challenge.getProofMode())
+                    .officialTemplateKey(challenge.getOfficialTemplateKey())
+                    .cohortKey(challenge.getCohortKey())
                     .coverPhotoUrls(challenge.getCoverPhotoUrls())
                     .viewCount(0)
                     .engagementScore(0)

@@ -21,13 +21,13 @@ public interface UserChallengeRepository extends JpaRepository<UserChallenge, Lo
     @Query(value = "SELECT * FROM challengesphere.user_challenges WHERE user_id = :userId", nativeQuery = true)
     List<UserChallenge> findByUserId(@Param("userId") Long userId);
 
-    @Query(value = "SELECT * FROM challengesphere.user_challenges WHERE user_id = :userId AND active = true", nativeQuery = true)
+    @Query(value = "SELECT * FROM challengesphere.user_challenges WHERE user_id = :userId AND active = true AND COALESCE(banned, false) = false", nativeQuery = true)
     List<UserChallenge> findActiveByUserId(@Param("userId") Long userId);
 
-    @Query(value = "SELECT * FROM challengesphere.user_challenges WHERE challenge_id = :challengeId AND active = true", nativeQuery = true)
+    @Query(value = "SELECT * FROM challengesphere.user_challenges WHERE challenge_id = :challengeId AND active = true AND COALESCE(banned, false) = false", nativeQuery = true)
     List<UserChallenge> findActiveByChallengeId(@Param("challengeId") Long challengeId);
 
-    @Query(value = "SELECT * FROM challengesphere.user_challenges WHERE challenge_id IN :challengeIds AND active = true", nativeQuery = true)
+    @Query(value = "SELECT * FROM challengesphere.user_challenges WHERE challenge_id IN :challengeIds AND active = true AND COALESCE(banned, false) = false", nativeQuery = true)
     List<UserChallenge> findActiveByChallengeIds(@Param("challengeIds") List<Long> challengeIds);
 
     @Query(value = "SELECT * FROM challengesphere.user_challenges WHERE challenge_id IN :challengeIds", nativeQuery = true)
@@ -36,7 +36,7 @@ public interface UserChallengeRepository extends JpaRepository<UserChallenge, Lo
     @Query(value = "SELECT * FROM challengesphere.user_challenges WHERE challenge_id IN :challengeIds", nativeQuery = true)
     List<UserChallenge> findByChallengeIdIn(@Param("challengeIds") List<Long> challengeIds);
 
-    @Query(value = "SELECT COUNT(*) FROM challengesphere.user_challenges WHERE challenge_id = :challengeId AND active = true", nativeQuery = true)
+    @Query(value = "SELECT COUNT(*) FROM challengesphere.user_challenges WHERE challenge_id = :challengeId AND active = true AND COALESCE(banned, false) = false", nativeQuery = true)
     int countActiveByChallengeId(@Param("challengeId") Long challengeId);
 
     @Query(value = """
@@ -45,6 +45,7 @@ public interface UserChallengeRepository extends JpaRepository<UserChallenge, Lo
             JOIN challengesphere.challenges c ON c.id = uc.challenge_id
             WHERE uc.user_id = :userId
               AND uc.active = true
+              AND COALESCE(uc.banned, false) = false
               AND COALESCE(uc.completed, false) = false
               AND c.active = true
               AND (

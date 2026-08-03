@@ -21,4 +21,12 @@ class UsernamePolicyTest {
         assertEquals("challenger", UsernamePolicy.sanitizeGeneratedUsernameBase("the_challengesphere_admin"));
         assertEquals("pranjal_dalal", UsernamePolicy.sanitizeGeneratedUsernameBase("Pranjal Dalal"));
     }
+
+    @Test
+    void validatesUsernameLengthBetweenFiveAndTwentyCharacters() {
+        assertFalse(UsernamePolicy.hasValidLength("four"));
+        assertTrue(UsernamePolicy.hasValidLength("valid"));
+        assertTrue(UsernamePolicy.hasValidLength("12345678901234567890"));
+        assertFalse(UsernamePolicy.hasValidLength("123456789012345678901"));
+    }
 }

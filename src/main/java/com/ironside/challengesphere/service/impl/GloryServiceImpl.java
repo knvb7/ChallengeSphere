@@ -24,6 +24,8 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.sql.Timestamp;
 import java.util.List;
@@ -129,15 +131,33 @@ public class GloryServiceImpl implements GloryService {
 
         invalidateInteractionCaches(submission);
         if (isGiven) {
-            try {
-                notificationService.notifyGlory(submission, userId);
-            } catch (Exception e) {
-                logger.warn("Failed to create glory notification for submissionId={}, userId={}: {}",
-                        submissionId, userId, e.getClass().getSimpleName());
-            }
+            notifyGloryAfterCommit(submission, userId);
         }
 
         return isGiven;
+    }
+
+    private void notifyGloryAfterCommit(Submission submission, Long actorUserId) {
+        Runnable notify = () -> {
+            try {
+                notificationService.notifyGloryAsync(submission, actorUserId);
+            } catch (Exception exception) {
+                logger.warn("Failed to schedule glory notification for submissionId={}, actorUserId={}: {}",
+                        submission == null ? null : submission.getId(),
+                        actorUserId,
+                        exception.getClass().getSimpleName());
+            }
+        };
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    notify.run();
+                }
+            });
+            return;
+        }
+        notify.run();
     }
 
 
@@ -175,12 +195,10 @@ public class GloryServiceImpl implements GloryService {
     }
 
     @Override
-    public boolean hasUserGivenGlory(Long submissionId, Long userId) {
+    public boolean hasUserGivenGlory(Long submissionId, Long userId) throws ChallengeSphereException {
         logger.info("Checking if user {} has given glory to submission {}", userId, submissionId);
-
-        boolean hasGlory = gloryRepository.existsBySubmissionIdAndUserId(submissionId, userId);
-
-        return hasGlory;
+        requireSubmissionAccess(submissionId, userId, "view glory status for");
+        return gloryRepository.existsBySubmissionIdAndUserId(submissionId, userId);
     }
 
     @Override
@@ -242,16 +260,33 @@ public class GloryServiceImpl implements GloryService {
     @Override
     public boolean hasUserUngloried(Long submissionId, Long userId) throws ChallengeSphereException {
         logger.info("Checking if user {} has ungloried submission {}", userId, submissionId);
+        requireSubmissionAccess(submissionId, userId, "view glory status for");
         return gloryRepository.existsUngloriedBySubmissionIdAndUserId(submissionId, userId);
     }
 
     @Override
-    public Long getGloryCount(Long submissionId) throws ChallengeSphereException {
+    public Long getGloryCount(Long submissionId, Long viewerUserId) throws ChallengeSphereException {
         logger.info("Getting glory count for submission: {}", submissionId);
+        requireSubmissionAccess(submissionId, viewerUserId, "view glory count for");
+        return gloryRepository.countActiveBySubmissionId(submissionId);
+    }
 
-        Long count = gloryRepository.countActiveBySubmissionId(submissionId);
-
-        return count;
+    private Submission requireSubmissionAccess(Long submissionId, Long viewerUserId, String action)
+            throws ChallengeSphereException {
+        Submission submission = submissionRepository.findById(submissionId)
+                .orElseThrow(() -> new ChallengeSphereException(
+                        "Submission not found with id: " + submissionId,
+                        HttpStatus.NOT_FOUND,
+                        logger
+                ));
+        if (canInteractWithSubmission(submission, viewerUserId)) {
+            throw new ChallengeSphereException(
+                    "Not authorized to " + action + " this submission",
+                    HttpStatus.FORBIDDEN,
+                    logger
+            );
+        }
+        return submission;
     }
 
     private void updateLeaderboardForGloryToggle(Submission submission, boolean isGiven, Long actorUserId) {
@@ -314,7 +349,8 @@ public class GloryServiceImpl implements GloryService {
         }
 
         return userChallengeRepository.findByUserIdAndChallengeId(viewerId, submission.getChallengeId())
-                .map(userChallenge -> !Boolean.TRUE.equals(userChallenge.getActive()))
+                .map(userChallenge -> !Boolean.TRUE.equals(userChallenge.getActive())
+                        || Boolean.TRUE.equals(userChallenge.getBanned()))
                 .orElse(true);
     }
 }

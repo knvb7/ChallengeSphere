@@ -41,6 +41,9 @@ public class UserPreferences {
     @Column(name = "notify_on_challenge_update", nullable = false)
     private Boolean notifyOnChallengeUpdate = true;
 
+    @Column(name = "notify_on_motivation", nullable = false)
+    private Boolean notifyOnMotivation = true;
+
     // Privacy preferences
     @Column(name = "private_profile", nullable = false)
     private Boolean privateProfile = false;

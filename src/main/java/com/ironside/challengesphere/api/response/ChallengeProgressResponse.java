@@ -1,5 +1,6 @@
 package com.ironside.challengesphere.api.response;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import lombok.Data;
 
 import java.sql.Timestamp;
@@ -14,6 +15,8 @@ public class ChallengeProgressResponse {
     private int completionPercentage;
     private int currentStreak;
     private int longestStreak;
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    private ChallengeMomentumResponse momentum;
     private List<DayProgress> days;
 
     @Data
