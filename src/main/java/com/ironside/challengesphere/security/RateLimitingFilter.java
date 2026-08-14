@@ -164,6 +164,10 @@ public class RateLimitingFilter extends OncePerRequestFilter {
                 || path.equals("/api/v1/challenges/leave"))) {
             return new Limit("challenge-membership", 30, Duration.ofMinutes(1));
         }
+        if (("PUT".equals(method) || "DELETE".equals(method))
+                && path.matches("^/api/v1/challenges/\\d+/favorite$")) {
+            return new Limit("challenge-favorite", 30, Duration.ofMinutes(1));
+        }
         if ("POST".equals(method) && path.matches("^/api/v1/challenges/\\d+/invites$")) {
             return new Limit("challenge-invite", 10, Duration.ofMinutes(1));
         }

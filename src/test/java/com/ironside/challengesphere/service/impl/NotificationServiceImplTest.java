@@ -139,6 +139,38 @@ class NotificationServiceImplTest {
     }
 
     @Test
+    void participantRemovalNotificationIncludesReasonAndPushesAfterCommit() {
+        User recipient = user(7L, "removed");
+        Challenge challenge = new Challenge();
+        challenge.setId(51L);
+        challenge.setTitle("Daily challenge");
+        when(userRepository.findById(7L)).thenReturn(Optional.of(recipient));
+        when(preferencesRepository.findByUserId(7L)).thenReturn(Optional.empty());
+
+        TransactionSynchronizationManager.initSynchronization();
+        try {
+            Notification result = service.notifyParticipantRemoved(challenge, 7L, 2L, "x");
+
+            assertNotNull(result);
+            assertEquals("CHALLENGE_REMOVAL", result.getType());
+            assertEquals("You were removed from \"Daily challenge\". Reason: x", result.getMessage());
+            assertTrue(result.getActionObject().contains("\"removalReason\":\"x\""));
+            verify(pushNotificationService, never()).sendInteractionPush(any(), any(), any(), any());
+
+            TransactionSynchronizationManager.getSynchronizations()
+                    .forEach(TransactionSynchronization::afterCommit);
+
+            verify(pushNotificationService).sendInteractionPush(
+                    7L,
+                    "CHALLENGE_REMOVAL",
+                    "You were removed from \"Daily challenge\". Reason: x",
+                    result.getActionObject());
+        } finally {
+            TransactionSynchronizationManager.clearSynchronization();
+        }
+    }
+
+    @Test
     void challengeInvitesReachFollowersAndFollowingWhileFilteringIneligibleUsers() {
         User actor = user(7L, "alex");
         User following = user(8L, "following");

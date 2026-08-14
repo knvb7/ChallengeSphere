@@ -60,6 +60,8 @@ public class AuthServiceImpl implements AuthService {
             .connectTimeout(Duration.ofSeconds(6))
             .build();
     private static final URI GOOGLE_USERINFO_URI = URI.create("https://www.googleapis.com/oauth2/v3/userinfo");
+    private static final String INVALID_GOOGLE_ID_TOKEN = "Invalid Google ID token";
+    private static final String GOOGLE_TOKEN_VERIFICATION_FAILED = "Google token verification failed";
     private static final String PASSWORD_RESET_TOKEN_TYPE = "password_reset";
     private static final Duration PASSWORD_RESET_TOKEN_TTL = Duration.ofMinutes(30);
     private static final String RESET_CODE_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
@@ -319,7 +321,19 @@ public class AuthServiceImpl implements AuthService {
         }
 
         if (StringUtils.hasText(request.getIdToken())) {
-            return verifyGoogleIdToken(request.getIdToken(), allowedAudiences);
+            try {
+                return verifyGoogleIdToken(request.getIdToken(), allowedAudiences);
+            } catch (ChallengeSphereException idTokenFailure) {
+                boolean canVerifyAccessToken =
+                        StringUtils.hasText(request.getAccessToken())
+                                && isRetryableGoogleIdTokenFailure(idTokenFailure);
+                if (!canVerifyAccessToken) {
+                    throw idTokenFailure;
+                }
+
+                logger.warn("Google ID token was rejected; verifying the supplied access token instead");
+                return verifyGoogleAccessToken(request.getAccessToken(), allowedAudiences);
+            }
         }
 
         if (StringUtils.hasText(request.getAccessToken())) {
@@ -329,7 +343,7 @@ public class AuthServiceImpl implements AuthService {
         throw new ChallengeSphereException("Google token is required", HttpStatus.BAD_REQUEST, logger);
     }
 
-    private GoogleProfile verifyGoogleIdToken(String idTokenString, List<String> allowedAudiences)
+    GoogleProfile verifyGoogleIdToken(String idTokenString, List<String> allowedAudiences)
             throws ChallengeSphereException {
         try {
             GoogleIdTokenVerifier verifier = new GoogleIdTokenVerifier.Builder(
@@ -339,7 +353,7 @@ public class AuthServiceImpl implements AuthService {
 
             GoogleIdToken idToken = verifier.verify(idTokenString);
             if (idToken == null) {
-                throw new ChallengeSphereException("Invalid Google ID token",
+                throw new ChallengeSphereException(INVALID_GOOGLE_ID_TOKEN,
                         HttpStatus.UNAUTHORIZED, logger);
             }
             GoogleIdToken.Payload payload = idToken.getPayload();
@@ -361,16 +375,16 @@ public class AuthServiceImpl implements AuthService {
             );
         } catch (IllegalArgumentException e) {
             logger.warn("Rejected malformed Google ID token");
-            throw new ChallengeSphereException("Invalid Google ID token",
+            throw new ChallengeSphereException(INVALID_GOOGLE_ID_TOKEN,
                     HttpStatus.UNAUTHORIZED, logger);
         } catch (GeneralSecurityException | IOException e) {
             logger.error("Google ID token verification failed");
-            throw new ChallengeSphereException("Google token verification failed",
+            throw new ChallengeSphereException(GOOGLE_TOKEN_VERIFICATION_FAILED,
                     HttpStatus.UNAUTHORIZED, logger);
         }
     }
 
-    private GoogleProfile verifyGoogleAccessToken(String accessToken, List<String> allowedAudiences)
+    GoogleProfile verifyGoogleAccessToken(String accessToken, List<String> allowedAudiences)
             throws ChallengeSphereException {
         try {
             Map<String, Object> tokenInfo = getGoogleTokenInfo(accessToken);
@@ -454,6 +468,11 @@ public class AuthServiceImpl implements AuthService {
 
     private String stringValue(Object value) {
         return value == null ? null : String.valueOf(value);
+    }
+
+    private boolean isRetryableGoogleIdTokenFailure(ChallengeSphereException failure) {
+        return INVALID_GOOGLE_ID_TOKEN.equals(failure.getResponseMessage())
+                || GOOGLE_TOKEN_VERIFICATION_FAILED.equals(failure.getResponseMessage());
     }
 
     private List<String> getAllowedGoogleAudiences() {
@@ -606,6 +625,6 @@ public class AuthServiceImpl implements AuthService {
         }
     }
 
-    private record GoogleProfile(String googleId, String email, String name, String pictureUrl) {
+    record GoogleProfile(String googleId, String email, String name, String pictureUrl) {
     }
 }

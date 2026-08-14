@@ -1,6 +1,7 @@
 package com.ironside.challengesphere.service.impl;
 
 import java.sql.Timestamp;
+import java.time.Duration;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -36,6 +37,7 @@ import com.ironside.challengesphere.api.request.JoinChallengeRequest;
 import com.ironside.challengesphere.api.request.LeaveChallengeRequest;
 import com.ironside.challengesphere.api.response.ChallengeCreateResponse;
 import com.ironside.challengesphere.api.response.ChallengeDetailResponse;
+import com.ironside.challengesphere.api.response.ChallengeFavoriteResponse;
 import com.ironside.challengesphere.api.response.ChallengeParticipantsResponse;
 import com.ironside.challengesphere.api.response.ChallengeProgressResponse;
 import com.ironside.challengesphere.api.response.ChallengeMomentumResponse;
@@ -68,6 +70,7 @@ import com.ironside.challengesphere.service.ContentModerationService;
 import com.ironside.challengesphere.service.LeaderboardService;
 import com.ironside.challengesphere.service.NotificationService;
 import com.ironside.challengesphere.util.GetSignedUrlForS3;
+import com.ironside.challengesphere.util.StreakCalculator;
 
 @Service
 public class ChallengeServiceImpl implements ChallengeService {
@@ -75,6 +78,8 @@ public class ChallengeServiceImpl implements ChallengeService {
     private static final int MAX_CHALLENGE_COVER_PHOTOS = 5;
     private static final int MAX_CHALLENGES_CREATED_PER_DAY = 5;
     private static final int MAX_CHALLENGE_DURATION_DAYS = 365;
+    private static final int MAX_DELETE_MEMBER_COUNT = 3;
+    private static final long MAX_DELETE_AGE_MILLIS = Duration.ofDays(3).toMillis();
 
     @Autowired
     private ChallengeRepository challengeRepository;
@@ -444,8 +449,21 @@ public class ChallengeServiceImpl implements ChallengeService {
             // }
             cacheMisses.addAll(challengeIds);
             List<Challenge> dbChallenges = challengeRepository.findAllById(cacheMisses);
+            Map<Long, UserChallenge> viewerMembershipByChallengeId = currentUserId == null || cacheMisses.isEmpty()
+                    ? Map.of()
+                    : userChallengeRepository.findByUserIdAndChallengeIds(currentUserId, cacheMisses).stream()
+                            .collect(Collectors.toMap(
+                                    UserChallenge::getChallengeId,
+                                    membership -> membership,
+                                    (left, right) -> left
+                            ));
             result.addAll(dbChallenges.stream()
-                    .filter(challenge -> canViewChallenge(challenge, currentUserId))
+                    .filter(challenge -> canViewChallenge(challenge, currentUserId)
+                            || canViewArchivedChallenge(
+                                    challenge,
+                                    viewerMembershipByChallengeId.get(challenge.getId()),
+                                    currentUserId
+                            ))
                     .toList());
 
             logger.info("Retrieved {} challenges from DB",
@@ -485,6 +503,13 @@ public class ChallengeServiceImpl implements ChallengeService {
             logger.info("Challenge {} is already deleted; invalidated caches", challengeId);
             return;
         }
+        if (!isChallengeDeletable(challenge, allParticipantLinks, System.currentTimeMillis())) {
+            throw new ChallengeSphereException(
+                    "You can delete a challenge only in its first 3 days and while it has 3 members or fewer",
+                    HttpStatus.CONFLICT,
+                    logger
+            );
+        }
 
         challenge.setActive(false);
         challengeRepository.save(challenge);
@@ -500,6 +525,34 @@ public class ChallengeServiceImpl implements ChallengeService {
         invalidateDeletedChallengeCaches(challenge, participantLinks);
 
         logger.info("Challenge {} deleted by actor {}", challengeId, actorUserId);
+    }
+
+    static boolean isChallengeDeletable(
+            Challenge challenge,
+            List<UserChallenge> participantLinks,
+            long nowMillis
+    ) {
+        if (challenge == null || challenge.getCreatedAt() == null) {
+            return false;
+        }
+
+        Set<Long> activeMemberIds = participantLinks == null
+                ? new HashSet<>()
+                : participantLinks.stream()
+                        .filter(link -> Boolean.TRUE.equals(link.getActive()))
+                        .map(UserChallenge::getUserId)
+                        .filter(java.util.Objects::nonNull)
+                        .collect(Collectors.toSet());
+        if (challenge.getCreatorId() != null) {
+            activeMemberIds.add(challenge.getCreatorId());
+        }
+        if (challenge.getCurrentOwnerId() != null) {
+            activeMemberIds.add(challenge.getCurrentOwnerId());
+        }
+        long ageMillis = nowMillis - challenge.getCreatedAt().getTime();
+
+        return activeMemberIds.size() <= MAX_DELETE_MEMBER_COUNT
+                && ageMillis <= MAX_DELETE_AGE_MILLIS;
     }
 
     @Override
@@ -834,6 +887,10 @@ public class ChallengeServiceImpl implements ChallengeService {
                     if (userChallenge.getActive()) {
                         successfulUserIds.add(userId);
                         userChallenge.setActive(false);
+                        if (Boolean.TRUE.equals(challenge.getIsPrivate())) {
+                            userChallenge.setFavorite(false);
+                            userChallenge.setFavoritedAt(null);
+                        }
                         toDeactivate.add(userChallenge);
                     } else {
                         // User was already inactive
@@ -922,9 +979,9 @@ public class ChallengeServiceImpl implements ChallengeService {
             }
 
             String normalizedReason = reason == null ? "" : reason.trim();
-            if (normalizedReason.length() < 10 || normalizedReason.length() > 500) {
+            if (normalizedReason.isEmpty() || normalizedReason.length() > 500) {
                 throw new ChallengeSphereException(
-                        "A removal reason must contain between 10 and 500 characters",
+                        "A removal reason is required and must not exceed 500 characters",
                         HttpStatus.BAD_REQUEST,
                         logger
                 );
@@ -947,6 +1004,8 @@ public class ChallengeServiceImpl implements ChallengeService {
 
             membership.setActive(false);
             membership.setBanned(true);
+            membership.setFavorite(false);
+            membership.setFavoritedAt(null);
             membership.setRemovalReason(normalizedReason);
             membership.setRemovedAt(new Timestamp(System.currentTimeMillis()));
             membership.setRemovedByUserId(actorUserId);
@@ -963,6 +1022,11 @@ public class ChallengeServiceImpl implements ChallengeService {
                         cacheException.getClass().getSimpleName());
             }
             updateChallengesAcceptedCountAsync(participantUserId, false);
+            notificationService.notifyParticipantRemoved(
+                    challenge,
+                    participantUserId,
+                    actorUserId,
+                    normalizedReason);
 
             return LeaveChallengeResponse.success(
                     challengeId,
@@ -1337,7 +1401,7 @@ public class ChallengeServiceImpl implements ChallengeService {
     public Challenge updateChallenge(Long id, ChallengeUpdateRequest request, Long actorUserId, boolean admin) throws ChallengeSphereException {
         logger.info("Updating challenge id: {}", id);
 
-        Challenge challenge = challengeRepository.findById(id)
+        Challenge challenge = challengeRepository.findByIdForUpdate(id)
                 .orElseThrow(() -> new ChallengeSphereException(
                         "Challenge not found with id: " + id,
                         HttpStatus.NOT_FOUND,
@@ -1364,8 +1428,26 @@ public class ChallengeServiceImpl implements ChallengeService {
         if (request.getBenefits() != null) {
             challenge.setBenefits(request.getBenefits());
         }
+        boolean becomingPrivate = Boolean.TRUE.equals(request.getIsPrivate())
+                && !Boolean.TRUE.equals(challenge.getIsPrivate());
         if (request.getIsPrivate() != null) {
             challenge.setIsPrivate(request.getIsPrivate());
+        }
+        if (becomingPrivate) {
+            List<UserChallenge> staleFormerMemberFavorites = userChallengeRepository
+                    .findByChallengeId(id).stream()
+                    .filter(membership -> !Boolean.TRUE.equals(membership.getActive()))
+                    .filter(membership -> !membership.getUserId().equals(challenge.getCreatorId()))
+                    .filter(membership -> !membership.getUserId().equals(challenge.getCurrentOwnerId()))
+                    .filter(membership -> Boolean.TRUE.equals(membership.getFavorite()))
+                    .peek(membership -> {
+                        membership.setFavorite(false);
+                        membership.setFavoritedAt(null);
+                    })
+                    .toList();
+            if (!staleFormerMemberFavorites.isEmpty()) {
+                userChallengeRepository.saveAll(staleFormerMemberFavorites);
+            }
         }
         if (request.getChallengeMode() != null) {
             challenge.setChallengeMode(normalizeChallengeMode(request.getChallengeMode()));
@@ -1630,8 +1712,14 @@ public class ChallengeServiceImpl implements ChallengeService {
             }
 
             List<Integer> submittedDayNumbers = new ArrayList<>(byDay.keySet());
-            int currentStreak = computeCurrentStreak(submittedDayNumbers);
-            int longestStreak = computeLongestStreak(submittedDayNumbers);
+            int streakThroughDay = resolveStreakThroughDay(
+                    challenge,
+                    submittedDayNumbers,
+                    totalDays,
+                    effectiveCurrentDate
+            );
+            int currentStreak = StreakCalculator.currentStreak(submittedDayNumbers, streakThroughDay);
+            int longestStreak = StreakCalculator.longestStreak(submittedDayNumbers);
             int daysCompleted = submittedDayNumbers.size();
             int completionPct = totalDays > 0 ? (int) Math.round((daysCompleted * 100.0) / totalDays) : 0;
 
@@ -1670,6 +1758,52 @@ public class ChallengeServiceImpl implements ChallengeService {
             logger.error("Error fetching progress: challengeId={}, userId={}: {}", challengeId, userId, e.getClass().getSimpleName());
             throw new ChallengeSphereException("Failed to fetch challenge progress", HttpStatus.INTERNAL_SERVER_ERROR, logger);
         }
+    }
+
+    @Override
+    @Transactional
+    public ChallengeFavoriteResponse setChallengeFavorite(
+            Long challengeId,
+            Long userId,
+            boolean favorite
+    ) throws ChallengeSphereException {
+        Challenge challenge = challengeRepository.findByIdForUpdate(challengeId)
+                .orElseThrow(() -> new ChallengeSphereException(
+                        "Challenge not found with id: " + challengeId,
+                        HttpStatus.NOT_FOUND,
+                        logger
+                ));
+        UserChallenge membership = userChallengeRepository
+                .findByUserIdAndChallengeIdForUpdate(userId, challengeId)
+                .orElseThrow(() -> new ChallengeSphereException(
+                        "Only created or joined challenges can be favorited",
+                        HttpStatus.FORBIDDEN,
+                        logger
+                ));
+
+        if (Boolean.TRUE.equals(membership.getBanned())) {
+            throw new ChallengeSphereException(
+                    "This challenge is no longer available to you",
+                    HttpStatus.FORBIDDEN,
+                    logger
+            );
+        }
+        if (favorite && !canKeepFavoriteChallenge(challenge, membership, userId)) {
+            throw new ChallengeSphereException(
+                    "This challenge is no longer available to favorite",
+                    HttpStatus.FORBIDDEN,
+                    logger
+            );
+        }
+
+        if (Boolean.TRUE.equals(membership.getFavorite()) != favorite) {
+            membership.setFavorite(favorite);
+            membership.setFavoritedAt(favorite
+                    ? new Timestamp(System.currentTimeMillis())
+                    : null);
+            userChallengeRepository.save(membership);
+        }
+        return ChallengeFavoriteResponse.of(challengeId, favorite);
     }
 
     @Override
@@ -1714,7 +1848,22 @@ public class ChallengeServiceImpl implements ChallengeService {
             if (pageSize < 1) pageSize = 10;
             if (pageSize > 100) pageSize = 100;
 
-            List<UserChallenge> userChallenges = userChallengeRepository.findActiveByUserId(userId);
+            boolean favoriteFilter = "favorite".equalsIgnoreCase(status)
+                    || "favourite".equalsIgnoreCase(status);
+            boolean inactiveFilter = "inactive".equalsIgnoreCase(status);
+            if ((favoriteFilter || inactiveFilter) && !selfView) {
+                throw new ChallengeSphereException(
+                        "This challenge collection is private to its owner",
+                        HttpStatus.FORBIDDEN,
+                        logger
+                );
+            }
+
+            List<UserChallenge> userChallenges = favoriteFilter
+                    ? userChallengeRepository.findFavoritesByUserId(userId)
+                    : inactiveFilter
+                            ? userChallengeRepository.findByUserId(userId)
+                            : userChallengeRepository.findActiveByUserId(userId);
 
             List<Long> challengeIds = userChallenges.stream().map(UserChallenge::getChallengeId).toList();
             Map<Long, Long> activeParticipantCountMap = challengeIds.isEmpty()
@@ -1722,7 +1871,27 @@ public class ChallengeServiceImpl implements ChallengeService {
                     : userChallengeRepository.findActiveByChallengeIds(challengeIds).stream()
                     .collect(Collectors.groupingBy(UserChallenge::getChallengeId, Collectors.counting()));
             List<Challenge> visibleChallenges = challengeRepository.findAllById(challengeIds);
-            if (!java.util.Objects.equals(userId, currentUserId)) {
+            if (favoriteFilter || inactiveFilter) {
+                Map<Long, UserChallenge> membershipByChallengeId = userChallenges.stream()
+                        .collect(Collectors.toMap(
+                                UserChallenge::getChallengeId,
+                                membership -> membership,
+                                (left, right) -> left
+                        ));
+                visibleChallenges = visibleChallenges.stream()
+                        .filter(challenge -> favoriteFilter
+                                ? canKeepFavoriteChallenge(
+                                        challenge,
+                                        membershipByChallengeId.get(challenge.getId()),
+                                        userId
+                                )
+                                : canViewInactiveChallengeHistory(
+                                        challenge,
+                                        membershipByChallengeId.get(challenge.getId()),
+                                        userId
+                                ))
+                        .toList();
+            } else if (!java.util.Objects.equals(userId, currentUserId)) {
                 visibleChallenges = visibleChallenges.stream()
                         .filter(challenge -> canViewChallenge(challenge, currentUserId))
                         .toList();
@@ -1758,13 +1927,21 @@ public class ChallengeServiceImpl implements ChallengeService {
                         c
                 );
                 summary.setDaysCompleted(daysCompleted);
-                summary.setCurrentStreak(computeCurrentStreak(submittedDays));
+                int streakThroughDay = resolveStreakThroughDay(
+                        c,
+                        submittedDays,
+                        totalDays,
+                        effectiveCurrentDate
+                );
+                summary.setCurrentStreak(StreakCalculator.currentStreak(submittedDays, streakThroughDay));
                 summary.setCompletionPercentage(completionPct);
                 summary.setJoinedAt(uc.getJoinedAt());
                 summary.setCompleted(oneOff
                         ? daysCompleted == 1
                         : Boolean.TRUE.equals(uc.getCompleted())
                                 || isExpiredChallenge(c, effectiveCurrentDate));
+                summary.setFavorite(selfView && Boolean.TRUE.equals(uc.getFavorite()));
+                summary.setParticipationActive(Boolean.TRUE.equals(uc.getActive()));
                 int participantCount = activeParticipantCountMap.getOrDefault(c.getId(), 0L).intValue();
                 summary.setParticipantCount(participantCount);
                 summary.setActiveParticipantCount(participantCount);
@@ -1788,7 +1965,7 @@ public class ChallengeServiceImpl implements ChallengeService {
                 summaries.add(summary);
             }
 
-            if (status != null && !status.isBlank()) {
+            if (status != null && !status.isBlank() && !favoriteFilter && !inactiveFilter) {
                 boolean filterCompleted = "completed".equalsIgnoreCase(status);
                 summaries = summaries.stream()
                         .filter(summary -> summary.isCompleted() == filterCompleted)
@@ -1960,6 +2137,35 @@ public class ChallengeServiceImpl implements ChallengeService {
         return challengeMomentumPolicy.evaluate(input)
                 .map(ChallengeMomentumResponse::from)
                 .orElse(null);
+    }
+
+    private int resolveStreakThroughDay(
+            Challenge challenge,
+            List<Integer> submittedDays,
+            int totalDays,
+            LocalDate currentDate
+    ) {
+        if (challenge == null || challenge.getStartDate() == null || totalDays <= 0) {
+            return submittedDays == null
+                    ? 0
+                    : submittedDays.stream().max(Integer::compareTo).orElse(0);
+        }
+
+        int currentDay = (int) java.time.temporal.ChronoUnit.DAYS.between(
+                challenge.getStartDate(),
+                currentDate
+        ) + 1;
+        if (currentDay < 1) {
+            return 0;
+        }
+        if (currentDay > totalDays) {
+            return totalDays;
+        }
+
+        // The current day is still in progress until it is completed.
+        return submittedDays != null && submittedDays.contains(currentDay)
+                ? currentDay
+                : currentDay - 1;
     }
 
     private boolean isPrivateLobby(Challenge challenge, ChallengeCrewLifecycle lifecycle) {
@@ -2231,17 +2437,6 @@ public class ChallengeServiceImpl implements ChallengeService {
         return serializedMediaKeys;
     }
 
-    private int computeCurrentStreak(List<Integer> days) {
-        if (days.isEmpty()) return 0;
-        List<Integer> sorted = days.stream().sorted(java.util.Comparator.reverseOrder()).toList();
-        int streak = 1;
-        for (int i = 1; i < sorted.size(); i++) {
-            if (sorted.get(i) == sorted.get(i - 1) - 1) streak++;
-            else break;
-        }
-        return streak;
-    }
-
     private static int compareChallengesByCreatedAtDesc(Challenge left, Challenge right) {
         return compareCreatedAtDesc(
                 left == null ? null : left.getCreatedAt(),
@@ -2273,20 +2468,6 @@ public class ChallengeServiceImpl implements ChallengeService {
         return Long.compare(safeRightId, safeLeftId);
     }
 
-    private int computeLongestStreak(List<Integer> days) {
-        if (days.isEmpty()) return 0;
-        List<Integer> sorted = days.stream().sorted().toList();
-        int longest = 1, current = 1;
-        for (int i = 1; i < sorted.size(); i++) {
-            if (sorted.get(i) == sorted.get(i - 1) + 1) {
-                longest = Math.max(longest, ++current);
-            } else {
-                current = 1;
-            }
-        }
-        return longest;
-    }
-
     private void ensureFollowAccess(Long ownerUserId, Long viewerUserId, String contentType)
             throws ChallengeSphereException {
         if (ownerUserId == null) {
@@ -2313,6 +2494,65 @@ public class ChallengeServiceImpl implements ChallengeService {
 
     private boolean canViewChallengeDiscovery(Challenge challenge, Long currentUserId) {
         return canViewChallenge(challenge, currentUserId);
+    }
+
+    private boolean canKeepFavoriteChallenge(
+            Challenge challenge,
+            UserChallenge membership,
+            Long userId
+    ) {
+        if (challenge == null
+                || membership == null
+                || userId == null
+                || Boolean.TRUE.equals(membership.getBanned())) {
+            return false;
+        }
+        if (Boolean.TRUE.equals(membership.getActive())) {
+            return true;
+        }
+        if (userId.equals(challenge.getCreatorId())
+                || userId.equals(challenge.getCurrentOwnerId())) {
+            return true;
+        }
+        if (Boolean.FALSE.equals(challenge.getActive())) {
+            return !Boolean.TRUE.equals(challenge.getIsPrivate())
+                    || Boolean.TRUE.equals(membership.getFavorite());
+        }
+        return !Boolean.TRUE.equals(challenge.getIsPrivate());
+    }
+
+    private boolean canViewInactiveChallengeHistory(
+            Challenge challenge,
+            UserChallenge membership,
+            Long userId
+    ) {
+        if (challenge == null
+                || membership == null
+                || userId == null
+                || Boolean.TRUE.equals(membership.getBanned())) {
+            return false;
+        }
+        boolean inactiveRelationship = !Boolean.TRUE.equals(challenge.getActive())
+                || !Boolean.TRUE.equals(membership.getActive());
+        if (!inactiveRelationship) {
+            return false;
+        }
+        if (userId.equals(challenge.getCreatorId())
+                || userId.equals(challenge.getCurrentOwnerId())) {
+            return true;
+        }
+        return !Boolean.TRUE.equals(challenge.getIsPrivate());
+    }
+
+    private boolean canViewArchivedChallenge(
+            Challenge challenge,
+            UserChallenge membership,
+            Long userId
+    ) {
+        return canViewInactiveChallengeHistory(challenge, membership, userId)
+                || (membership != null
+                        && Boolean.TRUE.equals(membership.getFavorite())
+                        && canKeepFavoriteChallenge(challenge, membership, userId));
     }
 
     private boolean canViewChallenge(Challenge challenge, Long currentUserId) {

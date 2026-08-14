@@ -43,6 +43,8 @@ public class MyChallengesResponse {
         private int completionPercentage;
         private Timestamp joinedAt;
         private boolean completed;
+        private boolean favorite;
+        private boolean participationActive;
         private int participantCount;
         private int activeParticipantCount;
         @JsonInclude(JsonInclude.Include.NON_NULL)

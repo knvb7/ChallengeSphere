@@ -1,7 +1,6 @@
 package com.ironside.challengesphere.service.impl;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -36,6 +35,7 @@ import com.ironside.challengesphere.repository.SubmissionRepository;
 import com.ironside.challengesphere.repository.UserChallengeRepository;
 import com.ironside.challengesphere.repository.UserRepository;
 import com.ironside.challengesphere.service.LeaderboardService;
+import com.ironside.challengesphere.util.StreakCalculator;
 
 /**
  * Leaderboard Service Implementation
@@ -646,10 +646,7 @@ public class LeaderboardServiceImpl implements LeaderboardService {
         }
     }
     
-    /**
-     * Calculate current streak for a user in a challenge
-     * A streak is the number of consecutive days with submissions
-     */
+    /** Calculate the current streak with one protected rest day per seven days. */
     private int calculateStreak(Long challengeId, Long userId) {
         try {
             // Get all submissions for this user-challenge, ordered by day
@@ -669,20 +666,7 @@ public class LeaderboardServiceImpl implements LeaderboardService {
                 return 0;
             }
             
-            // Find the maximum day
-            int maxDay = Collections.max(daysWithSubmissions);
-            
-            // Count consecutive days backwards from max day
-            int streak = 0;
-            for (int day = maxDay; day >= 1; day--) {
-                if (daysWithSubmissions.contains(day)) {
-                    streak++;
-                } else {
-                    break;
-                }
-            }
-            
-            return streak;
+            return StreakCalculator.currentStreak(daysWithSubmissions);
         } catch (Exception e) {
             logger.error("Error calculating streak for challenge {}, user {}: {}", 
                 challengeId, userId, e.getClass().getSimpleName());

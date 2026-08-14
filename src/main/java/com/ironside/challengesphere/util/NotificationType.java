@@ -7,6 +7,7 @@ public enum NotificationType {
     COMMENT,
     CHALLENGE_INVITE,
     CHALLENGE_UPDATE,
+    CHALLENGE_REMOVAL,
     REMINDER,
     INVITE,
     SUBMISSION_UPDATE,

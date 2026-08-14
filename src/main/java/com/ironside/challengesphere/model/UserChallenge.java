@@ -33,6 +33,12 @@ public class UserChallenge {
     @Column(name = "active", columnDefinition = "BOOLEAN DEFAULT TRUE")
     private Boolean active = true;
 
+    @Column(name = "favorite", nullable = false, columnDefinition = "BOOLEAN DEFAULT FALSE")
+    private Boolean favorite = false;
+
+    @Column(name = "favorited_at", columnDefinition = "TIMESTAMP WITH TIME ZONE")
+    private Timestamp favoritedAt;
+
     @Column(name = "banned", nullable = false, columnDefinition = "BOOLEAN DEFAULT FALSE")
     private Boolean banned = false;
 

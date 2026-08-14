@@ -76,18 +76,19 @@ class ChallengeParticipantBanTest {
                 .thenReturn(Optional.of(membership));
 
         LeaveChallengeResponse response = service.removeParticipant(
-                51L, 2L, 7L, "  Repeated spam posts  ");
+                51L, 2L, 7L, "  x  ");
 
         assertTrue(response.isSuccess());
         assertFalse(membership.getActive());
         assertTrue(membership.getBanned());
-        assertEquals("Repeated spam posts", membership.getRemovalReason());
+        assertEquals("x", membership.getRemovalReason());
         assertEquals(2L, membership.getRemovedByUserId());
         assertNotNull(membership.getRemovedAt());
         verify(userChallengeRepository).save(membership);
         verify(cacheService).invalidateChallengeParticipants(51L);
         verify(cacheService).invalidateTimeline(7L);
         verify(userRepository).adjustChallengeAcceptedCountForAUser(7L, -1);
+        verify(notificationService).notifyParticipantRemoved(challenge, 7L, 2L, "x");
     }
 
     @Test
@@ -111,16 +112,16 @@ class ChallengeParticipantBanTest {
     }
 
     @Test
-    void removalRejectsReasonShorterThanTenTrimmedCharacters() {
+    void removalRejectsBlankReason() {
         when(challengeRepository.findById(51L)).thenReturn(Optional.of(challenge()));
 
         ChallengeSphereException error = assertThrows(
                 ChallengeSphereException.class,
-                () -> service.removeParticipant(51L, 2L, 7L, " too short "));
+                () -> service.removeParticipant(51L, 2L, 7L, "   "));
 
         assertEquals(HttpStatus.BAD_REQUEST, error.getStatus());
         assertEquals(
-                "A removal reason must contain between 10 and 500 characters",
+                "A removal reason is required and must not exceed 500 characters",
                 error.getResponseMessage());
         verify(userChallengeRepository, never()).save(any(UserChallenge.class));
     }

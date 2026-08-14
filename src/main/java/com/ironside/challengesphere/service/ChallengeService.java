@@ -17,6 +17,7 @@ import com.ironside.challengesphere.api.request.LeaveChallengeRequest;
 import com.ironside.challengesphere.api.request.GeneratePresignedUrlsRequest;
 import com.ironside.challengesphere.api.response.ChallengeCreateResponse;
 import com.ironside.challengesphere.api.response.ChallengeDetailResponse;
+import com.ironside.challengesphere.api.response.ChallengeFavoriteResponse;
 import com.ironside.challengesphere.api.response.ChallengeParticipantsResponse;
 import com.ironside.challengesphere.api.response.ChallengeProgressResponse;
 import com.ironside.challengesphere.api.response.ChallengesByHashtagResponse;
@@ -54,6 +55,7 @@ public interface ChallengeService {
     ChallengeDetailResponse getChallengeDetail(Long challengeId, Long currentUserId) throws ChallengeSphereException;
     ChallengeProgressResponse getChallengeProgress(Long challengeId, Long userId) throws ChallengeSphereException;
     ChallengeProgressResponse getChallengeProgress(Long challengeId, Long userId, LocalDate currentDate) throws ChallengeSphereException;
+    ChallengeFavoriteResponse setChallengeFavorite(Long challengeId, Long userId, boolean favorite) throws ChallengeSphereException;
     MyChallengesResponse getMyChallenges(Long userId, Long currentUserId, String status, int page, int pageSize) throws ChallengeSphereException;
     MyChallengesResponse getMyChallenges(Long userId, Long currentUserId, String status, int page, int pageSize, LocalDate currentDate) throws ChallengeSphereException;
     PresignedUrlsResponse generateChallengePresignedUrls(GeneratePresignedUrlsRequest request) throws ChallengeSphereException;

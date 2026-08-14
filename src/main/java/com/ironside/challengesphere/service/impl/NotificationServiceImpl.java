@@ -56,9 +56,10 @@ public class NotificationServiceImpl implements NotificationService {
     private static final String TYPE_COMMENT = "COMMENT";
     private static final String TYPE_CHALLENGE_INVITE = "CHALLENGE_INVITE";
     private static final String TYPE_CHALLENGE_UPDATE = "CHALLENGE_UPDATE";
+    private static final String TYPE_CHALLENGE_REMOVAL = "CHALLENGE_REMOVAL";
     private static final String TYPE_MOMENTUM_MILESTONE = "MOMENTUM_MILESTONE";
     private static final Set<String> IMMEDIATE_PUSH_TYPES = Set.of(
-            TYPE_FOLLOW, TYPE_GLORY, TYPE_COMMENT, TYPE_CHALLENGE_INVITE);
+            TYPE_FOLLOW, TYPE_GLORY, TYPE_COMMENT, TYPE_CHALLENGE_INVITE, TYPE_CHALLENGE_REMOVAL);
     private static final int MAX_CHALLENGE_INVITES_PER_REQUEST = 20;
     private static final int MAX_CHALLENGE_INVITES_PER_UTC_DAY = 50;
     private static final long INVITE_DELIVERY_RESERVED = 1L;
@@ -165,6 +166,36 @@ public class NotificationServiceImpl implements NotificationService {
                         TYPE_CHALLENGE_UPDATE,
                         message,
                         actionObject
+                ))
+                .orElse(null);
+    }
+
+    @Override
+    @Transactional
+    public Notification notifyParticipantRemoved(
+            Challenge challenge,
+            Long recipientUserId,
+            Long actorUserId,
+            String reason) {
+        if (challenge == null || recipientUserId == null || reason == null || reason.isBlank()) {
+            return null;
+        }
+
+        String challengeTitle = safe(challenge.getTitle());
+        String challengeLabel = challengeTitle.isBlank() ? "this challenge" : "\"" + challengeTitle + "\"";
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("challengeId", challenge.getId());
+        data.put("challengeTitle", challengeTitle);
+        data.put("actorUserId", actorUserId);
+        data.put("removalReason", reason);
+
+        return userRepository.findById(recipientUserId)
+                .map(recipient -> deliver(
+                        recipient,
+                        preferencesRepository.findByUserId(recipientUserId).orElse(null),
+                        TYPE_CHALLENGE_REMOVAL,
+                        "You were removed from " + challengeLabel + ". Reason: " + reason,
+                        toJson(data)
                 ))
                 .orElse(null);
     }

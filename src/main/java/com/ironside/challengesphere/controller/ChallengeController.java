@@ -40,6 +40,7 @@ import com.ironside.challengesphere.api.request.LeaveChallengeRequest;
 import com.ironside.challengesphere.api.request.RemoveParticipantRequest;
 import com.ironside.challengesphere.api.response.ChallengeCreateResponse;
 import com.ironside.challengesphere.api.response.ChallengeDetailResponse;
+import com.ironside.challengesphere.api.response.ChallengeFavoriteResponse;
 import com.ironside.challengesphere.api.response.ChallengeParticipantsResponse;
 import com.ironside.challengesphere.api.response.ChallengeParticipationPolicyResponse;
 import com.ironside.challengesphere.api.response.ChallengeProgressResponse;
@@ -314,6 +315,24 @@ public class ChallengeController {
                 challengeId, actorUserId, currentDate);
         return ResponseEntity.ok(challengeService.getChallengeProgress(
                 challengeId, actorUserId, currentDate));
+    }
+
+    @PutMapping("/{challengeId}/favorite")
+    public ResponseEntity<ChallengeFavoriteResponse> favoriteChallenge(
+            @AuthenticationPrincipal UserPrincipal principal,
+            @PathVariable Long challengeId) throws ChallengeSphereException {
+        Long actorUserId = SecurityAccess.requireUserId(principal);
+        return ResponseEntity.ok(challengeService.setChallengeFavorite(
+                challengeId, actorUserId, true));
+    }
+
+    @DeleteMapping("/{challengeId}/favorite")
+    public ResponseEntity<ChallengeFavoriteResponse> unfavoriteChallenge(
+            @AuthenticationPrincipal UserPrincipal principal,
+            @PathVariable Long challengeId) throws ChallengeSphereException {
+        Long actorUserId = SecurityAccess.requireUserId(principal);
+        return ResponseEntity.ok(challengeService.setChallengeFavorite(
+                challengeId, actorUserId, false));
     }
 
     @GetMapping("/my")

@@ -13,6 +13,12 @@ public interface NotificationService {
 
     Notification notifyChallengeUpdate(Long recipientUserId, String message, String actionObject);
 
+    Notification notifyParticipantRemoved(
+            Challenge challenge,
+            Long recipientUserId,
+            Long actorUserId,
+            String reason);
+
     Notification notifyFollow(Long recipientUserId, Long actorUserId);
 
     void notifyFollowAsync(Long recipientUserId, Long actorUserId);

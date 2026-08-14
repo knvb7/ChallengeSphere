@@ -3,8 +3,11 @@ package com.ironside.challengesphere.repository;
 import java.sql.Timestamp;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Optional;
 
+import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -14,6 +17,10 @@ import com.ironside.challengesphere.model.Challenge;
 
 @Repository
 public interface ChallengeRepository extends JpaRepository<Challenge, Long> {
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT c FROM Challenge c WHERE c.id = :challengeId")
+    Optional<Challenge> findByIdForUpdate(@Param("challengeId") Long challengeId);
 
     @Query(value = "SELECT * FROM challengesphere.challenges WHERE creator_id = :creatorId ORDER BY created_at DESC, id DESC", nativeQuery = true)
     List<Challenge> findByCreatorId(@Param("creatorId") Long creatorId);
