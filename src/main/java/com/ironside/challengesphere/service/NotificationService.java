@@ -1,5 +1,7 @@
 package com.ironside.challengesphere.service;
 
+import com.ironside.challengesphere.api.response.ChallengeInviteDetailsResponse;
+import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.model.Challenge;
 import com.ironside.challengesphere.model.Notification;
 import com.ironside.challengesphere.model.Submission;
@@ -26,6 +28,13 @@ public interface NotificationService {
     int notifySubmission(Submission submission, Challenge challenge, Collection<Long> recipientUserIds);
 
     void notifyChallengeInvitesAsync(Challenge challenge, Long actorUserId, Collection<Long> requestedRecipientUserIds);
+
+    ChallengeInviteDetailsResponse getChallengeInviteDetails(Long notificationId, Long recipientUserId)
+            throws ChallengeSphereException;
+
+    int invalidateChallengeInvitesForChallenge(Long challengeId);
+
+    int invalidateChallengeInviteForRecipient(Long challengeId, Long recipientUserId);
 
     int notifyChallengeJoined(Challenge challenge, Long joiningUserId, Collection<Long> recipientUserIds);
 

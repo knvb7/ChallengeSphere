@@ -1,6 +1,7 @@
 package com.ironside.challengesphere.api.request;
 
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Positive;
 import lombok.Data;
 
 @Data
@@ -12,7 +13,15 @@ public class CreateInviteLinkRequest {
     private Long userId;
 
     /**
-     * Maximum number of times this invite can be used. Null means unlimited.
+     * Optional sole recipient for a direct private-challenge invitation.
+     * When omitted, the generated code can be shared with eligible users.
+     */
+    @Positive(message = "Recipient user ID must be positive")
+    private Long recipientUserId;
+
+    /**
+     * Maximum number of times a shareable invite can be used. Null means
+     * unlimited. Recipient-bound private invitations are always single-use.
      */
     private Integer maxUses;
 

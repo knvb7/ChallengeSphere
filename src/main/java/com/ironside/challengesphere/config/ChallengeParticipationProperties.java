@@ -1,5 +1,6 @@
 package com.ironside.challengesphere.config;
 
+import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import lombok.Getter;
 import lombok.Setter;
@@ -15,5 +16,24 @@ import org.springframework.validation.annotation.Validated;
 public class ChallengeParticipationProperties {
 
     @Min(0)
-    private int maxActiveParticipations = 0;
+    @Max(100)
+    private int freeMaxActivePerVisibility = 3;
+
+    @Min(0)
+    @Max(100)
+    private int premiumMaxActivePerVisibility = 15;
+
+    public int getFreeMaxActivePerVisibility() {
+        return freeMaxActivePerVisibility == 0 ? 3 : freeMaxActivePerVisibility;
+    }
+
+    public int getPremiumMaxActivePerVisibility() {
+        return premiumMaxActivePerVisibility == 0 ? 15 : premiumMaxActivePerVisibility;
+    }
+
+    public int limitFor(boolean premiumUser) {
+        return premiumUser
+                ? getPremiumMaxActivePerVisibility()
+                : getFreeMaxActivePerVisibility();
+    }
 }

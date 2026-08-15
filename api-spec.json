@@ -2999,9 +2999,15 @@
             "type": "integer",
             "format": "int64"
           },
+          "recipientUserId": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Optional sole recipient for a direct private challenge invitation. When omitted, the generated code is shareable."
+          },
           "maxUses": {
             "type": "integer",
-            "format": "int32"
+            "format": "int32",
+            "description": "Maximum uses for a shareable invite code. Recipient-bound private invitations are always single-use."
           },
           "expiresInHours": {
             "type": "integer",
@@ -3032,6 +3038,11 @@
           },
           "challengeTitle": {
             "type": "string"
+          },
+          "recipientUserId": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The sole permitted recipient for a bound private challenge invite; absent for shareable codes and opaque private previews."
           },
           "expiresAt": {
             "type": "string",

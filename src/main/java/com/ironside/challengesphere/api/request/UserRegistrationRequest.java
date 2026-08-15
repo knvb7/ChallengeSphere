@@ -1,11 +1,16 @@
 package com.ironside.challengesphere.api.request;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.ironside.challengesphere.util.AccountAgePolicy;
 import com.ironside.challengesphere.util.UsernamePolicy;
+import jakarta.validation.constraints.AssertTrue;
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
+
+import java.time.LocalDate;
 
 @Data
 public class UserRegistrationRequest {
@@ -31,6 +36,14 @@ public class UserRegistrationRequest {
     private String password;
 
     private String bio;
+
+    private LocalDate dateOfBirth;
+
+    @JsonIgnore
+    @AssertTrue(message = "Date of birth must represent an age between 13 and 120")
+    public boolean isDateOfBirthEligible() {
+        return dateOfBirth == null || AccountAgePolicy.isEligibleDateOfBirth(dateOfBirth);
+    }
 
     private String otpCode;
 }

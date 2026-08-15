@@ -9,6 +9,10 @@ public interface PushNotificationSender {
 
     SendResult send(List<PushMessage> messages);
 
+    default SendResult sendOnce(List<PushMessage> messages) {
+        return send(messages);
+    }
+
     record SendResult(Set<String> acceptedTokens, Map<String, String> rejectedTokens) {
         public SendResult {
             acceptedTokens = acceptedTokens == null ? Set.of() : Set.copyOf(acceptedTokens);

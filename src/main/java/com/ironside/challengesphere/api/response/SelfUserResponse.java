@@ -2,6 +2,7 @@ package com.ironside.challengesphere.api.response;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.ironside.challengesphere.model.User;
+import com.ironside.challengesphere.util.AccountAgePolicy;
 import com.ironside.challengesphere.util.UserGender;
 import com.ironside.challengesphere.util.UserRole;
 import lombok.Data;
@@ -32,26 +33,30 @@ public class SelfUserResponse extends PublicUserResponse {
         }
         SelfUserResponse response = new SelfUserResponse();
         populate(response, user);
+        LocalDate today = AccountAgePolicy.currentDate();
+        LocalDate dateOfBirth = user.getDateOfBirth();
+        Integer derivedAge = AccountAgePolicy.isEligibleDateOfBirth(dateOfBirth, today)
+                ? AccountAgePolicy.calculateAge(dateOfBirth, today)
+                : null;
         response.setEmailId(user.getEmailId());
         response.setPhone(user.getPhone());
         response.setNotifications(user.getNotifications());
-        response.setDateOfBirth(user.getDateOfBirth());
-        response.setAge(user.getAge());
+        response.setDateOfBirth(dateOfBirth);
+        response.setAge(derivedAge);
         response.setGender(user.getGender());
         response.setCountry(user.getCountry());
-        response.setProfileComplete(hasCompletedRequiredProfile(user));
+        response.setProfileComplete(hasCompletedRequiredProfile(user, derivedAge));
         response.setRole(user.getRole());
         return response;
     }
 
-    private static boolean hasCompletedRequiredProfile(User user) {
+    private static boolean hasCompletedRequiredProfile(User user, Integer derivedAge) {
         List<String> interests = user.getInterests();
         return hasText(user.getName())
                 && hasText(user.getUsername())
                 && hasText(user.getProfilePicUrl())
                 && hasText(user.getBio())
-                && user.getDateOfBirth() != null
-                && user.getAge() != null
+                && derivedAge != null
                 && user.getGender() != null
                 && hasText(user.getCountry())
                 && interests != null

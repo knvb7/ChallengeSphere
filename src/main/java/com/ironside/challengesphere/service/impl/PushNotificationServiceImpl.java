@@ -10,6 +10,7 @@ import com.ironside.challengesphere.repository.MotivationReminderRepository;
 import com.ironside.challengesphere.repository.SubmissionRepository;
 import com.ironside.challengesphere.service.PushNotificationSender;
 import com.ironside.challengesphere.service.PushNotificationService;
+import com.ironside.challengesphere.util.NotificationType;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -38,8 +39,6 @@ import java.util.stream.Collectors;
 public class PushNotificationServiceImpl implements PushNotificationService {
 
     private static final Logger logger = LogManager.getLogger(PushNotificationServiceImpl.class);
-    private static final Set<String> PUSH_TYPES = Set.of(
-            "FOLLOW", "GLORY", "COMMENT", "CHALLENGE_INVITE");
     private static final LocalTime SCHEDULED_CUTOFF = LocalTime.of(21, 0);
 
     private enum ScheduledReminder {
@@ -168,7 +167,7 @@ public class PushNotificationServiceImpl implements PushNotificationService {
     @Async("asyncExecutor")
     public void sendInteractionPush(Long userId, String type, String message, String actionObject) {
         String normalizedType = safe(type).toUpperCase();
-        if (userId == null || !PUSH_TYPES.contains(normalizedType)) {
+        if (userId == null || !NotificationType.supportsImmediatePush(normalizedType)) {
             return;
         }
 
@@ -180,17 +179,24 @@ public class PushNotificationServiceImpl implements PushNotificationService {
         }
         ZoneId primaryZone = toZoneId(tokens.get(0).getTimezone());
         LocalDate localDate = ZonedDateTime.now(clock).withZoneSameInstant(primaryZone).toLocalDate();
-        Optional<NotificationQuotaService.Reservation> reservation = reserveNotification(userId, localDate);
-        if (reservation.isEmpty()) {
-            logger.info("Daily push quota exhausted for userId={} type={}", userId, normalizedType);
-            return;
+        NotificationQuotaService.Reservation reservation = null;
+        if (!NotificationType.bypassesDailyPushQuota(normalizedType)) {
+            Optional<NotificationQuotaService.Reservation> reserved = reserveNotification(userId, localDate);
+            if (reserved.isEmpty()) {
+                logger.info("Daily push quota exhausted for userId={} type={}", userId, normalizedType);
+                return;
+            }
+            reservation = reserved.get();
         }
 
         Map<String, Object> data = parseActionObject(actionObject);
         data.put("type", normalizedType);
 
-        String title = interactionTitle(normalizedType);
-        String body = interactionBody(normalizedType, message);
+        boolean challengeInvite = "CHALLENGE_INVITE".equals(normalizedType);
+        String title = challengeInvite ? safe(message) : interactionTitle(normalizedType);
+        String body = challengeInvite
+                ? "Tap to view all challenge details and join."
+                : interactionBody(normalizedType, message);
 
         List<PushNotificationSender.PushMessage> messages = tokens.stream()
                 .map(token -> new PushNotificationSender.PushMessage(token.getExpoPushToken(), title, body, data))
@@ -199,19 +205,19 @@ public class PushNotificationServiceImpl implements PushNotificationService {
         try {
             result = sender.send(messages);
         } catch (RuntimeException exception) {
-            releaseNotification(reservation.get());
+            releaseNotification(reservation);
             logger.error("Push dispatch failed for userId={} type={}: {}",
                     userId, normalizedType, exception.getClass().getSimpleName());
             return;
         }
         if (result == null) {
-            releaseNotification(reservation.get());
+            releaseNotification(reservation);
             logger.error("Push sender returned no result for userId={} type={}", userId, normalizedType);
             return;
         }
         disablePermanentlyRejectedTokens(result);
         if (result.acceptedTokens().isEmpty()) {
-            releaseNotification(reservation.get());
+            releaseNotification(reservation);
         }
     }
 
@@ -516,9 +522,12 @@ public class PushNotificationServiceImpl implements PushNotificationService {
     private String interactionTitle(String type) {
         return switch (type) {
             case "FOLLOW" -> "New follower 👋";
+            case "SUBMISSION" -> "New challenge submission 📸";
             case "GLORY" -> "New glory ✨";
             case "COMMENT" -> "New comment 💬";
             case "CHALLENGE_INVITE" -> "Challenge invite 🎯";
+            case "CHALLENGE_UPDATE" -> "Challenge update 🎯";
+            case "CHALLENGE_REMOVAL" -> "Challenge membership update";
             default -> "ChallengeSphere 🌟";
         };
     }
@@ -527,12 +536,17 @@ public class PushNotificationServiceImpl implements PushNotificationService {
         String cleanMessage = safe(message);
         String emoji = switch (type) {
             case "FOLLOW" -> "👋";
+            case "SUBMISSION" -> "📸";
             case "GLORY" -> "🙌";
             case "COMMENT" -> "💬";
             case "CHALLENGE_INVITE" -> "🔥";
+            case "CHALLENGE_UPDATE" -> "🎯";
+            case "CHALLENGE_REMOVAL" -> "";
             default -> "✨";
         };
-        return cleanMessage.isBlank() ? emoji : cleanMessage + " " + emoji;
+        return cleanMessage.isBlank() || emoji.isBlank()
+                ? cleanMessage
+                : cleanMessage + " " + emoji;
     }
 
     private Optional<NotificationQuotaService.Reservation> reserveNotification(

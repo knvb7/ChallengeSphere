@@ -57,6 +57,7 @@ import com.ironside.challengesphere.repository.projection.SubmissionPreviewProje
 import com.ironside.challengesphere.security.IssuedUploadService;
 import com.ironside.challengesphere.security.UploadQuotaService;
 import com.ironside.challengesphere.service.ChallengeCrewService;
+import com.ironside.challengesphere.service.ContentModerationService;
 import com.ironside.challengesphere.service.LeaderboardService;
 import com.ironside.challengesphere.service.NotificationService;
 import com.ironside.challengesphere.service.SubmissionService;
@@ -64,7 +65,7 @@ import com.ironside.challengesphere.service.SubmissionService;
 @Service
 public class SubmissionServiceImpl implements SubmissionService {
     private static final Logger logger = LogManager.getLogger(SubmissionServiceImpl.class);
-    private static final int SUBMISSION_GRACE_DAYS = 2;
+    private static final int SUBMISSION_GRACE_DAYS = 1;
     private static final int MAX_SUBMISSION_MEDIA_FILES = 5;
     private static final long MAX_BACKEND_UPLOAD_BYTES = 8L * 1024L * 1024L;
     private final Clock clock;
@@ -120,7 +121,10 @@ public class SubmissionServiceImpl implements SubmissionService {
     private IssuedUploadService issuedUploadService;
 
     @Autowired
-    private SubmissionModerationJob submissionModerationJob;
+    private ContentModerationService contentModerationService;
+
+    @Autowired
+    private ModerationEnforcementService moderationEnforcementService;
 
     @Value("${aws.s3.bucket.name}")
     private String bucketName;
@@ -226,6 +230,7 @@ public class SubmissionServiceImpl implements SubmissionService {
 
             issuedUploadService.consume(
                     userId, mediaKeys, IssuedUploadService.Purpose.SUBMISSION_PHOTO);
+            moderateSubmissionMediaOrReject(userId, mediaKeys);
 
             // Create submission
             Submission submission = new Submission();
@@ -249,16 +254,15 @@ public class SubmissionServiceImpl implements SubmissionService {
             submission.setSubmissionTime(submissionTime);
             submission.setCreatedAt(new Timestamp(System.currentTimeMillis()));
             submission.setActive(true);
-            submission.setModerationStatus(Submission.MODERATION_PENDING);
+            submission.setModerationStatus(Submission.MODERATION_PASSED);
             submission.setModerationStartedAt(null);
-            submission.setModeratedAt(null);
+            submission.setModeratedAt(new Timestamp(System.currentTimeMillis()));
             submission.setModerationError(null);
             submission.setGloriesCount(0L);
             submission.setCommentsCount(0L);
             submission.setVersion(0);
 
             Submission savedSubmission = submissionRepository.save(submission);
-            scheduleSubmissionModerationAfterCommit(savedSubmission.getId());
 
             logger.info("Successfully created submission with id: {} for user: {}, challenge: {}, day: {}",
                     savedSubmission.getId(), userId, challengeId, dayNumber);
@@ -279,7 +283,11 @@ public class SubmissionServiceImpl implements SubmissionService {
             }
 
             if (Boolean.TRUE.equals(savedSubmission.getActive())) {
-                Set<Long> notificationRecipients = fanOutSubmissionToFeedTimelines(savedSubmission, challenge, userId);
+                fanOutSubmissionToFeedTimelines(savedSubmission, challenge, userId);
+                Set<Long> notificationRecipients = userChallengeRepository.findActiveByChallengeId(challengeId).stream()
+                        .map(UserChallenge::getUserId)
+                        .filter(Objects::nonNull)
+                        .collect(java.util.stream.Collectors.toSet());
                 try {
                     notificationService.notifySubmission(savedSubmission, challenge, notificationRecipients);
                 } catch (Exception e) {
@@ -464,6 +472,7 @@ public class SubmissionServiceImpl implements SubmissionService {
                         userId,
                         newlyAttachedMediaKeys,
                         IssuedUploadService.Purpose.SUBMISSION_PHOTO);
+                moderateSubmissionMediaOrReject(userId, newlyAttachedMediaKeys);
             }
             submission.setDescription(request.getDescription());
             submission.setMediaUrls(storedMediaKeys);
@@ -476,16 +485,13 @@ public class SubmissionServiceImpl implements SubmissionService {
             submission.setSubmissionTime(Timestamp.from(Instant.now()));
             submission.setUpdatedAt(new Timestamp(System.currentTimeMillis()));
             if (!newlyAttachedMediaKeys.isEmpty()) {
-                submission.setModerationStatus(Submission.MODERATION_PENDING);
+                submission.setModerationStatus(Submission.MODERATION_PASSED);
                 submission.setModerationStartedAt(null);
-                submission.setModeratedAt(null);
+                submission.setModeratedAt(new Timestamp(System.currentTimeMillis()));
                 submission.setModerationError(null);
             }
 
             Submission savedSubmission = submissionRepository.save(submission);
-            if (!newlyAttachedMediaKeys.isEmpty()) {
-                scheduleSubmissionModerationAfterCommit(savedSubmission.getId());
-            }
             invalidateSubmissionCaches(savedSubmission);
             boolean leaderboardRebuilt = false;
             try {
@@ -968,6 +974,39 @@ public class SubmissionServiceImpl implements SubmissionService {
         }
     }
 
+    private void moderateSubmissionMediaOrReject(Long userId, List<String> mediaKeys)
+            throws ChallengeSphereException {
+        ContentModerationService.Result moderation;
+        try {
+            moderation = contentModerationService.scanStrict(mediaKeys);
+        } catch (RuntimeException unavailable) {
+            logger.error("Submission photo moderation failed closed for userId={}: {}",
+                    userId, unavailable.getClass().getSimpleName());
+            throw new ChallengeSphereException(
+                    "Submission photos could not be verified for safety. Please try again.",
+                    HttpStatus.SERVICE_UNAVAILABLE,
+                    logger,
+                    unavailable
+            );
+        }
+
+        if (moderation == null) {
+            throw new ChallengeSphereException(
+                    "Submission photos could not be verified for safety. Please try again.",
+                    HttpStatus.SERVICE_UNAVAILABLE,
+                    logger
+            );
+        }
+        if (moderation.verdict() != ContentModerationService.Verdict.CLEAN) {
+            moderationEnforcementService.removeFlaggedMediaAndWarn(userId, moderation);
+            throw new ChallengeSphereException(
+                    "Submission image removed for violating the content policy. A warning was sent to your notifications.",
+                    HttpStatus.BAD_REQUEST,
+                    logger
+            );
+        }
+    }
+
     private void requireChallengeStarted(Long challengeId) throws ChallengeSphereException {
         challengeCrewService.requireStarted(challengeId);
     }
@@ -1263,28 +1302,6 @@ public class SubmissionServiceImpl implements SubmissionService {
             return;
         }
         notify.run();
-    }
-
-    private void scheduleSubmissionModerationAfterCommit(Long submissionId) {
-        Runnable dispatch = () -> {
-            try {
-                submissionModerationJob.moderateSubmissionAsync(submissionId);
-            } catch (RuntimeException exception) {
-                // Leave the row PENDING. The moderation scheduler will retry it.
-                logger.warn("Failed to dispatch moderation for submissionId={}: {}",
-                        submissionId, exception.getClass().getSimpleName());
-            }
-        };
-        if (TransactionSynchronizationManager.isSynchronizationActive()) {
-            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-                @Override
-                public void afterCommit() {
-                    dispatch.run();
-                }
-            });
-            return;
-        }
-        dispatch.run();
     }
 
     // Derive a stable 64-bit key from (userId, challengeId, dayNumber) for the advisory lock.

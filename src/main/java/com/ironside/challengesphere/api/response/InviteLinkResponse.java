@@ -18,6 +18,7 @@ public class InviteLinkResponse {
     private String inviteUrl;
     private Long challengeId;
     private String challengeTitle;
+    private Long recipientUserId;
     private Timestamp expiresAt;
     private Integer maxUses;
     private Integer useCount;

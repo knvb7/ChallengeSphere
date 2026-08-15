@@ -77,4 +77,23 @@ public interface UserChallengeRepository extends JpaRepository<UserChallenge, Lo
               )
             """, nativeQuery = true)
     long countSlotConsumingParticipations(@Param("userId") Long userId);
+
+    @Query(value = """
+            SELECT COUNT(*)
+            FROM challengesphere.user_challenges uc
+            JOIN challengesphere.challenges c ON c.id = uc.challenge_id
+            WHERE uc.user_id = :userId
+              AND uc.active = true
+              AND COALESCE(uc.banned, false) = false
+              AND COALESCE(uc.completed, false) = false
+              AND c.active = true
+              AND c.private = :privateChallenge
+              AND (
+                    UPPER(COALESCE(c.challenge_mode, 'DAILY')) = 'ONE_OFF'
+                    OR CURRENT_DATE < (c.start_date + (c.number_of_days * INTERVAL '1 day'))::date
+              )
+            """, nativeQuery = true)
+    long countSlotConsumingParticipationsByVisibility(
+            @Param("userId") Long userId,
+            @Param("privateChallenge") boolean privateChallenge);
 }

@@ -47,7 +47,7 @@ public class InviteServiceImpl implements InviteService {
 
     private final SecureRandom secureRandom = new SecureRandom();
 
-    @Value("${app.invite.base-url:https://challengesphere.com/invite}")
+    @Value("${app.invite.base-url:challengesphere://invite}")
     private String inviteBaseUrl;
 
     @Autowired
@@ -102,18 +102,41 @@ public class InviteServiceImpl implements InviteService {
             );
         }
 
-        // Validate user is either the challenge creator or an active participant
-        boolean isCreator = challenge.getCreatorId().equals(userId) || challenge.getCurrentOwnerId().equals(userId);
-        if (!isCreator) {
+        boolean privateChallenge = Boolean.TRUE.equals(challenge.getIsPrivate());
+        boolean challengeOwner = isChallengeOwner(challenge, userId);
+
+        // Private challenge membership is owner-controlled. Public challenges
+        // retain their existing participant-created share-link behavior.
+        if (privateChallenge && !challengeOwner) {
+            throw new ChallengeSphereException(
+                    "Only the challenge owner can generate a private challenge invite link",
+                    HttpStatus.FORBIDDEN,
+                    logger
+            );
+        }
+        if (!privateChallenge && !challengeOwner) {
             UserChallenge userChallenge = userChallengeRepository
                     .findByUserIdAndChallengeId(userId, challengeId)
                     .orElse(null);
-            if (userChallenge == null || !userChallenge.getActive()) {
+            if (userChallenge == null
+                    || !Boolean.TRUE.equals(userChallenge.getActive())
+                    || Boolean.TRUE.equals(userChallenge.getBanned())) {
                 throw new ChallengeSphereException(
                         "Only the challenge creator or active participants can generate invite links",
                         HttpStatus.FORBIDDEN,
                         logger
                 );
+            }
+        }
+
+        Long recipientUserId = null;
+        Integer maxUses = request.getMaxUses();
+        if (privateChallenge) {
+            recipientUserId = request.getRecipientUserId();
+            if (recipientUserId != null) {
+                recipientUserId = requirePrivateInviteRecipient(challenge, userId, recipientUserId);
+                // Direct private invitations remain recipient-bound and single-use.
+                maxUses = 1;
             }
         }
 
@@ -128,9 +151,10 @@ public class InviteServiceImpl implements InviteService {
         ChallengeInvite invite = new ChallengeInvite();
         invite.setChallengeId(challengeId);
         invite.setCreatedBy(userId);
+        invite.setRecipientUserId(recipientUserId);
         invite.setInviteCode(inviteCode);
         invite.setExpiresAt(expiresAt);
-        invite.setMaxUses(request.getMaxUses());
+        invite.setMaxUses(maxUses);
         invite.setUseCount(0);
         invite.setActive(true);
         invite.setCreatedAt(new Timestamp(System.currentTimeMillis()));
@@ -141,7 +165,7 @@ public class InviteServiceImpl implements InviteService {
 
         logger.info("Successfully created invite {} for challenge {}", savedInvite.getId(), challengeId);
 
-        return InviteLinkResponse.from(
+        InviteLinkResponse response = InviteLinkResponse.from(
                 savedInvite.getId(),
                 savedInvite.getInviteCode(),
                 inviteUrl,
@@ -153,6 +177,8 @@ public class InviteServiceImpl implements InviteService {
                 savedInvite.getActive(),
                 savedInvite.getCreatedAt()
         );
+        response.setRecipientUserId(savedInvite.getRecipientUserId());
+        return response;
     }
 
     @Override
@@ -174,6 +200,21 @@ public class InviteServiceImpl implements InviteService {
             );
         }
 
+        // Validate challenge exists and is active
+        Challenge challenge = challengeRepository.findById(invite.getChallengeId())
+                .orElseThrow(this::inviteUnavailable);
+
+        if (!Boolean.TRUE.equals(challenge.getActive())) {
+            throw inviteUnavailable();
+        }
+
+        // Recipient-bound invitations can only be redeemed by their intended
+        // user. An unbound code is a shareable capability for public or private
+        // challenges and may be redeemed by any eligible authenticated user.
+        if (invite.getRecipientUserId() != null && !invite.getRecipientUserId().equals(userId)) {
+            throw inviteUnavailable();
+        }
+
         // Check if user already used this invite
         if (inviteUsageRepository.existsByInviteIdAndUserId(invite.getId(), userId)) {
             throw new ChallengeSphereException(
@@ -181,14 +222,6 @@ public class InviteServiceImpl implements InviteService {
                     HttpStatus.CONFLICT,
                     logger
             );
-        }
-
-        // Validate challenge exists and is active
-        Challenge challenge = challengeRepository.findById(invite.getChallengeId())
-                .orElseThrow(this::inviteUnavailable);
-
-        if (!Boolean.TRUE.equals(challenge.getActive())) {
-            throw inviteUnavailable();
         }
 
         // Check if user is already a participant
@@ -252,6 +285,15 @@ public class InviteServiceImpl implements InviteService {
             throw inviteUnavailable();
         }
 
+        if (Boolean.TRUE.equals(challenge.getIsPrivate())) {
+            // Invite-code lookups stay opaque until an authenticated code
+            // holder successfully redeems the private invitation.
+            InviteLinkResponse opaque = new InviteLinkResponse();
+            opaque.setActive(true);
+            opaque.setPrivateChallenge(true);
+            return opaque;
+        }
+
         String inviteUrl = inviteBaseUrl + "/" + invite.getInviteCode();
 
         InviteLinkResponse response = InviteLinkResponse.from(
@@ -305,8 +347,7 @@ public class InviteServiceImpl implements InviteService {
                         logger
                 ));
 
-        boolean isChallengeOwner = challenge.getCreatorId().equals(userId)
-                || challenge.getCurrentOwnerId().equals(userId);
+        boolean isChallengeOwner = isChallengeOwner(challenge, userId);
         if (!isChallengeOwner) {
             throw new ChallengeSphereException(
                     "Only the challenge owner can view its invite links",
@@ -318,18 +359,22 @@ public class InviteServiceImpl implements InviteService {
         List<ChallengeInvite> invites = challengeInviteRepository.findByChallengeId(challengeId);
 
         List<InviteLinkResponse> inviteResponses = invites.stream()
-                .map(invite -> InviteLinkResponse.from(
-                        invite.getId(),
-                        invite.getInviteCode(),
-                        inviteBaseUrl + "/" + invite.getInviteCode(),
-                        invite.getChallengeId(),
-                        challenge.getTitle(),
-                        invite.getExpiresAt(),
-                        invite.getMaxUses(),
-                        invite.getUseCount(),
-                        invite.getActive(),
-                        invite.getCreatedAt()
-                ))
+                .map(invite -> {
+                    InviteLinkResponse response = InviteLinkResponse.from(
+                            invite.getId(),
+                            invite.getInviteCode(),
+                            inviteBaseUrl + "/" + invite.getInviteCode(),
+                            invite.getChallengeId(),
+                            challenge.getTitle(),
+                            invite.getExpiresAt(),
+                            invite.getMaxUses(),
+                            invite.getUseCount(),
+                            invite.getActive(),
+                            invite.getCreatedAt()
+                    );
+                    response.setRecipientUserId(invite.getRecipientUserId());
+                    return response;
+                })
                 .collect(Collectors.toList());
 
         return ChallengeInvitesResponse.builder()
@@ -360,7 +405,7 @@ public class InviteServiceImpl implements InviteService {
                 ));
 
         boolean isInviteCreator = invite.getCreatedBy().equals(userId);
-        boolean isChallengeOwner = challenge.getCreatorId().equals(userId) || challenge.getCurrentOwnerId().equals(userId);
+        boolean isChallengeOwner = isChallengeOwner(challenge, userId);
 
         if (!isInviteCreator && !isChallengeOwner) {
             throw new ChallengeSphereException(
@@ -443,6 +488,74 @@ public class InviteServiceImpl implements InviteService {
             return null;
         }
         return value.strip();
+    }
+
+    private boolean isChallengeOwner(Challenge challenge, Long userId) {
+        return challenge != null
+                && userId != null
+                && userId.equals(effectiveOwnerId(challenge));
+    }
+
+    private Long effectiveOwnerId(Challenge challenge) {
+        return challenge == null
+                ? null
+                : (challenge.getCurrentOwnerId() != null
+                ? challenge.getCurrentOwnerId()
+                : challenge.getCreatorId());
+    }
+
+    private Long requirePrivateInviteRecipient(
+            Challenge challenge,
+            Long ownerUserId,
+            Long recipientUserId) throws ChallengeSphereException {
+        if (recipientUserId == null) {
+            throw new ChallengeSphereException(
+                    "A private challenge invite must name exactly one recipient",
+                    HttpStatus.BAD_REQUEST,
+                    logger
+            );
+        }
+        if (recipientUserId.equals(ownerUserId)
+                || recipientUserId.equals(effectiveOwnerId(challenge))) {
+            throw new ChallengeSphereException(
+                    "The challenge owner cannot be the invite recipient",
+                    HttpStatus.BAD_REQUEST,
+                    logger
+            );
+        }
+
+        User recipient = userRepository.findById(recipientUserId)
+                .orElseThrow(() -> new ChallengeSphereException(
+                        "Invite recipient not found",
+                        HttpStatus.BAD_REQUEST,
+                        logger
+                ));
+        if (!Boolean.TRUE.equals(recipient.getActive())) {
+            throw new ChallengeSphereException(
+                    "Invite recipient is unavailable",
+                    HttpStatus.BAD_REQUEST,
+                    logger
+            );
+        }
+
+        UserChallenge membership = userChallengeRepository
+                .findByUserIdAndChallengeId(recipientUserId, challenge.getId())
+                .orElse(null);
+        if (membership != null && Boolean.TRUE.equals(membership.getBanned())) {
+            throw new ChallengeSphereException(
+                    "Invite recipient was removed from this challenge",
+                    HttpStatus.FORBIDDEN,
+                    logger
+            );
+        }
+        if (membership != null && Boolean.TRUE.equals(membership.getActive())) {
+            throw new ChallengeSphereException(
+                    "Invite recipient is already a participant of this challenge",
+                    HttpStatus.CONFLICT,
+                    logger
+            );
+        }
+        return recipientUserId;
     }
 
     private ChallengeSphereException inviteUnavailable() {

@@ -1,6 +1,5 @@
 package com.ironside.challengesphere.repository;
 
-import java.sql.Timestamp;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
@@ -38,6 +37,9 @@ public interface ChallengeRepository extends JpaRepository<Challenge, Long> {
     @Query(value = "SELECT * FROM challengesphere.challenges WHERE active = true ORDER BY created_at DESC, id DESC", nativeQuery = true)
     List<Challenge> findAllActiveChallenges();
 
+    @Query("SELECT c FROM Challenge c WHERE c.id IN :challengeIds AND c.active = true")
+    List<Challenge> findActiveByIds(@Param("challengeIds") List<Long> challengeIds);
+
     @Query(value = "SELECT * FROM challengesphere.challenges WHERE private = false AND active = true ORDER BY created_at DESC, id DESC", nativeQuery = true)
     List<Challenge> findAllPublicChallenges();
 
@@ -55,18 +57,6 @@ public interface ChallengeRepository extends JpaRepository<Challenge, Long> {
     // Count public active challenges
     @Query(value = "SELECT COUNT(*) FROM challengesphere.challenges WHERE active = true AND private = false", nativeQuery = true)
     long countPublicActiveChallenges();
-
-    @Query(value = """
-            SELECT COUNT(*) FROM challengesphere.challenges
-            WHERE creator_id = :creatorId
-              AND created_at >= :startOfDay
-              AND created_at < :startOfNextDay
-            """, nativeQuery = true)
-    long countCreatedByCreatorIdBetween(
-            @Param("creatorId") Long creatorId,
-            @Param("startOfDay") Timestamp startOfDay,
-            @Param("startOfNextDay") Timestamp startOfNextDay
-    );
 
     @Query(value = "SELECT * FROM challengesphere.challenges WHERE start_date = :startDate", nativeQuery = true)
     List<Challenge> findByStartDate(@Param("startDate") LocalDate startDate);

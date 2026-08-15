@@ -40,3 +40,125 @@ ALTER TABLE IF EXISTS challengesphere.notifications
     ALTER COLUMN message TYPE TEXT,
     ALTER COLUMN action_object TYPE TEXT,
     ALTER COLUMN "type" TYPE VARCHAR(500);
+
+-- V44: Notification now maps challenge_id for private challenge invites.
+-- Keep this additive subset here because production schemas are updated with
+-- this idempotent script rather than automatically running Flyway migrations.
+ALTER TABLE IF EXISTS challengesphere.challenge_invites
+    ADD COLUMN IF NOT EXISTS recipient_user_id BIGINT;
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM information_schema.tables
+        WHERE table_schema = 'challengesphere'
+          AND table_name = 'challenge_invites'
+    ) AND NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'fk_challenge_invites_recipient_user'
+          AND conrelid = 'challengesphere.challenge_invites'::regclass
+    ) THEN
+        ALTER TABLE challengesphere.challenge_invites
+            ADD CONSTRAINT fk_challenge_invites_recipient_user
+            FOREIGN KEY (recipient_user_id)
+            REFERENCES challengesphere.users(id)
+            ON DELETE CASCADE;
+    END IF;
+END
+$$;
+
+CREATE INDEX IF NOT EXISTS idx_challenge_invites_recipient
+    ON challengesphere.challenge_invites (recipient_user_id, active);
+
+ALTER TABLE IF EXISTS challengesphere.notifications
+    ADD COLUMN IF NOT EXISTS challenge_id BIGINT;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'fk_notifications_challenge'
+          AND conrelid = 'challengesphere.notifications'::regclass
+    ) THEN
+        ALTER TABLE challengesphere.notifications
+            ADD CONSTRAINT fk_notifications_challenge
+            FOREIGN KEY (challenge_id)
+            REFERENCES challengesphere.challenges(id)
+            ON DELETE SET NULL;
+    END IF;
+END
+$$;
+
+CREATE INDEX IF NOT EXISTS idx_notifications_challenge_invite
+    ON challengesphere.notifications (challenge_id, user_id)
+    WHERE type = 'CHALLENGE_INVITE';
+
+-- V34/V45: Account deletion depends on these records being available before
+-- the application starts. Production currently applies this idempotent script
+-- directly, so keep the runtime-required account deletion schema here too.
+ALTER TABLE IF EXISTS challengesphere.users
+    ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP WITH TIME ZONE;
+
+CREATE TABLE IF NOT EXISTS challengesphere.account_deletion_requests (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL REFERENCES challengesphere.users(id),
+    original_email_id VARCHAR(255),
+    original_username VARCHAR(50),
+    original_name VARCHAR(120),
+    identity_retained_at TIMESTAMP WITH TIME ZONE,
+    status VARCHAR(32) NOT NULL DEFAULT 'PROCESSING',
+    requested_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    processed_at TIMESTAMP WITH TIME ZONE,
+    media_cleanup_count INTEGER NOT NULL DEFAULT 0
+);
+
+ALTER TABLE challengesphere.account_deletion_requests
+    ADD COLUMN IF NOT EXISTS original_email_id VARCHAR(255),
+    ADD COLUMN IF NOT EXISTS original_username VARCHAR(50),
+    ADD COLUMN IF NOT EXISTS original_name VARCHAR(120),
+    ADD COLUMN IF NOT EXISTS identity_retained_at TIMESTAMP WITH TIME ZONE,
+    ADD COLUMN IF NOT EXISTS status VARCHAR(32) NOT NULL DEFAULT 'PROCESSING',
+    ADD COLUMN IF NOT EXISTS requested_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    ADD COLUMN IF NOT EXISTS processed_at TIMESTAMP WITH TIME ZONE,
+    ADD COLUMN IF NOT EXISTS media_cleanup_count INTEGER NOT NULL DEFAULT 0;
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_account_deletion_request_user
+    ON challengesphere.account_deletion_requests (user_id);
+
+CREATE INDEX IF NOT EXISTS idx_account_deletion_requests_original_email
+    ON challengesphere.account_deletion_requests (LOWER(original_email_id))
+    WHERE original_email_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_account_deletion_requests_original_username
+    ON challengesphere.account_deletion_requests (LOWER(original_username))
+    WHERE original_username IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS challengesphere.account_media_cleanup_queue (
+    id BIGSERIAL PRIMARY KEY,
+    deletion_request_id BIGINT NOT NULL
+        REFERENCES challengesphere.account_deletion_requests(id) ON DELETE CASCADE,
+    requested_by_user_id BIGINT NOT NULL REFERENCES challengesphere.users(id),
+    source_type VARCHAR(32) NOT NULL,
+    source_id BIGINT NOT NULL,
+    object_key TEXT NOT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
+    requested_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    processed_at TIMESTAMP WITH TIME ZONE,
+    failure_reason TEXT
+);
+
+ALTER TABLE challengesphere.account_media_cleanup_queue
+    ADD COLUMN IF NOT EXISTS status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
+    ADD COLUMN IF NOT EXISTS requested_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    ADD COLUMN IF NOT EXISTS processed_at TIMESTAMP WITH TIME ZONE,
+    ADD COLUMN IF NOT EXISTS failure_reason TEXT;
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_account_media_cleanup_object
+    ON challengesphere.account_media_cleanup_queue (requested_by_user_id, object_key);
+
+CREATE INDEX IF NOT EXISTS idx_account_media_cleanup_pending
+    ON challengesphere.account_media_cleanup_queue (status, requested_at)
+    WHERE status = 'PENDING';

@@ -75,8 +75,8 @@ public class GetSignedUrlForS3 {
             GeneratePresignedUrlsRequest.ContentType contentType,
             Long contentLength
     ) {
-        if (contentLength == null || contentLength <= 0 || contentLength > 15L * 1024 * 1024) {
-            throw new IllegalArgumentException("Upload content length must be between 1 byte and 15 MB");
+        if (contentLength == null || contentLength <= 0 || contentLength > 8L * 1024 * 1024) {
+            throw new IllegalArgumentException("Upload content length must be between 1 byte and 8 MB");
         }
         PutObjectRequest.Builder objectRequest = PutObjectRequest.builder()
                 .bucket(bucketName)

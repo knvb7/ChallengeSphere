@@ -36,7 +36,7 @@ public class GeneratePresignedUrlsRequest {
 
         @NotNull(message = "File size is required")
         @Positive(message = "File size must be positive")
-        @Max(value = 15728640, message = "File size must not exceed 15 MB")
+        @Max(value = 8388608, message = "File size must not exceed 8 MB")
         private Long fileSizeBytes;
     }
 

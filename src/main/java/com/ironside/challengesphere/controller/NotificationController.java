@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ironside.challengesphere.api.request.JoinChallengeRequest;
 import com.ironside.challengesphere.api.request.RegisterPushTokenRequest;
+import com.ironside.challengesphere.api.response.ChallengeInviteDetailsResponse;
 import com.ironside.challengesphere.api.response.JoinChallengeResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.model.Notification;
@@ -11,6 +12,7 @@ import com.ironside.challengesphere.model.PushDeviceToken;
 import com.ironside.challengesphere.repository.NotificationRepository;
 import com.ironside.challengesphere.security.UserPrincipal;
 import com.ironside.challengesphere.service.ChallengeService;
+import com.ironside.challengesphere.service.NotificationService;
 import com.ironside.challengesphere.service.PushNotificationService;
 import com.ironside.challengesphere.service.impl.RedisCacheServiceImpl;
 import org.apache.logging.log4j.LogManager;
@@ -27,6 +29,7 @@ import org.springframework.web.bind.annotation.*;
 import java.util.List;
 import java.util.Map;
 import java.time.Duration;
+import java.time.Instant;
 
 @RestController
 @RequestMapping("/api/v1/notifications")
@@ -41,6 +44,9 @@ public class NotificationController {
 
     @Autowired
     private ChallengeService challengeService;
+
+    @Autowired
+    private NotificationService notificationService;
 
     @Autowired
     private PushNotificationService pushNotificationService;
@@ -66,7 +72,8 @@ public class NotificationController {
         return ResponseEntity.ok(Map.of(
                 "notifications", notifications,
                 "total", total,
-                "unreadCount", unreadCount
+                "unreadCount", unreadCount,
+                "serverTimeEpochMs", Instant.now().toEpochMilli()
         ));
     }
 
@@ -131,6 +138,26 @@ public class NotificationController {
         return ResponseEntity.ok().build();
     }
 
+    /**
+     * DELETE /api/v1/notifications/{userId}/activity
+     * Clears activity while preserving saved and actionable invites and follows.
+     */
+    @DeleteMapping("/{userId}/activity")
+    @Transactional
+    public ResponseEntity<Map<String, Object>> clearActivityNotifications(
+            @PathVariable Long userId,
+            @AuthenticationPrincipal UserPrincipal principal) throws ChallengeSphereException {
+        assertOwnInbox(userId, principal);
+        logger.info("Clearing activity notifications for userId: {}", userId);
+        int deleted = notificationRepository.deleteActivityByUserId(userId);
+        long unreadCount = notificationRepository.countUnreadNotificationsByUserId(userId);
+        invalidateUnreadCount(userId);
+        return ResponseEntity.ok(Map.of(
+                "deleted", deleted,
+                "unreadCount", unreadCount
+        ));
+    }
+
     @PostMapping("/me/{notificationId}/challenge-invite/accept")
     @Transactional
     public ResponseEntity<JoinChallengeResponse> acceptChallengeInvite(
@@ -148,6 +175,14 @@ public class NotificationController {
         notificationRepository.markAsRead(userId, notificationId);
         invalidateUnreadCount(userId);
         return ResponseEntity.ok(response);
+    }
+
+    @GetMapping("/me/{notificationId}/challenge-invite")
+    public ResponseEntity<ChallengeInviteDetailsResponse> getChallengeInviteDetails(
+            @PathVariable Long notificationId,
+            @AuthenticationPrincipal UserPrincipal principal) throws ChallengeSphereException {
+        Long userId = requireUserId(principal);
+        return ResponseEntity.ok(notificationService.getChallengeInviteDetails(notificationId, userId));
     }
 
     @PostMapping("/me/{notificationId}/challenge-invite/ignore")
@@ -248,6 +283,9 @@ public class NotificationController {
     }
 
     private Long extractChallengeId(Notification notification) throws ChallengeSphereException {
+        if (notification.getChallengeId() != null) {
+            return notification.getChallengeId();
+        }
         try {
             JsonNode action = objectMapper.readTree(notification.getActionObject());
             JsonNode challengeId = action.get("challengeId");

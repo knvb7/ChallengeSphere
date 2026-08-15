@@ -1,6 +1,7 @@
 package com.ironside.challengesphere.service.impl;
 
 import java.sql.Timestamp;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -46,6 +47,7 @@ import com.ironside.challengesphere.repository.UserRepository;
 import com.ironside.challengesphere.security.AuthTokenStore;
 import com.ironside.challengesphere.service.NotificationService;
 import com.ironside.challengesphere.service.UserService;
+import com.ironside.challengesphere.util.AccountAgePolicy;
 import com.ironside.challengesphere.util.UsernamePolicy;
 
 @Service
@@ -375,14 +377,7 @@ public class UserServiceImpl implements UserService {
                 user.setBio(updateUserRequest.getBio());
                 logger.debug("Updated bio for user {}", userId);
             }
-            if (updateUserRequest.getDateOfBirth() != null) {
-                user.setDateOfBirth(updateUserRequest.getDateOfBirth());
-                logger.debug("Updated dateOfBirth for user {}", userId);
-            }
-            if (updateUserRequest.getAge() != null) {
-                user.setAge(updateUserRequest.getAge());
-                logger.debug("Updated age for user {}", userId);
-            }
+            applyDateOfBirthUpdate(user, updateUserRequest);
             if (updateUserRequest.getGender() != null) {
                 user.setGender(updateUserRequest.getGender());
                 logger.debug("Updated gender for user {}", userId);
@@ -419,6 +414,50 @@ public class UserServiceImpl implements UserService {
                     logger
             );
         }
+    }
+
+    private void applyDateOfBirthUpdate(User user, UpdateUserRequest request) throws ChallengeSphereException {
+        LocalDate requestedDateOfBirth = request.getDateOfBirth();
+        Integer requestedAge = request.getAge();
+        if (requestedDateOfBirth == null && requestedAge == null) {
+            return;
+        }
+
+        LocalDate effectiveDateOfBirth = requestedDateOfBirth != null
+                ? requestedDateOfBirth
+                : user.getDateOfBirth();
+        if (effectiveDateOfBirth == null) {
+            throw new ChallengeSphereException(
+                    "Date of birth is required when setting age",
+                    HttpStatus.BAD_REQUEST,
+                    logger
+            );
+        }
+
+        int derivedAge = requireEligibleAccountAge(effectiveDateOfBirth);
+        if (requestedAge != null && requestedAge != derivedAge) {
+            throw new ChallengeSphereException(
+                    "Age must match date of birth",
+                    HttpStatus.BAD_REQUEST,
+                    logger
+            );
+        }
+
+        user.setDateOfBirth(effectiveDateOfBirth);
+        user.setAge(derivedAge);
+        logger.debug("Updated dateOfBirth and derived age for user {}", user.getId());
+    }
+
+    private int requireEligibleAccountAge(LocalDate dateOfBirth) throws ChallengeSphereException {
+        LocalDate today = AccountAgePolicy.currentDate();
+        if (!AccountAgePolicy.isEligibleDateOfBirth(dateOfBirth, today)) {
+            throw new ChallengeSphereException(
+                    "Date of birth must represent an age between 13 and 120",
+                    HttpStatus.BAD_REQUEST,
+                    logger
+            );
+        }
+        return AccountAgePolicy.calculateAge(dateOfBirth, today);
     }
 
     private String normalizeInterestsForQuery(List<String> interests) {
@@ -869,6 +908,15 @@ public class UserServiceImpl implements UserService {
         logger.info("Registering new user");
 
         try {
+            if (request.getDateOfBirth() == null) {
+                throw new ChallengeSphereException(
+                        "Date of birth is required",
+                        HttpStatus.BAD_REQUEST,
+                        logger
+                );
+            }
+            int derivedAge = requireEligibleAccountAge(request.getDateOfBirth());
+
             // Validate if user already exists
             String requestedUsername = request.getUsername() == null ? null : request.getUsername().trim();
             if (requestedUsername != null) {
@@ -927,6 +975,8 @@ public class UserServiceImpl implements UserService {
             newUser.setEmailId(request.getEmailId());
             newUser.setPhone(request.getPhone());
             newUser.setBio(request.getBio());
+            newUser.setDateOfBirth(request.getDateOfBirth());
+            newUser.setAge(derivedAge);
 
             validatePasswordPolicy(request.getPassword());
             newUser.setHashedPassword(encodePassword(request.getPassword()));

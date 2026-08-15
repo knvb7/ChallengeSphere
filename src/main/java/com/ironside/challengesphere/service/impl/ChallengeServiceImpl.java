@@ -58,6 +58,7 @@ import com.ironside.challengesphere.model.Submission;
 import com.ironside.challengesphere.model.User;
 import com.ironside.challengesphere.model.UserChallenge;
 import com.ironside.challengesphere.repository.ChallengeRepository;
+import com.ironside.challengesphere.repository.ChallengeInviteRepository;
 import com.ironside.challengesphere.repository.ChallengeCrewLifecycleRepository;
 import com.ironside.challengesphere.repository.FollowRepository;
 import com.ironside.challengesphere.repository.SubmissionRepository;
@@ -76,13 +77,15 @@ import com.ironside.challengesphere.util.StreakCalculator;
 public class ChallengeServiceImpl implements ChallengeService {
     private static final Logger logger = LogManager.getLogger(ChallengeServiceImpl.class);
     private static final int MAX_CHALLENGE_COVER_PHOTOS = 5;
-    private static final int MAX_CHALLENGES_CREATED_PER_DAY = 5;
     private static final int MAX_CHALLENGE_DURATION_DAYS = 365;
     private static final int MAX_DELETE_MEMBER_COUNT = 3;
     private static final long MAX_DELETE_AGE_MILLIS = Duration.ofDays(3).toMillis();
 
     @Autowired
     private ChallengeRepository challengeRepository;
+
+    @Autowired
+    private ChallengeInviteRepository challengeInviteRepository;
 
     @Autowired
     private UserRepository userRepository;
@@ -199,11 +202,16 @@ public class ChallengeServiceImpl implements ChallengeService {
                         .toList();
             }
 
-            if (activeFilter != null) {
-                allUserChallenges = allUserChallenges.stream()
-                        .filter(challenge -> challenge.getActive().equals(activeFilter))
-                        .toList();
-            }
+            // User-facing challenge lists should never include soft-deleted
+            // challenges by default. Inactive rows remain available only when
+            // a caller explicitly requests active=false.
+            boolean requestedActive = activeFilter == null || activeFilter;
+            allUserChallenges = allUserChallenges.stream()
+                    .filter(challenge -> java.util.Objects.equals(
+                            challenge.getActive(),
+                            requestedActive
+                    ))
+                    .toList();
 
             allUserChallenges = allUserChallenges.stream()
                     .sorted(ChallengeServiceImpl::compareChallengesByCreatedAtDesc)
@@ -285,16 +293,19 @@ public class ChallengeServiceImpl implements ChallengeService {
             ChallengeCreationContentPolicy.Content content =
                     ChallengeCreationContentPolicy.validateAndNormalize(request);
 
-            // Lock the creator row so concurrent Swagger/API requests cannot race
-            // past the per-day creation cap.
-            userRepository.findByIdForUpdate(request.getCreatorUserId())
+            // Serialize quota checks for this user so concurrent create/join
+            // requests cannot race past the visibility-specific active cap.
+            User creator = userRepository.findByIdForUpdate(request.getCreatorUserId())
                     .orElseThrow(() -> new ChallengeSphereException(
                             "Creator user not found with id: " + request.getCreatorUserId(),
                             HttpStatus.NOT_FOUND,
                             logger
                     ));
 
-            enforceDailyChallengeCreationLimit(request.getCreatorUserId());
+            enforceActiveChallengeParticipationLimit(
+                    creator,
+                    Boolean.TRUE.equals(request.getIsPrivate())
+            );
 
             Challenge challenge = new Challenge();
             challenge.setTitle(content.title());
@@ -373,20 +384,24 @@ public class ChallengeServiceImpl implements ChallengeService {
         }
     }
 
-    private void enforceDailyChallengeCreationLimit(Long creatorUserId) throws ChallengeSphereException {
-        LocalDate today = LocalDate.now();
-        Timestamp startOfDay = Timestamp.valueOf(today.atStartOfDay());
-        Timestamp startOfNextDay = Timestamp.valueOf(today.plusDays(1).atStartOfDay());
-        long createdToday = challengeRepository.countCreatedByCreatorIdBetween(
-                creatorUserId,
-                startOfDay,
-                startOfNextDay
-        );
+    private void enforceActiveChallengeParticipationLimit(User user, boolean privateChallenge)
+            throws ChallengeSphereException {
+        boolean premiumUser = user.getPremiumUser() != null && user.getPremiumUser() > 0;
+        int limit = challengeParticipationProperties.limitFor(premiumUser);
 
-        if (createdToday >= MAX_CHALLENGES_CREATED_PER_DAY) {
+        long activeParticipations =
+                userChallengeRepository.countSlotConsumingParticipationsByVisibility(
+                        user.getId(),
+                        privateChallenge
+                );
+        if (activeParticipations >= limit) {
+            String visibility = privateChallenge ? "private" : "public";
+            String tier = premiumUser ? "Premium" : "Free";
             throw new ChallengeSphereException(
-                    "You can create only 5 challenges per day. Please try again tomorrow.",
-                    HttpStatus.TOO_MANY_REQUESTS,
+                    tier + " users can be part of up to " + limit + " active " + visibility
+                            + " challenges at a time. Complete or leave an active " + visibility
+                            + " challenge before adding another.",
+                    HttpStatus.CONFLICT,
                     logger
             );
         }
@@ -499,6 +514,8 @@ public class ChallengeServiceImpl implements ChallengeService {
 
         List<UserChallenge> allParticipantLinks = userChallengeRepository.findByChallengeIds(List.of(challengeId));
         if (Boolean.FALSE.equals(challenge.getActive())) {
+            challengeInviteRepository.deactivateActiveByChallengeId(challengeId);
+            notificationService.invalidateChallengeInvitesForChallenge(challengeId);
             invalidateDeletedChallengeCaches(challenge, allParticipantLinks);
             logger.info("Challenge {} is already deleted; invalidated caches", challengeId);
             return;
@@ -513,6 +530,8 @@ public class ChallengeServiceImpl implements ChallengeService {
 
         challenge.setActive(false);
         challengeRepository.save(challenge);
+        challengeInviteRepository.deactivateActiveByChallengeId(challengeId);
+        notificationService.invalidateChallengeInvitesForChallenge(challengeId);
 
         List<UserChallenge> participantLinks = allParticipantLinks.stream()
                 .filter(userChallenge -> Boolean.TRUE.equals(userChallenge.getActive()))
@@ -564,6 +583,8 @@ public class ChallengeServiceImpl implements ChallengeService {
             List<Challenge> challenges = challengeRepository.findAllById(challengeIds).stream().toList();
             for (Challenge challenge : challenges) {
                 challenge.setActive(false);
+                challengeInviteRepository.deactivateActiveByChallengeId(challenge.getId());
+                notificationService.invalidateChallengeInvitesForChallenge(challenge.getId());
             }
             challengeRepository.saveAll(challenges);
 
@@ -768,23 +789,16 @@ public class ChallengeServiceImpl implements ChallengeService {
                     .collect(Collectors.toList());
 
             for (Long userId : successfulUserIds.stream().sorted().toList()) {
-                userRepository.findByIdForUpdate(userId)
+                User joiningUser = userRepository.findByIdForUpdate(userId)
                         .orElseThrow(() -> new ChallengeSphereException(
                                 "User not found with id: " + userId,
                                 HttpStatus.NOT_FOUND,
                                 logger
                         ));
-                long activeParticipations =
-                        userChallengeRepository.countSlotConsumingParticipations(userId);
-                int limit = challengeParticipationProperties.getMaxActiveParticipations();
-                if (limit > 0 && activeParticipations >= limit) {
-                    throw new ChallengeSphereException(
-                            "You can participate in at most " + limit
-                                    + " active challenges at a time. Complete or leave a challenge before joining another.",
-                            HttpStatus.CONFLICT,
-                            logger
-                    );
-                }
+                enforceActiveChallengeParticipationLimit(
+                        joiningUser,
+                        Boolean.TRUE.equals(challenge.getIsPrivate())
+                );
             }
 
             // Determine failed users (non-existent + already joined)
@@ -922,6 +936,11 @@ public class ChallengeServiceImpl implements ChallengeService {
                 // Update challengesAccepted count for all successfully deactivated users
                 for (Long userId : successfulUserIds) {
                     updateChallengesAcceptedCountAsync(userId, false);
+                    if (Boolean.TRUE.equals(challenge.getIsPrivate())) {
+                        challengeInviteRepository.deactivateActiveByChallengeIdAndRecipientUserId(
+                                challengeId, userId);
+                        notificationService.invalidateChallengeInviteForRecipient(challengeId, userId);
+                    }
                 }
             }
 
@@ -1010,6 +1029,11 @@ public class ChallengeServiceImpl implements ChallengeService {
             membership.setRemovedAt(new Timestamp(System.currentTimeMillis()));
             membership.setRemovedByUserId(actorUserId);
             userChallengeRepository.save(membership);
+            if (Boolean.TRUE.equals(challenge.getIsPrivate())) {
+                challengeInviteRepository.deactivateActiveByChallengeIdAndRecipientUserId(
+                        challengeId, participantUserId);
+                notificationService.invalidateChallengeInviteForRecipient(challengeId, participantUserId);
+            }
 
             try {
                 cacheService.invalidateTimeline(participantUserId);
@@ -1430,8 +1454,44 @@ public class ChallengeServiceImpl implements ChallengeService {
         }
         boolean becomingPrivate = Boolean.TRUE.equals(request.getIsPrivate())
                 && !Boolean.TRUE.equals(challenge.getIsPrivate());
+        boolean changingVisibility = request.getIsPrivate() != null
+                && !java.util.Objects.equals(request.getIsPrivate(), challenge.getIsPrivate());
+        if (changingVisibility
+                && Boolean.TRUE.equals(challenge.getActive())
+                && !isExpiredChallenge(challenge)) {
+            boolean targetPrivate = Boolean.TRUE.equals(request.getIsPrivate());
+            List<Long> activeParticipantIds = userChallengeRepository.findActiveByChallengeId(id).stream()
+                    .filter(membership -> !Boolean.TRUE.equals(membership.getCompleted()))
+                    .map(UserChallenge::getUserId)
+                    .filter(java.util.Objects::nonNull)
+                    .distinct()
+                    .sorted()
+                    .toList();
+            for (Long participantId : activeParticipantIds) {
+                User participant = userRepository.findByIdForUpdate(participantId)
+                        .orElseThrow(() -> new ChallengeSphereException(
+                                "User not found with id: " + participantId,
+                                HttpStatus.NOT_FOUND,
+                                logger
+                        ));
+                enforceActiveChallengeParticipationLimit(participant, targetPrivate);
+            }
+        }
         if (request.getIsPrivate() != null) {
             challenge.setIsPrivate(request.getIsPrivate());
+        }
+        Long effectiveOwnerId = challenge.getCurrentOwnerId() != null
+                ? challenge.getCurrentOwnerId()
+                : challenge.getCreatorId();
+        if (Boolean.TRUE.equals(challenge.getIsPrivate())
+                && request.getInvitedUserIds() != null
+                && !request.getInvitedUserIds().isEmpty()
+                && !java.util.Objects.equals(actorUserId, effectiveOwnerId)) {
+            throw new ChallengeSphereException(
+                    "Only the current challenge owner can invite users to a private challenge",
+                    HttpStatus.FORBIDDEN,
+                    logger
+            );
         }
         if (becomingPrivate) {
             List<UserChallenge> staleFormerMemberFavorites = userChallengeRepository
@@ -1448,6 +1508,11 @@ public class ChallengeServiceImpl implements ChallengeService {
             if (!staleFormerMemberFavorites.isEmpty()) {
                 userChallengeRepository.saveAll(staleFormerMemberFavorites);
             }
+            // Public-challenge invitations may have been issued by participants
+            // and may contain public metadata. They cannot cross into the new
+            // owner-only, opaque private-invite boundary.
+            notificationService.invalidateChallengeInvitesForChallenge(id);
+            challengeInviteRepository.deactivateUnboundActiveByChallengeId(id);
         }
         if (request.getChallengeMode() != null) {
             challenge.setChallengeMode(normalizeChallengeMode(request.getChallengeMode()));
@@ -1530,16 +1595,23 @@ public class ChallengeServiceImpl implements ChallengeService {
                         logger
                 ));
 
-        boolean owner = actorUserId != null && (
-                actorUserId.equals(challenge.getCreatorId())
-                        || actorUserId.equals(challenge.getCurrentOwnerId())
-        );
+        Long effectiveOwnerId = challenge.getCurrentOwnerId() != null
+                ? challenge.getCurrentOwnerId()
+                : challenge.getCreatorId();
+        boolean owner = actorUserId != null && actorUserId.equals(effectiveOwnerId);
         UserChallenge actorMembership = owner || actorUserId == null
                 ? null
                 : userChallengeRepository.findByUserIdAndChallengeId(actorUserId, challengeId).orElse(null);
         boolean activeParticipant = actorMembership != null
                 && Boolean.TRUE.equals(actorMembership.getActive())
                 && !Boolean.TRUE.equals(actorMembership.getBanned());
+        if (Boolean.TRUE.equals(challenge.getIsPrivate()) && !owner) {
+            throw new ChallengeSphereException(
+                    "Only the challenge owner can invite users to a private challenge",
+                    HttpStatus.FORBIDDEN,
+                    logger
+            );
+        }
         if (!owner && !activeParticipant) {
             throw new ChallengeSphereException(
                     "Only the challenge creator or active participants can invite app friends",
@@ -1870,7 +1942,11 @@ public class ChallengeServiceImpl implements ChallengeService {
                     ? Map.of()
                     : userChallengeRepository.findActiveByChallengeIds(challengeIds).stream()
                     .collect(Collectors.groupingBy(UserChallenge::getChallengeId, Collectors.counting()));
-            List<Challenge> visibleChallenges = challengeRepository.findAllById(challengeIds);
+            List<Challenge> visibleChallenges = challengeIds.isEmpty()
+                    ? List.of()
+                    : (favoriteFilter || inactiveFilter)
+                            ? challengeRepository.findAllById(challengeIds)
+                            : challengeRepository.findActiveByIds(challengeIds);
             if (favoriteFilter || inactiveFilter) {
                 Map<Long, UserChallenge> membershipByChallengeId = userChallenges.stream()
                         .collect(Collectors.toMap(

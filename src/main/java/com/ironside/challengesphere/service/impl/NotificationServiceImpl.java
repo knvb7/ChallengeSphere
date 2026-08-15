@@ -1,13 +1,17 @@
 package com.ironside.challengesphere.service.impl;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.ironside.challengesphere.api.response.ChallengeInviteDetailsResponse;
+import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.model.Challenge;
 import com.ironside.challengesphere.model.Notification;
 import com.ironside.challengesphere.model.Submission;
 import com.ironside.challengesphere.model.User;
 import com.ironside.challengesphere.model.UserPreferences;
 import com.ironside.challengesphere.repository.ChallengeRepository;
+import com.ironside.challengesphere.repository.ChallengeCrewInviteRepository;
 import com.ironside.challengesphere.repository.FollowRepository;
 import com.ironside.challengesphere.repository.NotificationRepository;
 import com.ironside.challengesphere.repository.UserBlockRepository;
@@ -15,11 +19,13 @@ import com.ironside.challengesphere.repository.UserPreferencesRepository;
 import com.ironside.challengesphere.repository.UserRepository;
 import com.ironside.challengesphere.service.NotificationService;
 import com.ironside.challengesphere.service.PushNotificationService;
+import com.ironside.challengesphere.util.NotificationType;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
+import org.springframework.http.HttpStatus;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
@@ -121,6 +127,9 @@ public class NotificationServiceImpl implements NotificationService {
 
     @Autowired
     private MotivationMilestoneService motivationMilestoneService;
+
+    @Autowired
+    private ChallengeCrewInviteRepository challengeCrewInviteRepository;
 
     @Autowired(required = false)
     private RedisCacheServiceImpl cacheService;
@@ -264,9 +273,6 @@ public class NotificationServiceImpl implements NotificationService {
         if (submission == null || challenge == null || recipientUserIds == null || recipientUserIds.isEmpty()) {
             return 0;
         }
-        if (!Boolean.TRUE.equals(challenge.getIsPrivate()) && Boolean.TRUE.equals(submission.getIsPrivate())) {
-            return 0;
-        }
 
         Long authorUserId = submission.getUserId();
         Set<Long> normalizedRecipients = recipientUserIds.stream()
@@ -331,6 +337,17 @@ public class NotificationServiceImpl implements NotificationService {
                 logger.warn("Skipping challenge invite notifications; actor userId={} not found", actorUserId);
                 return;
             }
+            boolean privateChallenge = Boolean.TRUE.equals(challenge.getIsPrivate());
+            Long ownerUserId = challenge.getCurrentOwnerId() != null
+                    ? challenge.getCurrentOwnerId()
+                    : challenge.getCreatorId();
+            boolean challengeOwner = Objects.equals(actorUserId, ownerUserId);
+            if (privateChallenge && !challengeOwner) {
+                logger.warn(
+                        "Skipped non-owner private challenge invitations for challengeId={} actorUserId={}",
+                        challenge.getId(), actorUserId);
+                return;
+            }
 
             Set<Long> requestedRecipients = requestedRecipientUserIds.stream()
                     .filter(Objects::nonNull)
@@ -363,10 +380,13 @@ public class NotificationServiceImpl implements NotificationService {
             List<User> recipients = userRepository.findAllById(requestedRecipients);
             List<Notification> toSave = new ArrayList<>();
             List<PushDispatch> pushes = new ArrayList<>();
+            Set<Long> pushRecipientIds = new HashSet<>();
 
             String challengeTitle = safe(challenge.getTitle());
-            String message = displayName(actor) + " invited you to join"
-                    + (challengeTitle.isBlank() ? " a challenge" : " " + challengeTitle);
+            String visibility = privateChallenge ? "private" : "public";
+            String message = displayName(actor) + " has invited you to join their " + visibility
+                    + " challenge with name: "
+                    + (challengeTitle.isBlank() ? "Untitled challenge" : challengeTitle);
 
             for (User recipient : recipients) {
                 if (!Boolean.TRUE.equals(recipient.getActive())
@@ -386,9 +406,12 @@ public class NotificationServiceImpl implements NotificationService {
 
                 String actionObject = toJson(baseChallengeInvitePayload(actor, recipient, challenge));
                 if (allowsInbox(recipient)) {
-                    toSave.add(buildNotification(recipient.getId(), TYPE_CHALLENGE_INVITE, message, actionObject));
+                    Notification notification = buildNotification(
+                            recipient.getId(), TYPE_CHALLENGE_INVITE, message, actionObject);
+                    notification.setChallengeId(challenge.getId());
+                    toSave.add(notification);
                     if (allowsPush(recipient, prefs, TYPE_CHALLENGE_INVITE)) {
-                        pushes.add(new PushDispatch(recipient.getId(), TYPE_CHALLENGE_INVITE, message, actionObject));
+                        pushRecipientIds.add(recipient.getId());
                     }
                 }
             }
@@ -396,6 +419,16 @@ public class NotificationServiceImpl implements NotificationService {
             if (!toSave.isEmpty()) {
                 releaseChallengeInviteReservationsAfterRollback(deliveryReservations);
                 notificationRepository.saveAll(toSave);
+                for (Notification notification : toSave) {
+                    if (pushRecipientIds.contains(notification.getUserId())) {
+                        pushes.add(new PushDispatch(
+                                notification.getUserId(),
+                                TYPE_CHALLENGE_INVITE,
+                                message,
+                                withNotificationId(notification.getActionObject(), notification.getId())
+                        ));
+                    }
+                }
                 toSave.stream().map(Notification::getUserId).distinct().forEach(this::invalidateUnreadCount);
                 notificationsPersisted = true;
                 dispatchPushesAfterCommit(pushes);
@@ -408,6 +441,84 @@ public class NotificationServiceImpl implements NotificationService {
             logger.warn("Failed to create challenge invite notifications for challengeId={}: {}",
                     challenge == null ? null : challenge.getId(), e.getClass().getSimpleName());
         }
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public ChallengeInviteDetailsResponse getChallengeInviteDetails(
+            Long notificationId,
+            Long recipientUserId
+    ) throws ChallengeSphereException {
+        Notification notification = notificationRepository.findById(notificationId)
+                .orElseThrow(() -> inviteUnavailable());
+        if (!Objects.equals(recipientUserId, notification.getUserId())
+                || !TYPE_CHALLENGE_INVITE.equalsIgnoreCase(safe(notification.getType()))) {
+            throw inviteUnavailable();
+        }
+
+        Map<String, Object> action = parseActionObject(notification.getActionObject());
+        Long challengeId = notification.getChallengeId() != null
+                ? notification.getChallengeId()
+                : numberAsLong(action.get("challengeId"));
+        Challenge challenge = challengeId == null
+                ? null
+                : challengeRepository.findById(challengeId).orElse(null);
+        if (challenge == null || !Boolean.TRUE.equals(challenge.getActive())) {
+            throw inviteUnavailable();
+        }
+
+        Long inviterUserId = numberAsLong(action.get("actorUserId"));
+        User inviter = inviterUserId == null ? null : userRepository.findById(inviterUserId).orElse(null);
+        Long creatorUserId = challenge.getCreatorId();
+        User creator = creatorUserId == null ? null : userRepository.findById(creatorUserId).orElse(null);
+        ChallengeCreationContentPolicy.PreviewContent content =
+                ChallengeCreationContentPolicy.parseStoredContent(
+                        challenge.getDescription(), challenge.getBenefits());
+
+        return ChallengeInviteDetailsResponse.builder()
+                .notificationId(notification.getId())
+                .challengeId(challenge.getId())
+                .challengeTitle(challenge.getTitle())
+                .challengeDescription(blankToNull(content.description()))
+                .challengeRules(blankToNull(content.rules()))
+                .challengeBenefits(blankToNull(content.benefits()))
+                .challengeCategories(blankToNull(challenge.getCategories()))
+                .challengeMode(blankToNull(challenge.getChallengeMode()))
+                .proofMode(blankToNull(challenge.getProofMode()))
+                .challengeStartDate(challenge.getStartDate())
+                .challengeDurationDays(challenge.getNumberOfDays())
+                .privateChallenge(Boolean.TRUE.equals(challenge.getIsPrivate()))
+                .inviterUserId(inviterUserId)
+                .inviterName(userName(inviter))
+                .inviterUsername(userUsername(inviter))
+                .creatorUserId(creatorUserId)
+                .creatorName(userName(creator))
+                .creatorUsername(userUsername(creator))
+                .build();
+    }
+
+    @Override
+    @Transactional
+    public int invalidateChallengeInvitesForChallenge(Long challengeId) {
+        if (challengeId == null) {
+            return 0;
+        }
+        int deletedNotifications = notificationRepository.deleteChallengeInvitesByChallengeId(challengeId);
+        int deletedCrewInvites = challengeCrewInviteRepository.deleteAllByChallengeId(challengeId);
+        return deletedNotifications + deletedCrewInvites;
+    }
+
+    @Override
+    @Transactional
+    public int invalidateChallengeInviteForRecipient(Long challengeId, Long recipientUserId) {
+        if (challengeId == null || recipientUserId == null) {
+            return 0;
+        }
+        int deletedNotifications = notificationRepository
+                .deleteChallengeInviteByChallengeIdAndUserId(challengeId, recipientUserId);
+        int deletedCrewInvites = challengeCrewInviteRepository
+                .deleteByChallengeIdAndInvitedUserId(challengeId, recipientUserId);
+        return deletedNotifications + deletedCrewInvites;
     }
 
     @Override
@@ -634,7 +745,7 @@ public class NotificationServiceImpl implements NotificationService {
             return false;
         }
         String normalizedType = safe(type).toUpperCase();
-        if (!IMMEDIATE_PUSH_TYPES.contains(normalizedType)) {
+        if (!NotificationType.supportsImmediatePush(normalizedType)) {
             return false;
         }
         Integer mask = user.getNotifications();
@@ -779,6 +890,54 @@ public class NotificationServiceImpl implements NotificationService {
             logger.warn("Failed to serialize notification action object: {}", e.getClass().getSimpleName());
             return "{}";
         }
+    }
+
+    private String withNotificationId(String actionObject, Long notificationId) {
+        Map<String, Object> data = parseActionObject(actionObject);
+        data.put("notificationId", notificationId);
+        return toJson(data);
+    }
+
+    private Map<String, Object> parseActionObject(String actionObject) {
+        if (safe(actionObject).isBlank()) {
+            return new LinkedHashMap<>();
+        }
+        try {
+            Map<String, Object> parsed = objectMapper.readValue(
+                    actionObject,
+                    new TypeReference<LinkedHashMap<String, Object>>() {});
+            return parsed == null ? new LinkedHashMap<>() : parsed;
+        } catch (Exception ignored) {
+            return new LinkedHashMap<>();
+        }
+    }
+
+    private Long numberAsLong(Object value) {
+        return value instanceof Number number ? number.longValue() : null;
+    }
+
+    private String userName(User user) {
+        if (user == null) {
+            return null;
+        }
+        String name = blankToNull(user.getName());
+        return name == null ? blankToNull(user.getUsername()) : name;
+    }
+
+    private String userUsername(User user) {
+        return user == null ? null : blankToNull(user.getUsername());
+    }
+
+    private String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value.strip();
+    }
+
+    private ChallengeSphereException inviteUnavailable() {
+        return new ChallengeSphereException(
+                "Challenge invitation is no longer available",
+                HttpStatus.NOT_FOUND,
+                logger
+        );
     }
 
     private String firstMediaUrl(String mediaUrls) {

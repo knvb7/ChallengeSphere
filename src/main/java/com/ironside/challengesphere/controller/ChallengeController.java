@@ -176,7 +176,8 @@ public class ChallengeController {
     @GetMapping("/participation-policy")
     public ResponseEntity<ChallengeParticipationPolicyResponse> getParticipationPolicy() {
         return ResponseEntity.ok(new ChallengeParticipationPolicyResponse(
-                challengeParticipationProperties.getMaxActiveParticipations()
+                challengeParticipationProperties.getFreeMaxActivePerVisibility(),
+                challengeParticipationProperties.getPremiumMaxActivePerVisibility()
         ));
     }
 

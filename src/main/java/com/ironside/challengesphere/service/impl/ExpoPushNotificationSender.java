@@ -39,6 +39,15 @@ public class ExpoPushNotificationSender implements PushNotificationSender {
 
     @Override
     public SendResult send(List<PushMessage> messages) {
+        return send(messages, MAX_REQUEST_ATTEMPTS);
+    }
+
+    @Override
+    public SendResult sendOnce(List<PushMessage> messages) {
+        return send(messages, 1);
+    }
+
+    private SendResult send(List<PushMessage> messages, int maxRequestAttempts) {
         if (messages == null || messages.isEmpty()) {
             return SendResult.empty();
         }
@@ -57,15 +66,15 @@ public class ExpoPushNotificationSender implements PushNotificationSender {
             }
             int end = Math.min(start + EXPO_MAX_MESSAGES_PER_REQUEST, messages.size());
             List<PushMessage> batch = new ArrayList<>(messages.subList(start, end));
-            JsonNode response = sendBatchWithRetry(batch);
+            JsonNode response = sendBatch(batch, maxRequestAttempts);
             collectTicketResults(batch, response, acceptedTokens, rejectedTokens);
         }
         return new SendResult(acceptedTokens, rejectedTokens);
     }
 
-    private JsonNode sendBatchWithRetry(List<PushMessage> batch) {
+    private JsonNode sendBatch(List<PushMessage> batch, int maxRequestAttempts) {
         JsonNode lastResponse = null;
-        for (int attempt = 1; attempt <= MAX_REQUEST_ATTEMPTS; attempt++) {
+        for (int attempt = 1; attempt <= maxRequestAttempts; attempt++) {
             try {
                 lastResponse = restClient.post()
                         .uri(expoPushUrl)
@@ -78,21 +87,21 @@ public class ExpoPushNotificationSender implements PushNotificationSender {
                     return lastResponse;
                 }
                 logger.warn("Expo push batch attempt {}/{} returned a malformed ticket response",
-                        attempt, MAX_REQUEST_ATTEMPTS);
+                        attempt, maxRequestAttempts);
             } catch (RuntimeException exception) {
                 logger.warn("Expo push batch attempt {}/{} failed for {} message(s): {}",
                         attempt,
-                        MAX_REQUEST_ATTEMPTS,
+                        maxRequestAttempts,
                         batch.size(),
                         exception.getClass().getSimpleName());
-                if (attempt < MAX_REQUEST_ATTEMPTS
+                if (attempt < maxRequestAttempts
                         && !pause(INITIAL_RETRY_DELAY_MILLIS << (attempt - 1))) {
                     break;
                 }
             }
         }
         logger.error("Expo push batch failed after {} attempts for {} message(s)",
-                MAX_REQUEST_ATTEMPTS, batch.size());
+                maxRequestAttempts, batch.size());
         return lastResponse;
     }
 

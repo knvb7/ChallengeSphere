@@ -22,6 +22,9 @@ public class ChallengeInvite {
     @Column(name = "created_by", nullable = false)
     private Long createdBy;
 
+    @Column(name = "recipient_user_id")
+    private Long recipientUserId;
+
     @Column(name = "invite_code", nullable = false, unique = true, length = 12)
     private String inviteCode;
 
@@ -40,4 +43,3 @@ public class ChallengeInvite {
     @Column(name = "created_at", nullable = false, columnDefinition = "TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP")
     private Timestamp createdAt;
 }
-

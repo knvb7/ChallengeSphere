@@ -1,7 +1,10 @@
 package com.ironside.challengesphere.api.request;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.ironside.challengesphere.util.AccountAgePolicy;
 import com.ironside.challengesphere.util.UserGender;
 import com.ironside.challengesphere.util.UsernamePolicy;
+import jakarta.validation.constraints.AssertTrue;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.Size;
@@ -38,9 +41,23 @@ public class UpdateUserRequest {
 
     private LocalDate dateOfBirth;
 
-    @Min(value = 0, message = "Age should not be negative")
-    @Max(value = 130, message = "Age should not exceed 130")
+    @Min(value = AccountAgePolicy.MINIMUM_ACCOUNT_AGE, message = "You must be at least 13 years old")
+    @Max(value = AccountAgePolicy.MAXIMUM_ACCOUNT_AGE, message = "Age should not exceed 120")
     private Integer age;
+
+    @JsonIgnore
+    @AssertTrue(message = "Date of birth must represent an age between 13 and 120")
+    public boolean isDateOfBirthEligible() {
+        return dateOfBirth == null || AccountAgePolicy.isEligibleDateOfBirth(dateOfBirth);
+    }
+
+    @JsonIgnore
+    @AssertTrue(message = "Age must match date of birth")
+    public boolean isAgeConsistentWithDateOfBirth() {
+        return dateOfBirth == null
+                || age == null
+                || age == AccountAgePolicy.calculateAge(dateOfBirth);
+    }
 
     private UserGender gender;
 

@@ -1,5 +1,7 @@
 package com.ironside.challengesphere.model;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.persistence.*;
 import lombok.Data;
 import lombok.NoArgsConstructor;
@@ -27,6 +29,11 @@ public class Notification {
     @Column(name = "action_object", columnDefinition = "TEXT")
     private String actionObject;
 
+    /** Server-side target used to authorize invite previews and invalidate stale invites. */
+    @JsonIgnore
+    @Column(name = "challenge_id")
+    private Long challengeId;
+
     @Column(name = "sent_at", nullable = false, columnDefinition = "TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
     private Timestamp sentAt;
 
@@ -36,5 +43,11 @@ public class Notification {
     @Transient
     public boolean isRead() {
         return readAt != null;
+    }
+
+    @Transient
+    @JsonProperty("sentAtEpochMs")
+    public Long getSentAtEpochMs() {
+        return sentAt == null ? null : sentAt.getTime();
     }
 }

@@ -28,15 +28,39 @@ public class AccountDeletionService {
     private static final String REQUIRED_CONFIRMATION = "DELETE";
 
     private static final String UPSERT_REQUEST_SQL = """
-            INSERT INTO challengesphere.account_deletion_requests (
-                user_id, status, requested_at, processed_at, media_cleanup_count
-            ) VALUES (?, 'PROCESSING', CURRENT_TIMESTAMP, NULL, 0)
+            INSERT INTO challengesphere.account_deletion_requests AS deletion_request (
+                user_id,
+                original_email_id,
+                original_username,
+                original_name,
+                identity_retained_at,
+                status,
+                requested_at,
+                processed_at,
+                media_cleanup_count
+            ) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, 'PROCESSING', CURRENT_TIMESTAMP, NULL, 0)
             ON CONFLICT (user_id) DO UPDATE SET
+                original_email_id = COALESCE(
+                    deletion_request.original_email_id,
+                    EXCLUDED.original_email_id
+                ),
+                original_username = COALESCE(
+                    deletion_request.original_username,
+                    EXCLUDED.original_username
+                ),
+                original_name = COALESCE(
+                    deletion_request.original_name,
+                    EXCLUDED.original_name
+                ),
+                identity_retained_at = COALESCE(
+                    deletion_request.identity_retained_at,
+                    EXCLUDED.identity_retained_at
+                ),
                 status = 'PROCESSING',
                 requested_at = CURRENT_TIMESTAMP,
                 processed_at = NULL,
                 media_cleanup_count = 0
-            RETURNING id
+            RETURNING deletion_request.id
             """;
 
     private static final String MEDIA_REFERENCES_SQL = """
@@ -130,7 +154,14 @@ public class AccountDeletionService {
             throw new ChallengeSphereException("This account is already disabled", HttpStatus.CONFLICT, logger);
         }
 
-        Long requestId = jdbcTemplate.queryForObject(UPSERT_REQUEST_SQL, Long.class, userId);
+        Long requestId = jdbcTemplate.queryForObject(
+                UPSERT_REQUEST_SQL,
+                Long.class,
+                userId,
+                user.getEmailId(),
+                user.getUsername(),
+                user.getName()
+        );
         if (requestId == null) {
             throw new ChallengeSphereException(
                     "Could not create the account deletion request",
@@ -161,7 +192,8 @@ public class AccountDeletionService {
         logger.info("Account deletion completed for userId={} with {} media object(s) queued", userId, queuedMedia);
         return new AccountDeletionResponse(
                 true,
-                "Account deleted. Stored media is queued for controlled cleanup.",
+                "Account deleted. Your original email, username, and name are retained permanently "
+                        + "in a restricted deletion record. Stored media is queued for controlled cleanup.",
                 queuedMedia
         );
     }
@@ -313,6 +345,7 @@ public class AccountDeletionService {
         user.setDateOfBirth(null);
         user.setAge(null);
         user.setGender(null);
+        user.setCountry(null);
         user.setInterests(null);
         user.setLastLoginAt(null);
         user.setBannedAt(null);
@@ -327,7 +360,7 @@ public class AccountDeletionService {
         user.setFollowing(0);
         user.setActive(false);
         user.setDeletedAt(now);
-        userRepository.save(user);
+        userRepository.saveAndFlush(user);
     }
 
     private void safeInvalidateCaches(Long userId) {
