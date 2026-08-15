@@ -193,6 +193,7 @@ public class SubscriptionServiceImpl implements SubscriptionService {
             storedEvent.setUserId(user == null ? null : user.getId());
             storedEvent.setTransactionId(textOrNull(event, "transaction_id"));
             storedEvent.setPayloadSha256(payloadHash);
+            storedEvent.setReceivedAt(new Timestamp(System.currentTimeMillis()));
             eventRepository.saveAndFlush(storedEvent);
 
             if (user != null && PAYMENT_EVENT_TYPES.contains(eventType)) {
