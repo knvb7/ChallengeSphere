@@ -6,6 +6,7 @@ import com.ironside.challengesphere.service.NotificationService;
 import com.ironside.challengesphere.util.NotificationType;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
@@ -26,18 +27,23 @@ public class ModerationEnforcementService {
 
     private final MediaUrlService mediaUrlService;
     private final NotificationService notificationService;
-    private final ModeratedMediaObjectStore objectStore;
-    private final String bucketName;
 
+    @Autowired
     public ModerationEnforcementService(
             MediaUrlService mediaUrlService,
-            NotificationService notificationService,
-            ModeratedMediaObjectStore objectStore,
-            @org.springframework.beans.factory.annotation.Value("${aws.s3.bucket.name}") String bucketName) {
+            NotificationService notificationService) {
         this.mediaUrlService = mediaUrlService;
         this.notificationService = notificationService;
-        this.objectStore = objectStore;
-        this.bucketName = bucketName;
+    }
+
+    // Retained for source compatibility with direct callers while production
+    // no longer receives or invokes an S3 deletion client.
+    ModerationEnforcementService(
+            MediaUrlService mediaUrlService,
+            NotificationService notificationService,
+            ModeratedMediaObjectStore ignoredObjectStore,
+            String ignoredBucketName) {
+        this(mediaUrlService, notificationService);
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = Exception.class)
@@ -64,15 +70,17 @@ public class ModerationEnforcementService {
 
         for (String objectKey : objectKeys) {
             requireOwnedUserImage(userId, objectKey);
-            objectStore.delete(bucketName, objectKey);
         }
 
         notificationService.createNotification(
                 userId,
                 NotificationType.CONTENT_WARNING.name(),
-                "We removed an image because it violated ChallengeSphere's content policy. Please keep future uploads appropriate.",
-                "{\"reason\":\"CONTENT_POLICY\",\"removedImageCount\":" + objectKeys.size() + "}");
-        logger.warn("Removed {} moderated image(s) and warned userId={}", objectKeys.size(), userId);
+                "We hid your submission because an image violated ChallengeSphere's content policy. Please keep future uploads appropriate.",
+                "{\"reason\":\"CONTENT_POLICY\",\"flaggedImageCount\":" + objectKeys.size() + "}");
+        logger.warn(
+                "Hid submission with {} moderated image(s), retained private media, and warned userId={}",
+                objectKeys.size(),
+                userId);
     }
 
     private void requireOwnedUserImage(Long userId, String objectKey) throws ChallengeSphereException {
@@ -85,7 +93,7 @@ public class ModerationEnforcementService {
         boolean image = IMAGE_EXTENSIONS.stream().anyMatch(lower::endsWith);
         if (!ownedNamespace || !image || objectKey.contains("..")) {
             throw new ChallengeSphereException(
-                    "Refused to delete media outside the user's image namespace",
+                    "Rejected moderation media outside the user's image namespace",
                     HttpStatus.INTERNAL_SERVER_ERROR,
                     logger);
         }

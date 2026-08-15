@@ -1,5 +1,6 @@
 package com.ironside.challengesphere.service.impl;
 
+import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.model.ModerationFlag;
 import com.ironside.challengesphere.model.Submission;
 import com.ironside.challengesphere.repository.ModerationFlagRepository;
@@ -67,24 +68,9 @@ public class SubmissionModerationJob {
             return false;
         }
 
+        ContentModerationService.Result result;
         try {
-            ContentModerationService.Result result = contentModerationService.scanStrict(
-                    storedMediaUrls(submission.getMediaUrls()));
-            if (result.verdict() == ContentModerationService.Verdict.CLEAN) {
-                markPassed(submission);
-                logger.info("Moderation passed for submission {}", submission.getId());
-                return true;
-            }
-
-            markFlagged(submission);
-            saveModerationFlags(submission, result);
-            moderationEnforcementService.removeFlaggedMediaAndWarn(submission.getUserId(), result);
-            invalidateAfterRemoval(submission);
-            logger.warn(
-                    "Submission {} flagged; offending image removed and user {} warned",
-                    submission.getId(),
-                    submission.getUserId());
-            return true;
+            result = contentModerationService.scanStrict(storedMediaUrls(submission.getMediaUrls()));
         } catch (Exception e) {
             logger.error(
                     "Moderation failed for submission {}; it will be retried: {}",
@@ -94,6 +80,26 @@ public class SubmissionModerationJob {
             invalidateAfterRemoval(submission);
             return false;
         }
+
+        if (result.verdict() == ContentModerationService.Verdict.CLEAN) {
+            markPassed(submission);
+            logger.info("Moderation passed for submission {}", submission.getId());
+            return true;
+        }
+
+        markFlagged(submission);
+        saveModerationFlags(submission, result);
+        try {
+            moderationEnforcementService.removeFlaggedMediaAndWarn(submission.getUserId(), result);
+        } catch (ChallengeSphereException e) {
+            throw new IllegalStateException("Moderation enforcement failed", e);
+        }
+        invalidateAfterRemoval(submission);
+        logger.warn(
+                "Submission {} flagged and hidden; private media retained and user {} warned",
+                submission.getId(),
+                submission.getUserId());
+        return true;
     }
 
     private static List<String> storedMediaUrls(String mediaUrls) {

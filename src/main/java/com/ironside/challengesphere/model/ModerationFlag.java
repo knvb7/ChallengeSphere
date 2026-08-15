@@ -24,8 +24,8 @@ public class ModerationFlag {
     @Column(name = "user_id", nullable = false)
     private Long userId;
 
-    // Vision SafeSearch category that tripped: ADULT, RACY, VIOLENCE, MEDICAL, SPOOF.
-    @Column(name = "category", nullable = false, length = 32)
+    // Provider labels can include a parent/name path and are not a fixed enum.
+    @Column(name = "category", nullable = false, columnDefinition = "TEXT")
     private String category;
 
     // LIKELY or VERY_LIKELY (we don't store POSSIBLE/UNLIKELY rows).
