@@ -16,6 +16,8 @@ public class SubscriptionStatusResponse {
     private String status;
     private Timestamp expiresAt;
     private boolean willRenew;
+    private String latestPaymentStatus;
+    private Timestamp latestPaymentAt;
     private long activePublicChallenges;
     private int publicChallengeLimit;
     private long activePrivateChallenges;

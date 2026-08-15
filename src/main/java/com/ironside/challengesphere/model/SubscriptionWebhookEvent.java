@@ -28,6 +28,18 @@ public class SubscriptionWebhookEvent {
     @Column(name = "environment")
     private String environment;
 
+    @Column(name = "user_id")
+    private Long userId;
+
+    @Column(name = "transaction_id")
+    private String transactionId;
+
+    @Column(name = "payload_sha256", length = 64)
+    private String payloadSha256;
+
+    @Column(name = "processed_at")
+    private Timestamp processedAt;
+
     @Column(name = "received_at", nullable = false)
     private Timestamp receivedAt;
 

@@ -1,6 +1,7 @@
 package com.ironside.challengesphere.controller;
 
 import com.ironside.challengesphere.api.response.SubscriptionStatusResponse;
+import com.ironside.challengesphere.api.response.PaymentHistoryResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.security.SecurityAccess;
 import com.ironside.challengesphere.security.UserPrincipal;
@@ -13,6 +14,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -37,6 +39,19 @@ public class SubscriptionController {
         return ResponseEntity.ok(
                 subscriptionService.sync(SecurityAccess.requireUserId(principal))
         );
+    }
+
+    @GetMapping("/me/payments")
+    public ResponseEntity<PaymentHistoryResponse> getPaymentHistory(
+            @AuthenticationPrincipal UserPrincipal principal,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int pageSize
+    ) throws ChallengeSphereException {
+        return ResponseEntity.ok(subscriptionService.getPaymentHistory(
+                SecurityAccess.requireUserId(principal),
+                page,
+                pageSize
+        ));
     }
 
     @PostMapping("/webhooks/revenuecat")
