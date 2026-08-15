@@ -52,6 +52,7 @@ import com.ironside.challengesphere.api.response.RecentChallengesResponse;
 import com.ironside.challengesphere.api.response.UserChallengesResponse;
 import com.ironside.challengesphere.config.ChallengeParticipationProperties;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
+import com.ironside.challengesphere.exception.ChallengeParticipationLimitException;
 import com.ironside.challengesphere.model.Challenge;
 import com.ironside.challengesphere.model.ChallengeCrewLifecycle;
 import com.ironside.challengesphere.model.Submission;
@@ -396,12 +397,12 @@ public class ChallengeServiceImpl implements ChallengeService {
                 );
         if (activeParticipations >= limit) {
             String visibility = privateChallenge ? "private" : "public";
-            String tier = premiumUser ? "Premium" : "Free";
-            throw new ChallengeSphereException(
-                    tier + " users can be part of up to " + limit + " active " + visibility
-                            + " challenges at a time. Complete or leave an active " + visibility
-                            + " challenge before adding another.",
-                    HttpStatus.CONFLICT,
+            throw new ChallengeParticipationLimitException(
+                    premiumUser,
+                    visibility,
+                    activeParticipations,
+                    limit,
+                    challengeParticipationProperties.getPremiumMaxActivePerVisibility(),
                     logger
             );
         }
