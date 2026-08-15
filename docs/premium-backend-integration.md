@@ -73,6 +73,17 @@ REVENUECAT_APP_USER_ID_PREFIX=cs_user_
 REVENUECAT_WEBHOOK_AUTHORIZATION=Bearer <long-random-value>
 ```
 
+On AWS production, keep the secret values in encrypted Parameter Store entries and
+configure only their names in the runtime environment:
+
+```text
+REVENUECAT_SECRET_API_KEY_PARAMETER_NAME=/challengesphere/prod/revenuecat-secret-api-key
+REVENUECAT_WEBHOOK_AUTHORIZATION_PARAMETER_NAME=/challengesphere/prod/revenuecat-webhook-authorization
+```
+
+When direct environment values are absent, the production profile reads and decrypts
+those parameters through the EC2 instance role.
+
 Optional custom HMAC gateway configuration:
 
 ```text
