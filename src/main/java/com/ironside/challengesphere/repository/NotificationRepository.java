@@ -75,4 +75,27 @@ public interface NotificationRepository extends JpaRepository<Notification, Long
     int deleteChallengeInviteByChallengeIdAndUserId(
             @Param("challengeId") Long challengeId,
             @Param("userId") Long userId);
+
+    @Modifying
+    @Query(value = """
+            DELETE FROM challengesphere.notifications n
+            WHERE (
+                n.user_id = :firstUserId
+                AND COALESCE(n.action_object, '') ~ (
+                    '"actorUserId"[[:space:]]*:[[:space:]]*'
+                    || CAST(:secondUserId AS TEXT)
+                    || '([,}])'
+                )
+            ) OR (
+                n.user_id = :secondUserId
+                AND COALESCE(n.action_object, '') ~ (
+                    '"actorUserId"[[:space:]]*:[[:space:]]*'
+                    || CAST(:firstUserId AS TEXT)
+                    || '([,}])'
+                )
+            )
+            """, nativeQuery = true)
+    int deleteInteractionsBetweenUsers(
+            @Param("firstUserId") Long firstUserId,
+            @Param("secondUserId") Long secondUserId);
 }

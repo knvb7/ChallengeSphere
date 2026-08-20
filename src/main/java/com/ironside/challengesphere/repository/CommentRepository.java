@@ -20,6 +20,45 @@ public interface CommentRepository extends JpaRepository<Comment, Long> {
             nativeQuery = true)
     Page<Comment> findActiveCommentsBySubmissionId(@Param("submissionId") Long submissionId, Pageable pageable);
 
+    @Query(value = """
+            SELECT c.*
+            FROM challengesphere.comments c
+            WHERE c.submission_id = :submissionId
+              AND c.active = true
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM challengesphere.user_blocks ub
+                  WHERE ub.active = true
+                    AND (
+                        (ub.blocker_user_id = :viewerId AND ub.blocked_user_id = c.user_id)
+                        OR
+                        (ub.blocker_user_id = c.user_id AND ub.blocked_user_id = :viewerId)
+                    )
+              )
+            ORDER BY c.created_at DESC
+            """,
+            countQuery = """
+            SELECT COUNT(*)
+            FROM challengesphere.comments c
+            WHERE c.submission_id = :submissionId
+              AND c.active = true
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM challengesphere.user_blocks ub
+                  WHERE ub.active = true
+                    AND (
+                        (ub.blocker_user_id = :viewerId AND ub.blocked_user_id = c.user_id)
+                        OR
+                        (ub.blocker_user_id = c.user_id AND ub.blocked_user_id = :viewerId)
+                    )
+              )
+            """,
+            nativeQuery = true)
+    Page<Comment> findActiveCommentsBySubmissionIdForViewer(
+            @Param("submissionId") Long submissionId,
+            @Param("viewerId") Long viewerId,
+            Pageable pageable);
+
     @Query(value = "SELECT COUNT(*) FROM challengesphere.comments WHERE submission_id = :submissionId AND active = true", nativeQuery = true)
     Long countActiveCommentsBySubmissionId(@Param("submissionId") Long submissionId);
 

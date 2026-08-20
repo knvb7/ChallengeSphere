@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.ironside.challengesphere.exception.BaseException;
+import com.ironside.challengesphere.security.UserPrincipal;
 import jakarta.servlet.http.HttpServletRequest;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -14,6 +15,8 @@ import org.aspectj.lang.annotation.Pointcut;
 import org.aspectj.lang.reflect.MethodSignature;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Component;
 import org.springframework.web.servlet.HandlerMapping;
 import org.springframework.web.bind.annotation.*;
@@ -91,8 +94,9 @@ public class ApiLoggingAspect {
         }
 
         String requestPayload = safeRequestPayload(method, joinPoint.getArgs());
-        logger.info("API called | method={} route={} handler={}.{} payload={}",
-                httpMethod, routePattern, className, methodName, requestPayload);
+        String userId = currentUserId();
+        logger.info("API called | method={} route={} handler={}.{} userId={} payload={}",
+                httpMethod, routePattern, className, methodName, userId, requestPayload);
 
         Object result;
         try {
@@ -105,8 +109,8 @@ public class ApiLoggingAspect {
                 status = String.valueOf(responseEntity.getStatusCode().value());
             }
 
-            logger.info("API completed | method={} route={} handler={}.{} status={} durationMs={}",
-                    httpMethod, routePattern, className, methodName, status, duration);
+            logger.info("API completed | method={} route={} handler={}.{} userId={} status={} durationMs={}",
+                    httpMethod, routePattern, className, methodName, userId, status, duration);
 
             return result;
         } catch (Exception ex) {
@@ -118,16 +122,25 @@ public class ApiLoggingAspect {
             String exceptionDetail = safeExceptionDetail(ex);
             if (status.is5xxServerError()) {
                 Throwable loggedThrowable = loggingThrowable(ex);
-                logger.error("API failed | method={} route={} handler={}.{} status={} exception={} reason={} durationMs={}",
-                        httpMethod, routePattern, className, methodName, status.value(),
+                logger.error("API failed | method={} route={} handler={}.{} userId={} status={} exception={} reason={} durationMs={}",
+                        httpMethod, routePattern, className, methodName, userId, status.value(),
                         ex.getClass().getSimpleName(), exceptionDetail, duration, loggedThrowable);
             } else {
-                logger.warn("API rejected | method={} route={} handler={}.{} status={} exception={} reason={} durationMs={}",
-                        httpMethod, routePattern, className, methodName, status.value(),
+                logger.warn("API rejected | method={} route={} handler={}.{} userId={} status={} exception={} reason={} durationMs={}",
+                        httpMethod, routePattern, className, methodName, userId, status.value(),
                         ex.getClass().getSimpleName(), exceptionDetail, duration);
             }
             throw ex;
         }
+    }
+
+    private String currentUserId() {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        if (authentication != null && authentication.getPrincipal() instanceof UserPrincipal principal
+                && principal.getId() != null) {
+            return principal.getId().toString();
+        }
+        return "anonymous";
     }
 
     static String safeExceptionDetail(Exception exception) {

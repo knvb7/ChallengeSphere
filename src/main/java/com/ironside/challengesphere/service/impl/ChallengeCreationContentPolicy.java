@@ -61,6 +61,10 @@ public final class ChallengeCreationContentPolicy {
         if (benefits.length() > BENEFITS_MAX_LENGTH) {
             throw badRequest("Benefits must be at most " + BENEFITS_MAX_LENGTH + " characters");
         }
+        TextContentSafetyPolicy.requireAllowed(title, "challenge title");
+        TextContentSafetyPolicy.requireAllowed(description, "challenge description");
+        TextContentSafetyPolicy.requireAllowed(rules, "challenge rules");
+        TextContentSafetyPolicy.requireAllowed(benefits, "challenge benefits");
 
         String categories = normalizeCategories(request);
         String storedDescription = buildStoredDescription(description, rules, benefits);
@@ -141,6 +145,7 @@ public final class ChallengeCreationContentPolicy {
                 throw badRequest("Categories cannot contain commas");
             }
             validateRange(category, "Each category", CATEGORY_MIN_LENGTH, CATEGORY_MAX_LENGTH);
+            TextContentSafetyPolicy.requireAllowed(category, "challenge category");
             if (!seen.add(category.toLowerCase(Locale.ROOT))) {
                 throw badRequest("Categories must be unique");
             }

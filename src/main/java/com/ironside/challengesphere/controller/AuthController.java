@@ -1,5 +1,6 @@
 package com.ironside.challengesphere.controller;
 
+import com.ironside.challengesphere.api.request.AppleAuthRequest;
 import com.ironside.challengesphere.api.request.GoogleAuthRequest;
 import com.ironside.challengesphere.api.request.ChangePasswordRequest;
 import com.ironside.challengesphere.api.request.ForgotPasswordRequest;
@@ -45,8 +46,8 @@ import java.util.Optional;
 public class AuthController {
 
     private static final Logger logger = LogManager.getLogger(AuthController.class);
-    private static final String GOOGLE_ONLY_AUTH_MESSAGE =
-            "Password authentication is disabled. Use Google Sign-In.";
+    private static final String PROVIDER_AUTH_MESSAGE =
+            "Password authentication is disabled. Use Google Sign-In on Android or Sign in with Apple on iOS.";
 
     private final SmsService smsService;
     private final UserService userService;
@@ -119,6 +120,12 @@ public class AuthController {
         return ResponseEntity.ok(response);
     }
 
+    @PostMapping("/apple")
+    public ResponseEntity<AuthResponse> appleSignIn(@Valid @RequestBody AppleAuthRequest request)
+            throws ChallengeSphereException {
+        return ResponseEntity.ok(authService.loginWithApple(request));
+    }
+
     @PostMapping("/forgot-password")
     public ResponseEntity<MessageResponse> forgotPassword(
             @Valid @RequestBody ForgotPasswordRequest request) throws ChallengeSphereException {
@@ -165,7 +172,7 @@ public class AuthController {
 
     private ChallengeSphereException googleOnlyAuthentication() {
         return new ChallengeSphereException(
-                GOOGLE_ONLY_AUTH_MESSAGE,
+                PROVIDER_AUTH_MESSAGE,
                 HttpStatus.GONE,
                 logger
         );

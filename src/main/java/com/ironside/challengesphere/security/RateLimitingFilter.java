@@ -138,6 +138,7 @@ public class RateLimitingFilter extends OncePerRequestFilter {
         if ("POST".equals(method) && (path.equals("/api/v1/auth/login")
                 || path.equals("/api/v1/auth/register")
                 || path.equals("/api/v1/auth/google")
+                || path.equals("/api/v1/auth/apple")
                 || path.equals("/api/v1/auth/refresh"))) {
             return new Limit("auth", 20, Duration.ofMinutes(5));
         }
@@ -183,6 +184,10 @@ public class RateLimitingFilter extends OncePerRequestFilter {
         }
         if ("POST".equals(method) && path.equals("/api/v1/support/feature-requests")) {
             return new Limit("feature-request", 10, Duration.ofMinutes(10));
+        }
+        if ("POST".equals(method) && (path.equals("/api/v1/content-reports")
+                || path.equals("/api/v1/users/report"))) {
+            return new Limit("safety-report", 10, Duration.ofMinutes(10));
         }
         if ("PUT".equals(method) && path.matches("^/api/v1/submissions/\\d+$")) {
             return new Limit("submission-reupload", 10, Duration.ofMinutes(10));

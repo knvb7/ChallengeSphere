@@ -1,5 +1,6 @@
 package com.ironside.challengesphere.service;
 
+import com.ironside.challengesphere.api.request.AppleAuthRequest;
 import com.ironside.challengesphere.api.request.GoogleAuthRequest;
 import com.ironside.challengesphere.api.request.LoginRequest;
 import com.ironside.challengesphere.api.request.UserRegistrationRequest;
@@ -11,6 +12,7 @@ public interface AuthService {
     AuthResponse register(UserRegistrationRequest request) throws ChallengeSphereException;
     AuthResponse login(LoginRequest request) throws ChallengeSphereException;
     AuthResponse refresh(String refreshToken) throws ChallengeSphereException;
+    AuthResponse loginWithApple(AppleAuthRequest request) throws ChallengeSphereException;
     AuthResponse loginWithGoogle(GoogleAuthRequest request) throws ChallengeSphereException;
     void logout(String accessToken, String refreshToken);
     User getCurrentUser(String accessToken) throws ChallengeSphereException;

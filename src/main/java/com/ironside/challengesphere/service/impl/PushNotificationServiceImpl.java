@@ -40,9 +40,54 @@ public class PushNotificationServiceImpl implements PushNotificationService {
 
     private static final Logger logger = LogManager.getLogger(PushNotificationServiceImpl.class);
     private static final LocalTime SCHEDULED_CUTOFF = LocalTime.of(21, 0);
+    private static final LocalTime NIGHTLY_PUSH_CUTOFF = LocalTime.of(22, 0);
+
+    private static final List<ChallengeCreationPrompt> CHALLENGE_CREATION_PROMPTS = List.of(
+            new ChallengeCreationPrompt(
+                    "Beat procrastination, one proof at a time ⚡",
+                    "Turn one task into a challenge. Check in daily with proof—go solo or invite friends."
+            ),
+            new ChallengeCreationPrompt(
+                    "New task? Make it a challenge 🎯",
+                    "Add it to ChallengeSphere, show up daily, and watch small check-ins become real progress."
+            ),
+            new ChallengeCreationPrompt(
+                    "Small steps. Visible progress. 📈",
+                    "Turn today's to-do into a challenge and post proof as you make progress."
+            ),
+            new ChallengeCreationPrompt(
+                    "Stop carrying it in your head 🧠",
+                    "Create a challenge for that task and let daily check-ins keep it moving."
+            ),
+            new ChallengeCreationPrompt(
+                    "A little accountability goes a long way 🤝",
+                    "Invite friends or go solo—one proof a day can keep your goal on track."
+            ),
+            new ChallengeCreationPrompt(
+                    "Your next streak can start today 🔥",
+                    "Choose one thing you've been putting off, make it a challenge, and take the first step."
+            ),
+            new ChallengeCreationPrompt(
+                    "Make that task impossible to ignore 👀",
+                    "Name it, turn it into a challenge, and post a quick proof each day."
+            ),
+            new ChallengeCreationPrompt(
+                    "Progress loves a plan 🗓️",
+                    "Give your goal a daily rhythm. Start a challenge and watch your progress build."
+            ),
+            new ChallengeCreationPrompt(
+                    "One task. One check-in. Every day. ✅",
+                    "Create a challenge for what matters and keep the momentum visible."
+            ),
+            new ChallengeCreationPrompt(
+                    "Ready to finally start? 🚀",
+                    "Turn the task you've delayed into a challenge. Start solo or bring friends along."
+            )
+    );
 
     private enum ScheduledReminder {
         PENDING_UPLOAD(LocalTime.of(9, 0), "PENDING_UPLOAD_REMINDER"),
+        CREATE_CHALLENGE(LocalTime.of(11, 30), "CHALLENGE_CREATION_PROMPT"),
         LEADERBOARD(LocalTime.of(17, 30), "LEADERBOARD_MOTIVATION"),
         FINISH_STRONG(LocalTime.of(20, 15), "FINISH_STRONG_REMINDER");
 
@@ -107,6 +152,9 @@ public class PushNotificationServiceImpl implements PushNotificationService {
                     && totalParticipants != null
                     && totalParticipants >= 2;
         }
+    }
+
+    private record ChallengeCreationPrompt(String title, String body) {
     }
 
     @Autowired
@@ -178,7 +226,13 @@ public class PushNotificationServiceImpl implements PushNotificationService {
             return;
         }
         ZoneId primaryZone = toZoneId(tokens.get(0).getTimezone());
-        LocalDate localDate = ZonedDateTime.now(clock).withZoneSameInstant(primaryZone).toLocalDate();
+        ZonedDateTime localNow = ZonedDateTime.now(clock).withZoneSameInstant(primaryZone);
+        if (!localNow.toLocalTime().isBefore(NIGHTLY_PUSH_CUTOFF)) {
+            logger.info("Suppressing push after nightly cutoff for userId={} type={} timezone={}",
+                    userId, normalizedType, primaryZone);
+            return;
+        }
+        LocalDate localDate = localNow.toLocalDate();
         NotificationQuotaService.Reservation reservation = null;
         if (!NotificationType.bypassesDailyPushQuota(normalizedType)) {
             Optional<NotificationQuotaService.Reservation> reserved = reserveNotification(userId, localDate);
@@ -270,6 +324,33 @@ public class PushNotificationServiceImpl implements PushNotificationService {
                         ? findReminderCandidates(userId, localDate)
                         : findReminderCandidates(pendingByUser.getOrDefault(userId, List.of()), localDate);
                 long pendingChallengeCount = pendingChallenges.size();
+
+                if (reminder == ScheduledReminder.CREATE_CHALLENGE) {
+                    if (pendingChallengeCount > 0) {
+                        continue;
+                    }
+                    Optional<NotificationQuotaService.Reservation> reservation = reserveNotification(
+                            userId, localDate, reminder.type + ":" + localDate);
+                    if (reservation.isEmpty()) {
+                        continue;
+                    }
+                    dispatches.add(new ReminderDispatch(userId, localDate, userTokens, reservation.get()));
+
+                    ChallengeCreationPrompt prompt = challengeCreationPrompt(localDate);
+                    Map<String, Object> data = new LinkedHashMap<>();
+                    data.put("type", reminder.type);
+                    data.put("milestoneKind", reminder.type);
+                    for (PushDeviceToken token : userTokens) {
+                        messages.add(new PushNotificationSender.PushMessage(
+                                token.getExpoPushToken(),
+                                prompt.title(),
+                                prompt.body(),
+                                data
+                        ));
+                    }
+                    continue;
+                }
+
                 if (pendingChallengeCount <= 0) {
                     continue;
                 }
@@ -423,6 +504,8 @@ public class PushNotificationServiceImpl implements PushNotificationService {
     private String scheduledTitle(ScheduledReminder reminder, ReminderCandidate selected) {
         return switch (reminder) {
             case PENDING_UPLOAD -> "Upload reminder 📸";
+            case CREATE_CHALLENGE -> throw new IllegalArgumentException(
+                    "Challenge-creation prompts do not use challenge reminder copy");
             case LEADERBOARD -> "Keep climbing 🏆";
             case FINISH_STRONG -> reminderTitle(selected);
         };
@@ -437,12 +520,19 @@ public class PushNotificationServiceImpl implements PushNotificationService {
             case PENDING_UPLOAD -> pendingChallengeCount == 1
                     ? selected.challengeTitle() + " is waiting for today's upload. Let's go! ⚡"
                     : pendingChallengeCount + " challenges are waiting for today's uploads. Let's go! ⚡";
+            case CREATE_CHALLENGE -> throw new IllegalArgumentException(
+                    "Challenge-creation prompts do not use challenge reminder copy");
             case LEADERBOARD -> selected.hasComparativeRank()
                     ? "You're #" + selected.rank() + " in " + selected.challengeTitle()
                             + "—upload today and keep climbing. 🚀"
                     : "Upload today to move up the leaderboard in " + selected.challengeTitle() + ". 🚀";
             case FINISH_STRONG -> reminderBody(selected, pendingChallengeCount);
         };
+    }
+
+    private ChallengeCreationPrompt challengeCreationPrompt(LocalDate localDate) {
+        int index = Math.floorMod(localDate.toEpochDay(), CHALLENGE_CREATION_PROMPTS.size());
+        return CHALLENGE_CREATION_PROMPTS.get(index);
     }
 
     private Map<String, Object> reminderPayload(ReminderCandidate selected) {

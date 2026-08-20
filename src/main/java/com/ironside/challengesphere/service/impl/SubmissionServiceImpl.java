@@ -955,6 +955,7 @@ public class SubmissionServiceImpl implements SubmissionService {
                     logger
             );
         }
+        TextContentSafetyPolicy.requireAllowed(description, "submission description");
         if (mediaKeys == null || mediaKeys.isEmpty()) {
             throw new ChallengeSphereException(
                     "At least one submission photo is required",

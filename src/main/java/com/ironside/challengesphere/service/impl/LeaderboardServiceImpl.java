@@ -33,6 +33,7 @@ import com.ironside.challengesphere.repository.ChallengeRepository;
 import com.ironside.challengesphere.repository.LeaderboardEntryRepository;
 import com.ironside.challengesphere.repository.SubmissionRepository;
 import com.ironside.challengesphere.repository.UserChallengeRepository;
+import com.ironside.challengesphere.repository.UserBlockRepository;
 import com.ironside.challengesphere.repository.UserRepository;
 import com.ironside.challengesphere.service.LeaderboardService;
 import com.ironside.challengesphere.util.StreakCalculator;
@@ -65,6 +66,9 @@ public class LeaderboardServiceImpl implements LeaderboardService {
     
     @Autowired
     private UserChallengeRepository userChallengeRepository;
+
+    @Autowired
+    private UserBlockRepository userBlockRepository;
     
     @Autowired
     private SubmissionRepository submissionRepository;
@@ -100,8 +104,10 @@ public class LeaderboardServiceImpl implements LeaderboardService {
             requireLeaderboardAccess(challenge, request.getViewerUserId());
             
             List<LeaderboardEntry> dbEntries =
-                    leaderboardEntryRepository.findTopWithUserByChallengeId(
-                            challengeId, PageRequest.of(0, limit));
+                    leaderboardEntryRepository.findTopByChallengeIdForViewer(
+                            challengeId,
+                            request.getViewerUserId(),
+                            PageRequest.of(0, limit));
 
             if (dbEntries.isEmpty()) {
                 logger.info("No leaderboard entries found in DB for challenge {}", challengeId);
@@ -132,14 +138,20 @@ public class LeaderboardServiceImpl implements LeaderboardService {
                 cacheService.addToLeaderboard(challengeId, user.getId(), le.getScore());
             }
 
-            int totalParticipants = leaderboardEntryRepository.countParticipants(challengeId).intValue();
+            int totalParticipants = leaderboardEntryRepository
+                    .countParticipantsForViewer(challengeId, request.getViewerUserId())
+                    .intValue();
             
             // Build response
             LeaderboardResponse response;
             
             // If userId is provided, also fetch their rank
             if (userId != null) {
-                UserRankDTO userRank = getUserRankInternal(challengeId, userId);
+                UserRankDTO userRank = getUserRankInternal(
+                        challengeId,
+                        userId,
+                        request.getViewerUserId()
+                );
                 response = LeaderboardResponse.withUserRank(
                         challengeId,
                         challenge.getTitle(),
@@ -184,14 +196,18 @@ public class LeaderboardServiceImpl implements LeaderboardService {
                         logger
                 ));
         requireLeaderboardAccess(challenge, viewerUserId);
-        return getUserRankInternal(challengeId, userId);
+        return getUserRankInternal(challengeId, userId, viewerUserId);
     }
 
-    private UserRankDTO getUserRankInternal(Long challengeId, Long userId)
+    private UserRankDTO getUserRankInternal(Long challengeId, Long userId, Long viewerUserId)
             throws ChallengeSphereException {
         logger.debug("Getting user rank for challenge: {}, user: {}", challengeId, userId);
 
         try {
+            if (!userId.equals(viewerUserId)
+                    && userBlockRepository.existsActiveBlockBetween(viewerUserId, userId)) {
+                return null;
+            }
             Optional<LeaderboardEntry> entryOpt =
                     leaderboardEntryRepository.findByChallengeIdAndUserId(challengeId, userId);
 
@@ -201,11 +217,19 @@ public class LeaderboardServiceImpl implements LeaderboardService {
             }
 
             LeaderboardEntry entry = entryOpt.get();
-            Integer rank = leaderboardEntryRepository.getUserRank(challengeId, userId);
-            long totalParticipants = leaderboardEntryRepository.countParticipants(challengeId);
+            if (entry.getStatus() != LeaderboardEntry.LeaderboardStatus.ACTIVE) {
+                return null;
+            }
+            Long rank = leaderboardEntryRepository.getUserRankForViewer(
+                    challengeId,
+                    userId,
+                    viewerUserId
+            );
+            long totalParticipants = leaderboardEntryRepository
+                    .countParticipantsForViewer(challengeId, viewerUserId);
             cacheService.addToLeaderboard(challengeId, userId, entry.getScore());
 
-            long resolvedRank = rank != null ? rank.longValue() : totalParticipants;
+            long resolvedRank = rank != null ? rank : totalParticipants;
             double percentile = totalParticipants > 1
                     ? ((double) (totalParticipants - resolvedRank) / (totalParticipants - 1)) * 100
                     : 100.0;
@@ -237,6 +261,22 @@ public class LeaderboardServiceImpl implements LeaderboardService {
         if (!Boolean.TRUE.equals(challenge.getActive())) {
             throw new ChallengeSphereException(
                     "Leaderboard is unavailable for an inactive challenge",
+                    HttpStatus.FORBIDDEN,
+                    logger
+            );
+        }
+        Long ownerUserId = challenge.getCurrentOwnerId() != null
+                ? challenge.getCurrentOwnerId()
+                : challenge.getCreatorId();
+        if (!viewerUserId.equals(challenge.getCreatorId())
+                && !viewerUserId.equals(ownerUserId)
+                && ((challenge.getCreatorId() != null
+                && userBlockRepository.existsActiveBlockBetween(viewerUserId, challenge.getCreatorId()))
+                || (ownerUserId != null
+                && !ownerUserId.equals(challenge.getCreatorId())
+                && userBlockRepository.existsActiveBlockBetween(viewerUserId, ownerUserId)))) {
+            throw new ChallengeSphereException(
+                    "Not authorized to view this leaderboard",
                     HttpStatus.FORBIDDEN,
                     logger
             );
@@ -543,6 +583,27 @@ public class LeaderboardServiceImpl implements LeaderboardService {
             logger.error("Error removing user from leaderboard: challenge={}, user={}", challengeId, userId);
         }
     }
+
+    @Override
+    @Transactional
+    public void deactivateParticipation(Long challengeId, Long userId) {
+        leaderboardEntryRepository.markUserLeft(challengeId, userId);
+        leaderboardEntryRepository.updateRanksForChallenge(challengeId);
+        cacheService.removeFromLeaderboard(challengeId, userId);
+    }
+
+    @Override
+    @Transactional
+    public void reactivateParticipation(Long challengeId, Long userId) {
+        int updated = leaderboardEntryRepository.reactivateUser(challengeId, userId);
+        if (updated <= 0) {
+            return;
+        }
+        leaderboardEntryRepository.updateRanksForChallenge(challengeId);
+        leaderboardEntryRepository.findByChallengeIdAndUserId(challengeId, userId)
+                .filter(entry -> entry.getStatus() == LeaderboardEntry.LeaderboardStatus.ACTIVE)
+                .ifPresent(entry -> cacheService.addToLeaderboard(challengeId, userId, entry.getScore()));
+    }
     
     @Override
     @Transactional
@@ -692,7 +753,14 @@ public class LeaderboardServiceImpl implements LeaderboardService {
 
     private void syncLeaderboardEntry(Long challengeId, Long userId, double score) {
         leaderboardEntryRepository.updateRanksForChallenge(challengeId);
-        cacheService.addToLeaderboard(challengeId, userId, score);
+        boolean active = leaderboardEntryRepository.findByChallengeIdAndUserId(challengeId, userId)
+                .map(entry -> entry.getStatus() == LeaderboardEntry.LeaderboardStatus.ACTIVE)
+                .orElse(false);
+        if (active) {
+            cacheService.addToLeaderboard(challengeId, userId, score);
+        } else {
+            cacheService.removeFromLeaderboard(challengeId, userId);
+        }
     }
     
     /**

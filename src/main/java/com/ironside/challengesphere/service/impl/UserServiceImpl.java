@@ -40,6 +40,7 @@ import com.ironside.challengesphere.model.User;
 import com.ironside.challengesphere.model.UserBlock;
 import com.ironside.challengesphere.model.UserReport;
 import com.ironside.challengesphere.repository.FollowRepository;
+import com.ironside.challengesphere.repository.NotificationRepository;
 import com.ironside.challengesphere.repository.SubmissionRepository;
 import com.ironside.challengesphere.repository.UserBlockRepository;
 import com.ironside.challengesphere.repository.UserReportRepository;
@@ -71,6 +72,9 @@ public class UserServiceImpl implements UserService {
 
     @Autowired
     private NotificationService notificationService;
+
+    @Autowired
+    private NotificationRepository notificationRepository;
 
     @Autowired
     private UserBlockRepository userBlockRepository;
@@ -339,6 +343,7 @@ public class UserServiceImpl implements UserService {
                             logger
                     );
                 }
+                TextContentSafetyPolicy.requireAllowed(requestedUsername, "username");
                 if (!requestedUsername.equalsIgnoreCase(user.getUsername())
                         && userRepository.existsByUsernameIgnoreCaseAndIdNot(requestedUsername, userId)) {
                     throw new ChallengeSphereException(
@@ -356,6 +361,7 @@ public class UserServiceImpl implements UserService {
                     updateUserRequest.getDisplayName()
             );
             if (requestedName != null) {
+                TextContentSafetyPolicy.requireAllowed(requestedName, "display name");
                 user.setName(requestedName);
                 logger.debug("Updated name for user {}", userId);
             }
@@ -374,6 +380,7 @@ public class UserServiceImpl implements UserService {
                 logger.debug("Updated notifications for user {}", userId);
             }
             if (updateUserRequest.getBio() != null) {
+                TextContentSafetyPolicy.requireAllowed(updateUserRequest.getBio(), "profile bio");
                 user.setBio(updateUserRequest.getBio());
                 logger.debug("Updated bio for user {}", userId);
             }
@@ -847,6 +854,12 @@ public class UserServiceImpl implements UserService {
                 cacheService.invalidateTimeline(blockedUserId);
             }
         });
+        int deletedNotifications = notificationRepository.deleteInteractionsBetweenUsers(
+                blockerUserId,
+                blockedUserId
+        );
+        invalidateNotificationUnreadCountsAfterCommit(blockerUserId, blockedUserId);
+        logger.info("Removed {} prior notifications between newly blocked users", deletedNotifications);
         cacheService.invalidateAllFeeds();
     }
 
@@ -862,6 +875,23 @@ public class UserServiceImpl implements UserService {
         block.setUpdatedAt(new Timestamp(System.currentTimeMillis()));
         userBlockRepository.save(block);
         cacheService.invalidateAllFeeds();
+    }
+
+    private void invalidateNotificationUnreadCountsAfterCommit(Long firstUserId, Long secondUserId) {
+        Runnable invalidate = () -> {
+            cacheService.delete("notifications:unread:" + firstUserId);
+            cacheService.delete("notifications:unread:" + secondUserId);
+        };
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    invalidate.run();
+                }
+            });
+            return;
+        }
+        invalidate.run();
     }
 
     @Override
@@ -891,7 +921,18 @@ public class UserServiceImpl implements UserService {
         report.setReportedUserId(reportedUserId);
         report.setReason(normalizedReason.length() > 128 ? normalizedReason.substring(0, 128) : normalizedReason);
         report.setDetails(details == null || details.isBlank() ? null : details.trim());
-        userReportRepository.save(report);
+        UserReport savedReport = userReportRepository.save(report);
+        String alertReason = savedReport.getReason() == null
+                ? ""
+                : savedReport.getReason().trim().toUpperCase(Locale.ROOT);
+        if (List.of("CHILD_SAFETY", "SELF_HARM", "VIOLENCE").contains(alertReason)) {
+            logger.error(
+                    "URGENT_MODERATION_REPORT id={} reason={} targetType=ACCOUNT targetId={}",
+                    savedReport.getId(),
+                    alertReason,
+                    reportedUserId
+            );
+        }
     }
 
     @Override
@@ -971,6 +1012,8 @@ public class UserServiceImpl implements UserService {
 
             // Create new user
             User newUser = new User();
+            TextContentSafetyPolicy.requireAllowed(requestedUsername, "username");
+            TextContentSafetyPolicy.requireAllowed(request.getBio(), "profile bio");
             newUser.setUsername(requestedUsername);
             newUser.setEmailId(request.getEmailId());
             newUser.setPhone(request.getPhone());

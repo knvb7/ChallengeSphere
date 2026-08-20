@@ -85,6 +85,12 @@ public interface LeaderboardService {
      * @param userId The user ID
      */
     void removeFromLeaderboard(Long challengeId, Long userId);
+
+    /** Hide a voluntarily departed participant while preserving their score history. */
+    void deactivateParticipation(Long challengeId, Long userId);
+
+    /** Restore preserved leaderboard history when a departed participant rejoins. */
+    void reactivateParticipation(Long challengeId, Long userId);
     
     /**
      * Initialize leaderboard for a user joining a challenge

@@ -37,6 +37,15 @@ public class UserReport {
     @Column(name = "status", nullable = false, length = 32)
     private String status = "OPEN";
 
+    @Column(name = "resolution", length = 64)
+    private String resolution;
+
+    @Column(name = "reviewed_by")
+    private Long reviewedBy;
+
+    @Column(name = "reviewed_at")
+    private Timestamp reviewedAt;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Timestamp createdAt;
 

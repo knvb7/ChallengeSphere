@@ -27,6 +27,8 @@ import java.security.MessageDigest;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.HexFormat;
+import java.util.Set;
+import java.util.TreeSet;
 
 @Service
 public class SubscriptionServiceImpl implements SubscriptionService {
@@ -86,28 +88,36 @@ public class SubscriptionServiceImpl implements SubscriptionService {
             String eventId = requiredText(event, "id");
             if (eventRepository.existsById(eventId)) return;
 
+            String eventType = requiredText(event, "type");
             String appUserId = textOrNull(event, "app_user_id");
-            Long userId = parseUserId(appUserId);
-            if (userId == null && event.path("aliases").isArray()) {
-                for (JsonNode alias : event.path("aliases")) {
-                    userId = parseUserId(alias.asText(null));
-                    if (userId != null) break;
+            String environment = textOrNull(event, "environment");
+            if ("TRANSFER".equals(eventType)) {
+                Set<Long> affectedUserIds = new TreeSet<>();
+                collectUserIds(event.path("transferred_from"), affectedUserIds);
+                collectUserIds(event.path("transferred_to"), affectedUserIds);
+                if (affectedUserIds.isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "RevenueCat transfer does not reference a ChallengeSphere App User ID"
+                    );
                 }
-            }
-            if (userId != null) {
-                User user = userRepository.findByIdForUpdate(userId).orElse(null);
-                if (user != null) {
-                    reconcile(user, textOrNull(event, "environment"));
-                } else {
-                    logger.warn("RevenueCat webhook references unknown user | eventId={}", eventId);
+                for (Long affectedUserId : affectedUserIds) {
+                    reconcileWebhookUser(affectedUserId, environment, eventId);
+                }
+                if (appUserId == null) {
+                    appUserId = firstChallengeSphereAppUserId(event.path("transferred_to"));
+                }
+            } else {
+                Long userId = resolveSubscriberUserId(event, appUserId);
+                if (userId != null) {
+                    reconcileWebhookUser(userId, environment, eventId);
                 }
             }
 
             SubscriptionWebhookEvent storedEvent = new SubscriptionWebhookEvent();
             storedEvent.setEventId(eventId);
-            storedEvent.setEventType(requiredText(event, "type"));
+            storedEvent.setEventType(eventType);
             storedEvent.setAppUserId(appUserId);
-            storedEvent.setEnvironment(textOrNull(event, "environment"));
+            storedEvent.setEnvironment(environment);
             eventRepository.save(storedEvent);
         } catch (ChallengeSphereException e) {
             throw e;
@@ -150,6 +160,53 @@ public class SubscriptionServiceImpl implements SubscriptionService {
             userRepository.save(user);
         }
         return subscription;
+    }
+
+    private Long resolveSubscriberUserId(JsonNode event, String appUserId) {
+        Long userId = parseUserId(appUserId);
+        if (userId != null) return userId;
+
+        userId = parseUserId(textOrNull(event, "original_app_user_id"));
+        if (userId != null) return userId;
+
+        if (event.path("aliases").isArray()) {
+            for (JsonNode alias : event.path("aliases")) {
+                userId = parseUserId(alias.asText(null));
+                if (userId != null) return userId;
+            }
+        }
+        return null;
+    }
+
+    private void collectUserIds(JsonNode values, Set<Long> destination) {
+        if (!values.isArray()) return;
+        for (JsonNode value : values) {
+            Long userId = parseUserId(value.asText(null));
+            if (userId != null) destination.add(userId);
+        }
+    }
+
+    private String firstChallengeSphereAppUserId(JsonNode values) {
+        if (!values.isArray()) return null;
+        for (JsonNode value : values) {
+            String candidate = value.asText(null);
+            if (parseUserId(candidate) != null) return candidate;
+        }
+        return null;
+    }
+
+    private void reconcileWebhookUser(Long userId, String environment, String eventId)
+            throws ChallengeSphereException {
+        User user = userRepository.findByIdForUpdate(userId).orElse(null);
+        if (user != null && Boolean.TRUE.equals(user.getActive()) && user.getDeletedAt() == null) {
+            reconcile(user, environment);
+            return;
+        }
+        logger.warn(
+                "RevenueCat webhook references unknown or deleted user | eventId={} userId={}",
+                eventId,
+                userId
+        );
     }
 
     private SubscriptionStatusResponse toResponse(User user, UserSubscription subscription) {
