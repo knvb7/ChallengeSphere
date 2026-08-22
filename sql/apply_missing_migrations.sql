@@ -1,5 +1,4 @@
--- Apply missing migrations to challengesphere schema.
--- Status at 2026-04-20: V1–V9 applied; V10 (content moderation) is missing.
+-- Apply cumulative runtime-required migrations to the challengesphere schema.
 -- Safe to re-run — all statements are idempotent.
 
 SET search_path TO challengesphere;
@@ -30,6 +29,11 @@ CREATE INDEX IF NOT EXISTS idx_moderation_flags_pending
 CREATE INDEX IF NOT EXISTS idx_moderation_flags_user
     ON challengesphere.moderation_flags (user_id);
 
+-- V47: Rekognition category values can contain a parent/name path longer than
+-- the original provider-specific VARCHAR(32) assumption.
+ALTER TABLE IF EXISTS challengesphere.moderation_flags
+    ALTER COLUMN category TYPE TEXT;
+
 -- V15: support multi-photo submission payloads from object storage.
 ALTER TABLE IF EXISTS challengesphere.submissions
     ALTER COLUMN media_urls TYPE TEXT,
@@ -40,6 +44,48 @@ ALTER TABLE IF EXISTS challengesphere.notifications
     ALTER COLUMN message TYPE TEXT,
     ALTER COLUMN action_object TYPE TEXT,
     ALTER COLUMN "type" TYPE VARCHAR(500);
+
+-- V43: per-user challenge favorites.
+ALTER TABLE challengesphere.user_challenges
+    ADD COLUMN IF NOT EXISTS favorite BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS favorited_at TIMESTAMP WITH TIME ZONE;
+
+INSERT INTO challengesphere.user_challenges (
+    user_id,
+    challenge_id,
+    joined_at,
+    completed,
+    active,
+    favorite
+)
+SELECT
+    relationship.user_id,
+    relationship.challenge_id,
+    CURRENT_TIMESTAMP,
+    FALSE,
+    relationship.active,
+    FALSE
+FROM (
+    SELECT
+        c.creator_id AS user_id,
+        c.id AS challenge_id,
+        CASE
+            WHEN c.creator_id = COALESCE(c.current_owner_id, c.creator_id)
+                THEN COALESCE(c.active, FALSE)
+            ELSE FALSE
+        END AS active
+    FROM challengesphere.challenges c
+    WHERE c.creator_id IS NOT NULL
+    UNION
+    SELECT c.current_owner_id AS user_id, c.id AS challenge_id, COALESCE(c.active, FALSE) AS active
+    FROM challengesphere.challenges c
+    WHERE c.current_owner_id IS NOT NULL
+) relationship
+ON CONFLICT (user_id, challenge_id) DO NOTHING;
+
+CREATE INDEX IF NOT EXISTS idx_user_challenges_favorites
+    ON challengesphere.user_challenges (user_id, favorited_at DESC, challenge_id)
+    WHERE favorite = TRUE AND COALESCE(banned, FALSE) = FALSE;
 
 -- V44: Notification now maps challenge_id for private challenge invites.
 -- Keep this additive subset here because production schemas are updated with
@@ -162,3 +208,31 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_account_media_cleanup_object
 CREATE INDEX IF NOT EXISTS idx_account_media_cleanup_pending
     ON challengesphere.account_media_cleanup_queue (status, requested_at)
     WHERE status = 'PENDING';
+
+-- V46: RevenueCat-backed premium subscription state and webhook idempotency.
+CREATE TABLE IF NOT EXISTS challengesphere.user_subscriptions (
+    user_id BIGINT PRIMARY KEY REFERENCES challengesphere.users(id),
+    provider VARCHAR(32) NOT NULL DEFAULT 'REVENUECAT',
+    app_user_id VARCHAR(255) NOT NULL UNIQUE,
+    entitlement_id VARCHAR(100) NOT NULL,
+    product_id VARCHAR(255),
+    status VARCHAR(32) NOT NULL,
+    store VARCHAR(32),
+    environment VARCHAR(32),
+    expires_at TIMESTAMP WITH TIME ZONE,
+    will_renew BOOLEAN NOT NULL DEFAULT FALSE,
+    last_synced_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS challengesphere.subscription_webhook_events (
+    event_id VARCHAR(255) PRIMARY KEY,
+    event_type VARCHAR(100) NOT NULL,
+    app_user_id VARCHAR(255),
+    environment VARCHAR(32),
+    received_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_subscriptions_status
+    ON challengesphere.user_subscriptions(status, expires_at);

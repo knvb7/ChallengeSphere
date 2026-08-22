@@ -75,6 +75,28 @@ public interface LeaderboardEntryRepository extends JpaRepository<LeaderboardEnt
            "ORDER BY le.score DESC")
     List<LeaderboardEntry> findTopWithUserByChallengeId(@Param("challengeId") Long challengeId, Pageable pageable);
 
+    @Query(value = """
+            SELECT le.*
+            FROM challengesphere.leaderboard_entries le
+            WHERE le.challenge_id = :challengeId
+              AND le.status = 'ACTIVE'
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM challengesphere.user_blocks ub
+                  WHERE ub.active = true
+                    AND (
+                        (ub.blocker_user_id = :viewerUserId AND ub.blocked_user_id = le.user_id)
+                        OR
+                        (ub.blocker_user_id = le.user_id AND ub.blocked_user_id = :viewerUserId)
+                    )
+              )
+            ORDER BY le.score DESC
+            """, nativeQuery = true)
+    List<LeaderboardEntry> findTopByChallengeIdForViewer(
+            @Param("challengeId") Long challengeId,
+            @Param("viewerUserId") Long viewerUserId,
+            Pageable pageable);
+
     // ==================== RANKING QUERIES ====================
 
     /**
@@ -86,6 +108,33 @@ public interface LeaderboardEntryRepository extends JpaRepository<LeaderboardEnt
            "AND le.score > (SELECT le2.score FROM LeaderboardEntry le2 " +
            "                WHERE le2.challenge.id = :challengeId AND le2.user.id = :userId)")
     Integer getUserRank(@Param("challengeId") Long challengeId, @Param("userId") Long userId);
+
+    @Query(value = """
+            SELECT COUNT(*) + 1
+            FROM challengesphere.leaderboard_entries le
+            WHERE le.challenge_id = :challengeId
+              AND le.status = 'ACTIVE'
+              AND le.score > (
+                  SELECT target.score
+                  FROM challengesphere.leaderboard_entries target
+                  WHERE target.challenge_id = :challengeId
+                    AND target.user_id = :userId
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM challengesphere.user_blocks ub
+                  WHERE ub.active = true
+                    AND (
+                        (ub.blocker_user_id = :viewerUserId AND ub.blocked_user_id = le.user_id)
+                        OR
+                        (ub.blocker_user_id = le.user_id AND ub.blocked_user_id = :viewerUserId)
+                    )
+              )
+            """, nativeQuery = true)
+    Long getUserRankForViewer(
+            @Param("challengeId") Long challengeId,
+            @Param("userId") Long userId,
+            @Param("viewerUserId") Long viewerUserId);
 
     /**
      * Get entries around a specific user (for context)
@@ -127,6 +176,26 @@ public interface LeaderboardEntryRepository extends JpaRepository<LeaderboardEnt
     @Query("SELECT COUNT(le) FROM LeaderboardEntry le " +
            "WHERE le.challenge.id = :challengeId AND le.status = 'ACTIVE'")
     Long countParticipants(@Param("challengeId") Long challengeId);
+
+    @Query(value = """
+            SELECT COUNT(*)
+            FROM challengesphere.leaderboard_entries le
+            WHERE le.challenge_id = :challengeId
+              AND le.status = 'ACTIVE'
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM challengesphere.user_blocks ub
+                  WHERE ub.active = true
+                    AND (
+                        (ub.blocker_user_id = :viewerUserId AND ub.blocked_user_id = le.user_id)
+                        OR
+                        (ub.blocker_user_id = le.user_id AND ub.blocked_user_id = :viewerUserId)
+                    )
+              )
+            """, nativeQuery = true)
+    Long countParticipantsForViewer(
+            @Param("challengeId") Long challengeId,
+            @Param("viewerUserId") Long viewerUserId);
 
     /**
      * Get average score for a challenge
@@ -207,6 +276,19 @@ public interface LeaderboardEntryRepository extends JpaRepository<LeaderboardEnt
     @Query("UPDATE LeaderboardEntry le SET le.status = 'DISQUALIFIED', le.updatedAt = CURRENT_TIMESTAMP " +
            "WHERE le.challenge.id = :challengeId AND le.user.id = :userId")
     void disqualifyUser(@Param("challengeId") Long challengeId, @Param("userId") Long userId);
+
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Transactional
+    @Query("UPDATE LeaderboardEntry le SET le.status = 'LEFT', le.updatedAt = CURRENT_TIMESTAMP " +
+           "WHERE le.challenge.id = :challengeId AND le.user.id = :userId " +
+           "AND le.status IN ('ACTIVE', 'COMPLETED')")
+    int markUserLeft(@Param("challengeId") Long challengeId, @Param("userId") Long userId);
+
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Transactional
+    @Query("UPDATE LeaderboardEntry le SET le.status = 'ACTIVE', le.updatedAt = CURRENT_TIMESTAMP " +
+           "WHERE le.challenge.id = :challengeId AND le.user.id = :userId AND le.status = 'LEFT'")
+    int reactivateUser(@Param("challengeId") Long challengeId, @Param("userId") Long userId);
 
     // ==================== CHALLENGE COMPLETION ====================
 

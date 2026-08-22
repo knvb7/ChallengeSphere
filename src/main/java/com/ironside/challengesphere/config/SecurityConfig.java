@@ -19,6 +19,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import org.springframework.http.MediaType;
+import org.springframework.http.HttpMethod;
 
 @Configuration
 @EnableMethodSecurity
@@ -53,6 +54,10 @@ public class SecurityConfig {
                             "/actuator/health"
                     ).permitAll();
                     auth.requestMatchers(PUBLIC_INVITE_PREVIEW).permitAll();
+                    auth.requestMatchers(
+                            HttpMethod.POST,
+                            "/api/v1/subscriptions/webhooks/revenuecat"
+                    ).permitAll();
                     if (publicDocsEnabled) {
                         auth.requestMatchers(
                                 "/v3/api-docs/**",
@@ -60,7 +65,7 @@ public class SecurityConfig {
                                 "/swagger-ui.html"
                         ).permitAll();
                     }
-                    auth.requestMatchers(org.springframework.http.HttpMethod.OPTIONS, "/**").permitAll();
+                    auth.requestMatchers(HttpMethod.OPTIONS, "/**").permitAll();
                     auth.requestMatchers("/api/v1/admin/cache/**").hasRole("ADMIN");
                     auth.anyRequest().authenticated();
                 })

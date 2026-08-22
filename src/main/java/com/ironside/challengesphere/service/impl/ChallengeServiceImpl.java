@@ -63,6 +63,7 @@ import com.ironside.challengesphere.repository.ChallengeCrewLifecycleRepository;
 import com.ironside.challengesphere.repository.FollowRepository;
 import com.ironside.challengesphere.repository.SubmissionRepository;
 import com.ironside.challengesphere.repository.UserChallengeRepository;
+import com.ironside.challengesphere.repository.UserBlockRepository;
 import com.ironside.challengesphere.repository.UserRepository;
 import com.ironside.challengesphere.security.IssuedUploadService;
 import com.ironside.challengesphere.security.UploadQuotaService;
@@ -92,6 +93,9 @@ public class ChallengeServiceImpl implements ChallengeService {
 
     @Autowired
     private UserChallengeRepository userChallengeRepository;
+
+    @Autowired
+    private UserBlockRepository userBlockRepository;
 
     @Autowired
     private ChallengeCrewLifecycleRepository challengeCrewLifecycleRepository;
@@ -259,7 +263,9 @@ public class ChallengeServiceImpl implements ChallengeService {
         try {
             int normalizedPage = Math.max(page, 1);
             int normalizedPageSize = Math.min(Math.max(pageSize, 1), 100);
-            List<Challenge> publicChallenges = challengeRepository.findPublicActiveByCreatorId(creatorId);
+            List<Challenge> publicChallenges = challengeRepository.findPublicActiveByCreatorId(creatorId).stream()
+                    .filter(challenge -> canViewChallenge(challenge, currentUserId))
+                    .toList();
             int totalCount = publicChallenges.size();
             int offset = (normalizedPage - 1) * normalizedPageSize;
             List<Challenge> paginatedChallenges = publicChallenges.stream()
@@ -428,6 +434,7 @@ public class ChallengeServiceImpl implements ChallengeService {
         try {
             logger.info("Async update challengesAccepted count for user: {}, increment: {}", userId, increment);
             userRepository.adjustChallengeAcceptedCountForAUser(userId, increment ? 1 : -1);
+            cacheService.invalidateUserProfile(userId);
             logger.info("Updated challengesAccepted count for userId: {}", userId);
         } catch (Exception e) {
             logger.error("Error updating challengesAccepted count for user {}: {}", userId, e.getClass().getSimpleName());
@@ -473,6 +480,7 @@ public class ChallengeServiceImpl implements ChallengeService {
                                     (left, right) -> left
                             ));
             result.addAll(dbChallenges.stream()
+                    .filter(challenge -> !isBlockedChallengeOwner(challenge, currentUserId))
                     .filter(challenge -> canViewChallenge(challenge, currentUserId)
                             || canViewArchivedChallenge(
                                     challenge,
@@ -562,12 +570,6 @@ public class ChallengeServiceImpl implements ChallengeService {
                         .map(UserChallenge::getUserId)
                         .filter(java.util.Objects::nonNull)
                         .collect(Collectors.toSet());
-        if (challenge.getCreatorId() != null) {
-            activeMemberIds.add(challenge.getCreatorId());
-        }
-        if (challenge.getCurrentOwnerId() != null) {
-            activeMemberIds.add(challenge.getCurrentOwnerId());
-        }
         long ageMillis = nowMillis - challenge.getCreatedAt().getTime();
 
         return activeMemberIds.size() <= MAX_DELETE_MEMBER_COUNT
@@ -826,10 +828,17 @@ public class ChallengeServiceImpl implements ChallengeService {
 
                 userChallengeRepository.saveAll(userChallenges);
                 logger.info("Successfully joined {} users to challenge {}", successfulUserIds.size(), challengeId);
+                cacheService.invalidateChallengeParticipants(challengeId);
+                cacheService.invalidateRecentAndTrendingChallenges();
+                cacheService.invalidateHashtagChallenges();
 
-                // Update challengesAccepted count for all successfully joined users
+                // Restore ranking history; created challenges do not count as accepted challenges.
                 for (Long userId : successfulUserIds) {
-                    updateChallengesAcceptedCountAsync(userId, true);
+                    cacheService.invalidateTimeline(userId);
+                    leaderboardService.reactivateParticipation(challengeId, userId);
+                    if (!userId.equals(challenge.getCreatorId())) {
+                        updateChallengesAcceptedCountAsync(userId, true);
+                    }
                 }
 
                 notifyChallengeOwnersOfJoins(challenge, successfulUserIds);
@@ -885,16 +894,10 @@ public class ChallengeServiceImpl implements ChallengeService {
             List<Long> successfulUserIds = new ArrayList<>();
             List<Long> failedUserIds = new ArrayList<>();
             List<UserChallenge> toDeactivate = new ArrayList<>();
-            Long currentOwnerUserId = challenge.getCurrentOwnerId() != null
-                    ? challenge.getCurrentOwnerId()
-                    : challenge.getCreatorId();
 
+            // Participation is independent from creator attribution and ownership. The
+            // current owner may stop participating while retaining management access.
             for (Long userId : userIds) {
-                if (Boolean.TRUE.equals(challenge.getActive()) && userId.equals(currentOwnerUserId)) {
-                    logger.info("Current owner {} cannot leave active challenge {}", userId, challengeId);
-                    failedUserIds.add(userId);
-                    continue;
-                }
                 if (userChallengeMap.containsKey(userId)) {
                     UserChallenge userChallenge = userChallengeMap.get(userId);
                     // Only deactivate if currently active
@@ -932,10 +935,15 @@ public class ChallengeServiceImpl implements ChallengeService {
                     cacheService.invalidateTimeline(userId);
                 }
                 cacheService.invalidateChallengeParticipants(challengeId);
+                cacheService.invalidateRecentAndTrendingChallenges();
+                cacheService.invalidateHashtagChallenges();
 
-                // Update challengesAccepted count for all successfully deactivated users
+                // Hide departed users from rankings; created challenges never counted as accepted.
                 for (Long userId : successfulUserIds) {
-                    updateChallengesAcceptedCountAsync(userId, false);
+                    leaderboardService.deactivateParticipation(challengeId, userId);
+                    if (!userId.equals(challenge.getCreatorId())) {
+                        updateChallengesAcceptedCountAsync(userId, false);
+                    }
                     if (Boolean.TRUE.equals(challenge.getIsPrivate())) {
                         challengeInviteRepository.deactivateActiveByChallengeIdAndRecipientUserId(
                                 challengeId, userId);
@@ -1095,11 +1103,11 @@ public class ChallengeServiceImpl implements ChallengeService {
 
             List<UserChallenge> activeUserChallenges = userChallengeRepository.findActiveByChallengeId(challengeId);
 
-            Set<Long> userIds = new HashSet<>();
-            userIds.add(challenge.getCreatorId());
-            activeUserChallenges.stream()
+            Set<Long> userIds = activeUserChallenges.stream()
                     .map(UserChallenge::getUserId)
-                    .forEach(userIds::add);
+                    .collect(Collectors.toSet());
+
+            userIds.removeAll(userBlockRepository.findActiveBlockedCounterpartIds(currentUserId));
 
             if (userIds.isEmpty()) {
                 logger.info("No participants found for challenge: {}", challengeId);
@@ -1108,7 +1116,7 @@ public class ChallengeServiceImpl implements ChallengeService {
 
             List<User> users = userRepository.findAllById(new ArrayList<>(userIds));
 
-            logger.info("Found {} participants (including creator) for challenge {}", users.size(), challengeId);
+            logger.info("Found {} active participants for challenge {}", users.size(), challengeId);
 
             return ChallengeParticipantsResponse.create(
                     challengeId,
@@ -1289,10 +1297,10 @@ public class ChallengeServiceImpl implements ChallengeService {
                     .map(Challenge::getId)
                     .collect(Collectors.toList());
 
-            // Batch query: Get all UserChallenge records for these challenges (single query)
-            List<UserChallenge> userChallenges = userChallengeRepository.findByChallengeIdIn(challengeIds);
+            // Batch query: Get active memberships for these challenges (single query)
+            List<UserChallenge> userChallenges = userChallengeRepository.findActiveByChallengeIds(challengeIds);
 
-            // Count participants per challenge (all participants, not just active ones)
+            // Count current participants per challenge.
             Map<Long, Long> participantCountMap = userChallenges.stream()
                     .collect(Collectors.groupingBy(UserChallenge::getChallengeId, Collectors.counting()));
 
@@ -1379,7 +1387,7 @@ public class ChallengeServiceImpl implements ChallengeService {
 
             Map<Long, Long> participantCountMap = new java.util.HashMap<>();
             if (!challengeIds.isEmpty()) {
-                List<UserChallenge> userChallenges = userChallengeRepository.findByChallengeIdIn(challengeIds);
+                List<UserChallenge> userChallenges = userChallengeRepository.findActiveByChallengeIds(challengeIds);
                 participantCountMap = userChallenges.stream()
                         .collect(Collectors.groupingBy(UserChallenge::getChallengeId, Collectors.counting()));
             }
@@ -1637,6 +1645,15 @@ public class ChallengeServiceImpl implements ChallengeService {
         if (requestedRecipientIds.isEmpty()) {
             throw new ChallengeSphereException(
                     "Select at least one friend to invite",
+                    HttpStatus.BAD_REQUEST,
+                    logger
+            );
+        }
+        requestedRecipientIds.removeIf(recipientUserId ->
+                userBlockRepository.existsActiveBlockBetween(actorUserId, recipientUserId));
+        if (requestedRecipientIds.isEmpty()) {
+            throw new ChallengeSphereException(
+                    "No selected friends are available to invite",
                     HttpStatus.BAD_REQUEST,
                     logger
             );
@@ -1955,6 +1972,7 @@ public class ChallengeServiceImpl implements ChallengeService {
                                 (left, right) -> left
                         ));
                 visibleChallenges = visibleChallenges.stream()
+                        .filter(challenge -> !isBlockedChallengeOwner(challenge, currentUserId))
                         .filter(challenge -> favoriteFilter
                                 ? canKeepFavoriteChallenge(
                                         challenge,
@@ -1967,7 +1985,7 @@ public class ChallengeServiceImpl implements ChallengeService {
                                         userId
                                 ))
                         .toList();
-            } else if (!java.util.Objects.equals(userId, currentUserId)) {
+            } else {
                 visibleChallenges = visibleChallenges.stream()
                         .filter(challenge -> canViewChallenge(challenge, currentUserId))
                         .toList();
@@ -2635,11 +2653,14 @@ public class ChallengeServiceImpl implements ChallengeService {
         if (challenge == null || currentUserId == null || !Boolean.TRUE.equals(challenge.getActive())) {
             return false;
         }
-        if (!Boolean.TRUE.equals(challenge.getIsPrivate())) {
-            return true;
-        }
         Long ownerUserId = challenge.getCurrentOwnerId() != null ? challenge.getCurrentOwnerId() : challenge.getCreatorId();
         if (currentUserId.equals(ownerUserId) || currentUserId.equals(challenge.getCreatorId())) {
+            return true;
+        }
+        if (isBlockedChallengeOwner(challenge, currentUserId)) {
+            return false;
+        }
+        if (!Boolean.TRUE.equals(challenge.getIsPrivate())) {
             return true;
         }
         return userChallengeRepository.findByUserIdAndChallengeId(currentUserId, challenge.getId())
@@ -2656,13 +2677,34 @@ public class ChallengeServiceImpl implements ChallengeService {
         if (challenge == null || userId == null) {
             return false;
         }
-        if (!Boolean.TRUE.equals(challenge.getIsPrivate())) {
-            return true;
-        }
         if (userId.equals(ownerUserId) || userId.equals(challenge.getCreatorId())) {
             return true;
         }
+        if (isBlockedChallengeOwner(challenge, userId)) {
+            return false;
+        }
+        if (!Boolean.TRUE.equals(challenge.getIsPrivate())) {
+            return true;
+        }
         return verifiedInvitation;
+    }
+
+    private boolean isBlockedChallengeOwner(Challenge challenge, Long viewerUserId) {
+        if (challenge == null || viewerUserId == null) {
+            return false;
+        }
+        Long creatorUserId = challenge.getCreatorId();
+        Long currentOwnerUserId = challenge.getCurrentOwnerId();
+        if (viewerUserId.equals(creatorUserId) || viewerUserId.equals(currentOwnerUserId)) {
+            return false;
+        }
+        return (creatorUserId != null
+                && !creatorUserId.equals(viewerUserId)
+                && userBlockRepository.existsActiveBlockBetween(viewerUserId, creatorUserId))
+                || (currentOwnerUserId != null
+                && !currentOwnerUserId.equals(viewerUserId)
+                && !currentOwnerUserId.equals(creatorUserId)
+                && userBlockRepository.existsActiveBlockBetween(viewerUserId, currentOwnerUserId));
     }
 
     private void notifyChallengeOwnersOfJoins(Challenge challenge, List<Long> successfulUserIds) {

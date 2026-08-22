@@ -90,6 +90,7 @@ public class LeaderboardEntry {
     public enum LeaderboardStatus {
         ACTIVE,      // Currently participating
         COMPLETED,   // Finished the challenge
+        LEFT,        // Voluntarily stopped participating
         DISQUALIFIED // Removed from leaderboard (e.g., cheating)
     }
 

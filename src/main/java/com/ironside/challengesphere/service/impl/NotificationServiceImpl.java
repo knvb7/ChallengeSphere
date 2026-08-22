@@ -468,8 +468,16 @@ public class NotificationServiceImpl implements NotificationService {
         }
 
         Long inviterUserId = numberAsLong(action.get("actorUserId"));
+        if (inviterUserId != null
+                && userBlockRepository.existsActiveBlockBetween(recipientUserId, inviterUserId)) {
+            throw inviteUnavailable();
+        }
         User inviter = inviterUserId == null ? null : userRepository.findById(inviterUserId).orElse(null);
         Long creatorUserId = challenge.getCreatorId();
+        if (creatorUserId != null
+                && userBlockRepository.existsActiveBlockBetween(recipientUserId, creatorUserId)) {
+            throw inviteUnavailable();
+        }
         User creator = creatorUserId == null ? null : userRepository.findById(creatorUserId).orElse(null);
         ChallengeCreationContentPolicy.PreviewContent content =
                 ChallengeCreationContentPolicy.parseStoredContent(

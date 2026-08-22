@@ -28,6 +28,45 @@ public interface GloryRepository extends JpaRepository<Glory, Long> {
             nativeQuery = true)
     Page<Glory> findActiveBySubmissionId(@Param("submissionId") Long submissionId, Pageable pageable);
 
+    @Query(value = """
+            SELECT g.*
+            FROM challengesphere.glories g
+            WHERE g.submission_id = :submissionId
+              AND g.active = true
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM challengesphere.user_blocks ub
+                  WHERE ub.active = true
+                    AND (
+                        (ub.blocker_user_id = :viewerId AND ub.blocked_user_id = g.user_id)
+                        OR
+                        (ub.blocker_user_id = g.user_id AND ub.blocked_user_id = :viewerId)
+                    )
+              )
+            ORDER BY g.created_at DESC
+            """,
+            countQuery = """
+            SELECT COUNT(*)
+            FROM challengesphere.glories g
+            WHERE g.submission_id = :submissionId
+              AND g.active = true
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM challengesphere.user_blocks ub
+                  WHERE ub.active = true
+                    AND (
+                        (ub.blocker_user_id = :viewerId AND ub.blocked_user_id = g.user_id)
+                        OR
+                        (ub.blocker_user_id = g.user_id AND ub.blocked_user_id = :viewerId)
+                    )
+              )
+            """,
+            nativeQuery = true)
+    Page<Glory> findActiveBySubmissionIdForViewer(
+            @Param("submissionId") Long submissionId,
+            @Param("viewerId") Long viewerId,
+            Pageable pageable);
+
     @Query(value = "SELECT COUNT(*) FROM challengesphere.glories WHERE submission_id = :submissionId AND active = true", nativeQuery = true)
     Long countActiveBySubmissionId(@Param("submissionId") Long submissionId);
 

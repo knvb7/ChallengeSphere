@@ -17,6 +17,7 @@ import com.ironside.challengesphere.repository.ChallengeInviteRepository;
 import com.ironside.challengesphere.repository.ChallengeRepository;
 import com.ironside.challengesphere.repository.InviteUsageRepository;
 import com.ironside.challengesphere.repository.UserChallengeRepository;
+import com.ironside.challengesphere.repository.UserBlockRepository;
 import com.ironside.challengesphere.repository.UserRepository;
 import com.ironside.challengesphere.service.ChallengeService;
 import com.ironside.challengesphere.service.InviteService;
@@ -47,7 +48,7 @@ public class InviteServiceImpl implements InviteService {
 
     private final SecureRandom secureRandom = new SecureRandom();
 
-    @Value("${app.invite.base-url:challengesphere://invite}")
+    @Value("${app.invite.base-url:https://challengesphere.com/invite}")
     private String inviteBaseUrl;
 
     @Autowired
@@ -64,6 +65,9 @@ public class InviteServiceImpl implements InviteService {
 
     @Autowired
     private UserChallengeRepository userChallengeRepository;
+
+    @Autowired
+    private UserBlockRepository userBlockRepository;
 
     @Autowired
     private ChallengeService challengeService;
@@ -212,6 +216,10 @@ public class InviteServiceImpl implements InviteService {
         // user. An unbound code is a shareable capability for public or private
         // challenges and may be redeemed by any eligible authenticated user.
         if (invite.getRecipientUserId() != null && !invite.getRecipientUserId().equals(userId)) {
+            throw inviteUnavailable();
+        }
+        if (userBlockRepository.existsActiveBlockBetween(userId, invite.getCreatedBy())
+                || userBlockRepository.existsActiveBlockBetween(userId, effectiveOwnerId(challenge))) {
             throw inviteUnavailable();
         }
 
@@ -531,6 +539,13 @@ public class InviteServiceImpl implements InviteService {
                         logger
                 ));
         if (!Boolean.TRUE.equals(recipient.getActive())) {
+            throw new ChallengeSphereException(
+                    "Invite recipient is unavailable",
+                    HttpStatus.BAD_REQUEST,
+                    logger
+            );
+        }
+        if (userBlockRepository.existsActiveBlockBetween(ownerUserId, recipientUserId)) {
             throw new ChallengeSphereException(
                     "Invite recipient is unavailable",
                     HttpStatus.BAD_REQUEST,

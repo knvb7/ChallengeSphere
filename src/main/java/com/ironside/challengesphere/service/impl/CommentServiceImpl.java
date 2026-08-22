@@ -91,7 +91,11 @@ public class CommentServiceImpl implements CommentService {
             );
         }
 
-        Page<Comment> comments = commentRepository.findActiveCommentsBySubmissionId(submissionId, pageable);
+        Page<Comment> comments = commentRepository.findActiveCommentsBySubmissionIdForViewer(
+                submissionId,
+                callerId,
+                pageable
+        );
 
         // Batch-fetch all authors for this page — avoids N+1
         Set<Long> userIds = comments.getContent().stream()
@@ -134,6 +138,7 @@ public class CommentServiceImpl implements CommentService {
                     logger
             );
         }
+        TextContentSafetyPolicy.requireAllowed(content, "comment");
 
         Comment comment = new Comment();
         comment.setSubmissionId(submissionId);
@@ -175,6 +180,7 @@ public class CommentServiceImpl implements CommentService {
         if (content == null || content.trim().isEmpty()) {
             throw new ChallengeSphereException("Comment content cannot be empty", HttpStatus.BAD_REQUEST, logger);
         }
+        TextContentSafetyPolicy.requireAllowed(content, "comment");
 
         comment.setContent(content.trim());
         comment.setUpdatedAt(new Timestamp(System.currentTimeMillis()));

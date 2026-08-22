@@ -17,18 +17,18 @@ public class ChallengeParticipationProperties {
 
     @Min(0)
     @Max(100)
-    private int freeMaxActivePerVisibility = 3;
+    private int freeMaxActivePerVisibility = 5;
 
     @Min(0)
     @Max(100)
-    private int premiumMaxActivePerVisibility = 15;
+    private int premiumMaxActivePerVisibility = 20;
 
     public int getFreeMaxActivePerVisibility() {
-        return freeMaxActivePerVisibility == 0 ? 3 : freeMaxActivePerVisibility;
+        return freeMaxActivePerVisibility == 0 ? 5 : freeMaxActivePerVisibility;
     }
 
     public int getPremiumMaxActivePerVisibility() {
-        return premiumMaxActivePerVisibility == 0 ? 15 : premiumMaxActivePerVisibility;
+        return premiumMaxActivePerVisibility == 0 ? 20 : premiumMaxActivePerVisibility;
     }
 
     public int limitFor(boolean premiumUser) {

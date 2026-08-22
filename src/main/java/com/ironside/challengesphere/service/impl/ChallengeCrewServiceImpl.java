@@ -92,6 +92,9 @@ public class ChallengeCrewServiceImpl implements ChallengeCrewService {
         if (lifecycle.getStartedAt() != null) {
             return buildStatus(challenge, lifecycle, actorUserId);
         }
+        if (activeParticipants(challengeId).size() < MINIMUM_START_COUNT) {
+            throw badRequest("At least one active participant is required to start this challenge");
+        }
 
         Timestamp now = now();
         lifecycle.setStartedAt(now);
@@ -376,7 +379,7 @@ public class ChallengeCrewServiceImpl implements ChallengeCrewService {
                 .state(state)
                 .privateChallenge(Boolean.TRUE.equals(challenge.getIsPrivate()))
                 .canManageCrew(owner)
-                .canStart(lobby && owner)
+                .canStart(lobby && owner && acceptedUserIds.size() >= MINIMUM_START_COUNT)
                 .acceptedCount(acceptedUserIds.size())
                 .invitedCount((int) invitations.stream().map(ChallengeCrewInvite::getInvitedUserId).distinct().count())
                 .pendingInviteCount(pendingInviteCount)

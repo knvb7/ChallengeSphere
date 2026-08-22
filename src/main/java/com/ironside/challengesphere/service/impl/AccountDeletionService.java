@@ -6,56 +6,55 @@ import com.ironside.challengesphere.model.User;
 import com.ironside.challengesphere.repository.UserRepository;
 import com.ironside.challengesphere.security.AuthTokenStore;
 import com.ironside.challengesphere.util.UserRole;
+import jakarta.annotation.PostConstruct;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.nio.charset.StandardCharsets;
+import java.security.GeneralSecurityException;
 import java.sql.Timestamp;
+import java.text.Normalizer;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
+
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
 
 @Service
 public class AccountDeletionService {
 
     private static final Logger logger = LogManager.getLogger(AccountDeletionService.class);
     private static final String REQUIRED_CONFIRMATION = "DELETE";
+    private static final Duration IDENTITY_HASH_RETENTION = Duration.ofDays(90);
 
     private static final String UPSERT_REQUEST_SQL = """
             INSERT INTO challengesphere.account_deletion_requests AS deletion_request (
                 user_id,
-                original_email_id,
-                original_username,
-                original_name,
-                identity_retained_at,
+                email_identity_hmac,
+                username_identity_hmac,
+                identity_hash_expires_at,
+                identity_hash_purged_at,
                 status,
                 requested_at,
                 processed_at,
                 media_cleanup_count
-            ) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, 'PROCESSING', CURRENT_TIMESTAMP, NULL, 0)
+            ) VALUES (?, ?, ?, ?, NULL, 'PROCESSING', CURRENT_TIMESTAMP, NULL, 0)
             ON CONFLICT (user_id) DO UPDATE SET
-                original_email_id = COALESCE(
-                    deletion_request.original_email_id,
-                    EXCLUDED.original_email_id
-                ),
-                original_username = COALESCE(
-                    deletion_request.original_username,
-                    EXCLUDED.original_username
-                ),
-                original_name = COALESCE(
-                    deletion_request.original_name,
-                    EXCLUDED.original_name
-                ),
-                identity_retained_at = COALESCE(
-                    deletion_request.identity_retained_at,
-                    EXCLUDED.identity_retained_at
-                ),
+                email_identity_hmac = EXCLUDED.email_identity_hmac,
+                username_identity_hmac = EXCLUDED.username_identity_hmac,
+                identity_hash_expires_at = EXCLUDED.identity_hash_expires_at,
+                identity_hash_purged_at = NULL,
                 status = 'PROCESSING',
                 requested_at = CURRENT_TIMESTAMP,
                 processed_at = NULL,
@@ -74,8 +73,10 @@ public class AccountDeletionService {
             UNION ALL
             SELECT 'CHALLENGE', id, cover_photo_urls
             FROM challengesphere.challenges
-            WHERE (creator_id = ? OR current_owner_id = ?)
-              AND cover_photo_urls IS NOT NULL AND BTRIM(cover_photo_urls) <> ''
+            WHERE creator_id = ?
+              AND private = TRUE
+              AND cover_photo_urls IS NOT NULL
+              AND BTRIM(cover_photo_urls) <> ''
             """;
 
     private static final String QUEUE_MEDIA_SQL = """
@@ -115,13 +116,18 @@ public class AccountDeletionService {
             "DELETE FROM challengesphere.notifications WHERE user_id = ?",
             "DELETE FROM challengesphere.push_device_tokens WHERE user_id = ?",
             "DELETE FROM challengesphere.user_preferences WHERE user_id = ?",
-            "DELETE FROM challengesphere.feature_requests WHERE user_id = ?"
+            "DELETE FROM challengesphere.feature_requests WHERE user_id = ?",
+            "DELETE FROM challengesphere.user_subscriptions WHERE user_id = ?",
+            "DELETE FROM challengesphere.auth_identities WHERE user_id = ?"
     );
 
     private final UserRepository userRepository;
     private final JdbcTemplate jdbcTemplate;
     private final AuthTokenStore authTokenStore;
     private final RedisCacheServiceImpl cacheService;
+
+    @Value("${app.account-deletion.identity-hash-key}")
+    private String identityHashKey;
 
     public AccountDeletionService(
             UserRepository userRepository,
@@ -132,6 +138,15 @@ public class AccountDeletionService {
         this.jdbcTemplate = jdbcTemplate;
         this.authTokenStore = authTokenStore;
         this.cacheService = cacheService;
+    }
+
+    @PostConstruct
+    void validateIdentityHashConfiguration() {
+        if (identityHashKey == null || identityHashKey.length() < 32) {
+            throw new IllegalStateException(
+                    "app.account-deletion.identity-hash-key must contain at least 32 characters"
+            );
+        }
     }
 
     @Transactional
@@ -148,6 +163,23 @@ public class AccountDeletionService {
             );
         }
 
+        return deleteAccountInternal(userId, true);
+    }
+
+    @Transactional
+    public void deleteAccountFromAppleNotification(Long userId) throws ChallengeSphereException {
+        if (userId == null) {
+            return;
+        }
+        User user = userRepository.findByIdForUpdate(userId).orElse(null);
+        if (user == null || user.getDeletedAt() != null || !Boolean.TRUE.equals(user.getActive())) {
+            return;
+        }
+        deleteAccountInternal(userId, false);
+    }
+
+    private AccountDeletionResponse deleteAccountInternal(Long userId, boolean queueAppleRevocation)
+            throws ChallengeSphereException {
         User user = userRepository.findByIdForUpdate(userId)
                 .orElseThrow(() -> new ChallengeSphereException("User not found", HttpStatus.NOT_FOUND, logger));
         if (user.getDeletedAt() != null || !Boolean.TRUE.equals(user.getActive())) {
@@ -158,9 +190,9 @@ public class AccountDeletionService {
                 UPSERT_REQUEST_SQL,
                 Long.class,
                 userId,
-                user.getEmailId(),
-                user.getUsername(),
-                user.getName()
+                pseudonymizeIdentity("email", user.getEmailId()),
+                pseudonymizeIdentity("username", user.getUsername()),
+                Timestamp.from(Instant.now().plus(IDENTITY_HASH_RETENTION))
         );
         if (requestId == null) {
             throw new ChallengeSphereException(
@@ -171,7 +203,10 @@ public class AccountDeletionService {
         }
 
         int queuedMedia = queueOwnedMediaReferences(requestId, userId);
-        deactivateOwnedChallenges(userId);
+        if (queueAppleRevocation) {
+            queueProviderTokenRevocations(userId);
+        }
+        deactivatePrivateCreatedChallenges(userId);
         redactSafetyRecords(userId);
         deleteAssociatedRows(userId);
         repairAggregateCounts();
@@ -192,8 +227,13 @@ public class AccountDeletionService {
         logger.info("Account deletion completed for userId={} with {} media object(s) queued", userId, queuedMedia);
         return new AccountDeletionResponse(
                 true,
-                "Account deleted. Your original email, username, and name are retained permanently "
-                        + "in a restricted deletion record. Stored media is queued for controlled cleanup.",
+                "Account deleted. ChallengeSphere keeps keyed, non-readable fingerprints of your "
+                        + "email and username for up to 90 days for deletion auditing and abuse prevention; "
+                        + "your original values and display name are not retained in that record. "
+                        + "Private challenges you created are taken offline, "
+                        + "while anonymized public challenges and their cover media remain available for their "
+                        + "participants. Profile, submission, and private-challenge media are queued for "
+                        + "controlled cleanup.",
                 queuedMedia
         );
     }
@@ -201,7 +241,6 @@ public class AccountDeletionService {
     private int queueOwnedMediaReferences(Long requestId, Long userId) {
         List<Map<String, Object>> rows = jdbcTemplate.queryForList(
                 MEDIA_REFERENCES_SQL,
-                userId,
                 userId,
                 userId,
                 userId
@@ -235,30 +274,65 @@ public class AccountDeletionService {
         return queued;
     }
 
+    private String pseudonymizeIdentity(String field, String rawValue) {
+        if (rawValue == null || rawValue.isBlank()) {
+            return null;
+        }
+        String normalized = Normalizer.normalize(rawValue.trim(), Normalizer.Form.NFKC)
+                .toLowerCase(Locale.ROOT);
+        try {
+            Mac mac = Mac.getInstance("HmacSHA256");
+            mac.init(new SecretKeySpec(
+                    identityHashKey.getBytes(StandardCharsets.UTF_8),
+                    "HmacSHA256"
+            ));
+            byte[] digest = mac.doFinal(
+                    (field + ":" + normalized).getBytes(StandardCharsets.UTF_8)
+            );
+            return HexFormat.of().formatHex(digest);
+        } catch (GeneralSecurityException exception) {
+            throw new IllegalStateException("Unable to pseudonymize deleted account identity", exception);
+        }
+    }
+
+    private void queueProviderTokenRevocations(Long userId) {
+        jdbcTemplate.update(
+                """
+                INSERT INTO challengesphere.provider_token_revocations (
+                    provider,
+                    encrypted_token,
+                    status,
+                    attempts,
+                    next_attempt_at
+                )
+                SELECT provider, encrypted_refresh_token, 'PENDING', 0, CURRENT_TIMESTAMP
+                FROM challengesphere.auth_identities
+                WHERE user_id = ?
+                  AND provider = 'APPLE'
+                  AND encrypted_refresh_token IS NOT NULL
+                  AND BTRIM(encrypted_refresh_token) <> ''
+                """,
+                userId
+        );
+    }
+
     private boolean isOwnedObjectKey(String objectKey, Long userId) {
         if (objectKey == null || objectKey.isBlank()) {
             return false;
         }
         return objectKey.startsWith("profiles/user_" + userId + "/")
                 || objectKey.startsWith("submissions/user_" + userId + "/")
-                || objectKey.startsWith("challenges/user_" + userId + "/");
+                || objectKey.startsWith("challenges/user_" + userId + "/covers/");
     }
 
-    private void deactivateOwnedChallenges(Long userId) {
+    private void deactivatePrivateCreatedChallenges(Long userId) {
         jdbcTemplate.update(
                 """
                 UPDATE challengesphere.challenges
-                SET title = 'Deleted challenge',
-                    description = 'Content removed because the creator deleted their account.',
-                    benefits = NULL,
-                    hashtags = NULL,
-                    categories = NULL,
-                    cover_photo_urls = NULL,
-                    private = TRUE,
-                    active = FALSE
-                WHERE creator_id = ? OR current_owner_id = ?
+                SET active = FALSE
+                WHERE private = TRUE
+                  AND creator_id = ?
                 """,
-                userId,
                 userId
         );
     }
@@ -269,6 +343,15 @@ public class AccountDeletionService {
                 UPDATE challengesphere.user_reports
                 SET details = NULL
                 WHERE reporter_user_id = ? OR reported_user_id = ?
+                """,
+                userId,
+                userId
+        );
+        jdbcTemplate.update(
+                """
+                UPDATE challengesphere.content_reports
+                SET details = NULL
+                WHERE reporter_user_id = ? OR target_owner_user_id = ?
                 """,
                 userId,
                 userId
@@ -365,6 +448,16 @@ public class AccountDeletionService {
 
     private void safeInvalidateCaches(Long userId) {
         try {
+            List<Long> challengeIds = jdbcTemplate.queryForList(
+                    """
+                    SELECT id
+                    FROM challengesphere.challenges
+                    WHERE creator_id = ?
+                    """,
+                    Long.class,
+                    userId
+            );
+            challengeIds.forEach(cacheService::clearChallengeCache);
             cacheService.invalidateAllUserCaches(userId);
             cacheService.invalidateAllFeeds();
             cacheService.invalidateRecentAndTrendingChallenges();

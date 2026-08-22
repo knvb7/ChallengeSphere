@@ -6,13 +6,16 @@ import com.google.api.client.http.javanet.NetHttpTransport;
 import com.google.api.client.json.gson.GsonFactory;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.ironside.challengesphere.api.request.AppleAuthRequest;
 import com.ironside.challengesphere.api.request.GoogleAuthRequest;
 import com.ironside.challengesphere.api.request.LoginRequest;
 import com.ironside.challengesphere.api.request.UserRegistrationRequest;
 import com.ironside.challengesphere.api.response.AuthResponse;
 import com.ironside.challengesphere.api.response.SelfUserResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
+import com.ironside.challengesphere.model.AuthIdentity;
 import com.ironside.challengesphere.model.User;
+import com.ironside.challengesphere.repository.AuthIdentityRepository;
 import com.ironside.challengesphere.repository.UserRepository;
 import com.ironside.challengesphere.security.AuthTokenStore;
 import com.ironside.challengesphere.security.JwtService;
@@ -69,6 +72,8 @@ public class AuthServiceImpl implements AuthService {
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
 
     private final UserRepository userRepository;
+    private final AuthIdentityRepository authIdentityRepository;
+    private final AppleSignInService appleSignInService;
     private final JwtService jwtService;
     private final AuthTokenStore authTokenStore;
     private final PasswordEncoder passwordEncoder;
@@ -86,6 +91,8 @@ public class AuthServiceImpl implements AuthService {
     private long accessTokenExpiryMs;
 
     public AuthServiceImpl(UserRepository userRepository,
+                           AuthIdentityRepository authIdentityRepository,
+                           AppleSignInService appleSignInService,
                            JwtService jwtService,
                            AuthTokenStore authTokenStore,
                            PasswordEncoder passwordEncoder,
@@ -93,12 +100,65 @@ public class AuthServiceImpl implements AuthService {
                            UserService userService,
                            MediaUrlService mediaUrlService) {
         this.userRepository = userRepository;
+        this.authIdentityRepository = authIdentityRepository;
+        this.appleSignInService = appleSignInService;
         this.jwtService = jwtService;
         this.authTokenStore = authTokenStore;
         this.passwordEncoder = passwordEncoder;
         this.redisCacheServiceImpl = redisCacheServiceImpl;
         this.userService = userService;
         this.mediaUrlService = mediaUrlService;
+    }
+
+    @Override
+    @Transactional
+    public AuthResponse loginWithApple(AppleAuthRequest request) throws ChallengeSphereException {
+        AppleSignInService.VerifiedAppleAccount account = appleSignInService.verifyAndExchange(request);
+        Optional<AuthIdentity> existingIdentity = authIdentityRepository.findByProviderAndSubject(
+                "APPLE",
+                account.subject()
+        );
+
+        String displayName = appleDisplayName(request.getFullName());
+        TextContentSafetyPolicy.requireAllowed(displayName, "display name");
+        Optional<User> emailUser = existingIdentity.isPresent() || !StringUtils.hasText(account.email())
+                ? Optional.empty()
+                : userRepository.findByEmailIdIgnoreCase(account.email());
+        boolean isNewUser = existingIdentity.isEmpty() && emailUser.isEmpty();
+
+        User user;
+        if (existingIdentity.isPresent()) {
+            user = existingIdentity.get().getUser();
+            ensureAccountMayAuthenticate(user);
+            user = backfillProviderName(user, displayName);
+        } else if (emailUser.isPresent()) {
+            user = emailUser.get();
+            ensureAccountMayAuthenticate(user);
+            user = backfillProviderName(user, displayName);
+        } else {
+            if (!StringUtils.hasText(account.email())) {
+                throw new ChallengeSphereException(
+                        "Apple did not share an email for this new account. Remove ChallengeSphere from Apple ID sign-in settings and try again.",
+                        HttpStatus.UNAUTHORIZED,
+                        logger
+                );
+            }
+            user = createAppleUser(account.email(), displayName);
+        }
+
+        saveProviderIdentity(
+                user,
+                "APPLE",
+                account.subject(),
+                account.email(),
+                account.encryptedRefreshToken()
+        );
+        user = touchProviderLogin(user);
+
+        logger.info("Apple sign-in success for userId={}", user.getId());
+        AuthResponse response = buildAuthResponse(user);
+        response.setIsNewUser(isNewUser);
+        return response;
     }
 
     @Override
@@ -120,8 +180,15 @@ public class AuthServiceImpl implements AuthService {
         String email = profile.email();
         String name = profile.name();
         String pictureUrl = profile.pictureUrl();
+        TextContentSafetyPolicy.requireAllowed(name, "display name");
 
-        Optional<User> googleUser = userRepository.findByGoogleId(googleId);
+        Optional<AuthIdentity> googleIdentity = authIdentityRepository.findByProviderAndSubject(
+                "GOOGLE",
+                googleId
+        );
+        Optional<User> googleUser = googleIdentity
+                .map(AuthIdentity::getUser)
+                .or(() -> userRepository.findByGoogleId(googleId));
         Optional<User> emailUser = googleUser.isPresent()
                 ? Optional.empty()
                 : userRepository.findByEmailId(email);
@@ -139,6 +206,9 @@ public class AuthServiceImpl implements AuthService {
         } else {
             user = createGoogleUser(email, googleId, name, pictureUrl);
         }
+
+        saveProviderIdentity(user, "GOOGLE", googleId, email, null);
+        user = touchProviderLogin(user);
 
         logger.info("Google sign-in success for userId={}", user.getId());
         AuthResponse response = buildAuthResponse(user);
@@ -487,7 +557,15 @@ public class AuthServiceImpl implements AuthService {
 
     private User backfillGoogleName(User user, String googleName) {
         if (!StringUtils.hasText(user.getName()) && StringUtils.hasText(googleName)) {
-            user.setName(normalizeGoogleName(googleName));
+            user.setName(normalizeDisplayName(googleName));
+            return userRepository.save(user);
+        }
+        return user;
+    }
+
+    private User backfillProviderName(User user, String displayName) {
+        if (!StringUtils.hasText(user.getName()) && StringUtils.hasText(displayName)) {
+            user.setName(normalizeDisplayName(displayName));
             return userRepository.save(user);
         }
         return user;
@@ -496,7 +574,7 @@ public class AuthServiceImpl implements AuthService {
     private User linkGoogleId(User user, String googleId, String googleName, String pictureUrl) {
         user.setGoogleId(googleId);
         if (!StringUtils.hasText(user.getName()) && StringUtils.hasText(googleName)) {
-            user.setName(normalizeGoogleName(googleName));
+            user.setName(normalizeDisplayName(googleName));
         }
         if (user.getProfilePicUrl() == null && pictureUrl != null) {
             user.setProfilePicUrl(pictureUrl);
@@ -511,7 +589,7 @@ public class AuthServiceImpl implements AuthService {
         user.setGoogleId(googleId);
         user.setProfilePicUrl(pictureUrl);
         user.setUsername(generateUsername(email, googleName));
-        user.setName(normalizeGoogleName(googleName));
+        user.setName(normalizeDisplayName(googleName));
         user.setHashedPassword(null);
         user.setCreatedAt(new Timestamp(System.currentTimeMillis()));
         user.setLastLoginAt(new Timestamp(System.currentTimeMillis()));
@@ -527,11 +605,93 @@ public class AuthServiceImpl implements AuthService {
         return userRepository.save(user);
     }
 
-    private String normalizeGoogleName(String googleName) {
-        if (!StringUtils.hasText(googleName)) {
+    private User createAppleUser(String email, String displayName) {
+        User user = new User();
+        user.setEmailId(email);
+        user.setUsername(generateUsername(email, displayName));
+        user.setName(normalizeDisplayName(displayName));
+        user.setHashedPassword(null);
+        user.setCreatedAt(new Timestamp(System.currentTimeMillis()));
+        user.setLastLoginAt(new Timestamp(System.currentTimeMillis()));
+        user.setGenuinenessScore(100);
+        user.setActive(true);
+        user.setChallengesCreated(0);
+        user.setChallengesAccepted(0);
+        user.setFollowers(0);
+        user.setFollowing(0);
+        user.setPremiumUser(0);
+        user.setNotifications(1);
+        logger.info("Creating new Apple-authenticated user");
+        return userRepository.save(user);
+    }
+
+    private AuthIdentity saveProviderIdentity(
+            User user,
+            String provider,
+            String subject,
+            String providerEmail,
+            String encryptedRefreshToken) throws ChallengeSphereException {
+        Optional<AuthIdentity> bySubject = authIdentityRepository.findByProviderAndSubject(provider, subject);
+        Optional<AuthIdentity> byUser = authIdentityRepository.findByUserIdAndProvider(user.getId(), provider);
+        AuthIdentity identity = bySubject.orElseGet(() -> byUser.orElseGet(AuthIdentity::new));
+
+        if (identity.getId() != null
+                && (!identity.getUser().getId().equals(user.getId())
+                || !identity.getSubject().equals(subject))) {
+            throw new ChallengeSphereException(
+                    "This sign-in identity is already linked to another account",
+                    HttpStatus.CONFLICT,
+                    logger
+            );
+        }
+
+        Instant now = Instant.now();
+        identity.setUser(user);
+        identity.setProvider(provider);
+        identity.setSubject(subject);
+        if (StringUtils.hasText(providerEmail)) {
+            identity.setProviderEmail(providerEmail.trim().toLowerCase(Locale.ROOT));
+        }
+        if (StringUtils.hasText(encryptedRefreshToken)) {
+            identity.setEncryptedRefreshToken(encryptedRefreshToken);
+        }
+        if (identity.getCreatedAt() == null) {
+            identity.setCreatedAt(now);
+        }
+        identity.setLastUsedAt(now);
+        return authIdentityRepository.save(identity);
+    }
+
+    private User touchProviderLogin(User user) {
+        user.setLastLoginAt(new Timestamp(System.currentTimeMillis()));
+        return userRepository.save(user);
+    }
+
+    private String appleDisplayName(AppleAuthRequest.FullName fullName) {
+        if (fullName == null) {
             return null;
         }
-        String normalized = googleName.trim().replaceAll("\\s+", " ");
+        List<String> nameParts = java.util.stream.Stream.of(
+                fullName.getNamePrefix(),
+                fullName.getGivenName(),
+                fullName.getMiddleName(),
+                fullName.getFamilyName(),
+                fullName.getNameSuffix()
+        ).filter(StringUtils::hasText).map(String::trim).toList();
+        if (!nameParts.isEmpty()) {
+            return String.join(" ", nameParts);
+        }
+        return fullName.getNickname();
+    }
+
+    private String normalizeDisplayName(String displayName) {
+        if (!StringUtils.hasText(displayName)) {
+            return null;
+        }
+        String normalized = displayName
+                .replaceAll("[\\p{Cntrl}<>]", "")
+                .trim()
+                .replaceAll("\\s+", " ");
         return normalized.length() <= 120 ? normalized : normalized.substring(0, 120).trim();
     }
 

@@ -181,7 +181,11 @@ public class GloryServiceImpl implements GloryService {
             throw new ChallengeSphereException("Not authorized to view glories for this submission",
                     HttpStatus.FORBIDDEN, logger);
         }
-        Page<Glory> glories = gloryRepository.findActiveBySubmissionId(submissionId, pageable);
+        Page<Glory> glories = gloryRepository.findActiveBySubmissionIdForViewer(
+                submissionId,
+                callerId,
+                pageable
+        );
         List<Long> userIds = glories.getContent().stream()
                 .map(Glory::getUserId)
                 .distinct()

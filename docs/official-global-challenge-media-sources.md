@@ -22,6 +22,11 @@ attribution is retained here for auditability.
 
 License reference: [Unsplash License](https://unsplash.com/license).
 
+Migration `V52__add_official_challenge_covers.sql` maps every curated template to
+one of these controlled object keys, repairs existing official cohorts that have
+no cover, and installs a trigger so each future rotating cohort receives its
+template cover when it is published.
+
 ## Superseded Stored Object
 
 `official/global-challenges/official-fun-social.jpg` was initially uploaded

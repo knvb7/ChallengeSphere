@@ -4,9 +4,11 @@ import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.model.ModerationFlag;
 import com.ironside.challengesphere.model.Submission;
 import com.ironside.challengesphere.model.User;
+import com.ironside.challengesphere.model.UserReport;
 import com.ironside.challengesphere.repository.ModerationFlagRepository;
 import com.ironside.challengesphere.repository.SubmissionRepository;
 import com.ironside.challengesphere.repository.UserRepository;
+import com.ironside.challengesphere.repository.UserReportRepository;
 import com.ironside.challengesphere.security.AuthTokenStore;
 import io.swagger.v3.oas.annotations.Hidden;
 import org.apache.logging.log4j.LogManager;
@@ -20,9 +22,11 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 import com.ironside.challengesphere.security.SecurityAccess;
 import com.ironside.challengesphere.security.UserPrincipal;
+import com.ironside.challengesphere.service.impl.ContentReportService;
 
 import java.sql.Timestamp;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -40,6 +44,9 @@ public class AdminController {
     private UserRepository userRepository;
 
     @Autowired
+    private UserReportRepository userReportRepository;
+
+    @Autowired
     private ModerationFlagRepository moderationFlagRepository;
 
     @Autowired
@@ -47,6 +54,66 @@ public class AdminController {
 
     @Autowired
     private AuthTokenStore authTokenStore;
+
+    @Autowired
+    private ContentReportService contentReportService;
+
+    @GetMapping("/content-reports")
+    public ResponseEntity<List<Map<String, Object>>> contentReports() {
+        return ResponseEntity.ok(contentReportService.openReports());
+    }
+
+    @PostMapping("/content-reports/{reportId}/resolve")
+    public ResponseEntity<Map<String, Object>> resolveContentReport(
+            @AuthenticationPrincipal UserPrincipal principal,
+            @PathVariable Long reportId,
+            @RequestParam String resolution) throws ChallengeSphereException {
+        Long reviewerId = SecurityAccess.requireUserId(principal);
+        return ResponseEntity.ok(contentReportService.resolve(reportId, reviewerId, resolution));
+    }
+
+    @GetMapping("/user-reports")
+    public ResponseEntity<List<UserReport>> userReports() {
+        return ResponseEntity.ok(userReportRepository.findByStatusOrderByCreatedAtAsc("OPEN"));
+    }
+
+    @PostMapping("/user-reports/{reportId}/resolve")
+    @Transactional
+    public ResponseEntity<Map<String, Object>> resolveUserReport(
+            @AuthenticationPrincipal UserPrincipal principal,
+            @PathVariable Long reportId,
+            @RequestParam String resolution) throws ChallengeSphereException {
+        Long reviewerId = SecurityAccess.requireUserId(principal);
+        String normalized = resolution == null ? "" : resolution.trim().toUpperCase(Locale.ROOT);
+        if (!List.of("DISMISSED", "ACTIONED", "BANNED_USER").contains(normalized)) {
+            throw new ChallengeSphereException(
+                    "resolution must be DISMISSED, ACTIONED, or BANNED_USER",
+                    HttpStatus.BAD_REQUEST,
+                    logger
+            );
+        }
+        UserReport report = userReportRepository.findById(reportId)
+                .orElseThrow(() -> new ChallengeSphereException("Report not found", HttpStatus.NOT_FOUND, logger));
+        if (!"OPEN".equals(report.getStatus())) {
+            throw new ChallengeSphereException("Report already resolved", HttpStatus.CONFLICT, logger);
+        }
+        if ("BANNED_USER".equals(normalized)) {
+            User user = userRepository.findById(report.getReportedUserId()).orElse(null);
+            if (user != null) {
+                user.setActive(false);
+                user.setBannedAt(new Timestamp(System.currentTimeMillis()));
+                user.setBanReason("User report " + reportId);
+                userRepository.save(user);
+                authTokenStore.revokeAllForUser(user.getId());
+            }
+        }
+        report.setStatus("RESOLVED");
+        report.setResolution(normalized);
+        report.setReviewedBy(reviewerId);
+        report.setReviewedAt(new Timestamp(System.currentTimeMillis()));
+        userReportRepository.save(report);
+        return ResponseEntity.ok(Map.of("reportId", reportId, "resolution", normalized));
+    }
 
     /**
      * Reactivate a user that was banned (by moderation or otherwise).
@@ -94,7 +161,7 @@ public class AdminController {
             throw new ChallengeSphereException("Flag already resolved", HttpStatus.CONFLICT, logger);
         }
 
-        String res = resolution == null ? "" : resolution.toUpperCase();
+        String res = resolution == null ? "" : resolution.toUpperCase(Locale.ROOT);
         switch (res) {
             case "APPROVED" -> {
                 Submission s = submissionRepository.findById(flag.getSubmissionId()).orElse(null);
