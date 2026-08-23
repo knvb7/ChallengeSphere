@@ -45,6 +45,7 @@ import com.ironside.challengesphere.api.response.ChallengeParticipantsResponse;
 import com.ironside.challengesphere.api.response.ChallengeParticipationPolicyResponse;
 import com.ironside.challengesphere.api.response.ChallengeProgressResponse;
 import com.ironside.challengesphere.api.response.ChallengesByHashtagResponse;
+import com.ironside.challengesphere.api.response.CursorPageResponse;
 import com.ironside.challengesphere.api.response.JoinChallengeResponse;
 import com.ironside.challengesphere.api.response.LeaveChallengeResponse;
 import com.ironside.challengesphere.api.response.MyChallengesResponse;
@@ -83,7 +84,7 @@ public class ChallengeController {
     public ResponseEntity<ChallengeCreateResponse> createChallenge(
             @AuthenticationPrincipal UserPrincipal principal,
             @Valid @RequestBody ChallengeCreateRequest request) throws ChallengeSphereException {
-        request.setCreatorUserId(SecurityAccess.requireUserId(principal));
+        request.setCreatorUserId(SecurityAccess.requireUserId(principal).toString());
         ChallengeCreateResponse response = challengeService.createChallenge(request);
         return ResponseEntity.ok(response);
     }
@@ -91,16 +92,16 @@ public class ChallengeController {
     @GetMapping("/user/{userId}")
     public ResponseEntity<UserChallengesResponse> getUserChallenges(
             @AuthenticationPrincipal UserPrincipal principal,
-            @PathVariable Long userId,
-            @RequestParam(required = false) Long currentUserId,
-            @RequestParam(defaultValue = "1") Integer page,
-            @RequestParam(defaultValue = "10") Integer pageSize,
+            @PathVariable String userId,
+            @RequestParam(required = false) String currentUserId,
+            @RequestParam(defaultValue = "10") Integer limit,
+            @RequestParam(required = false) String cursor,
             @RequestParam(required = false) Boolean active) throws ChallengeSphereException {
         GetUserChallengesRequest request = new GetUserChallengesRequest();
         request.setUserId(userId);
-        request.setCurrentUserId(SecurityAccess.requireUserId(principal));
-        request.setPage(page);
-        request.setPageSize(pageSize);
+        request.setCurrentUserId(SecurityAccess.requireUserId(principal).toString());
+        request.setLimit(limit);
+        request.setCursor(cursor);
         request.setActive(active);
         UserChallengesResponse response = challengeService.getUserChallenges(request);
         return ResponseEntity.ok(response);
@@ -109,23 +110,23 @@ public class ChallengeController {
     @GetMapping("/creator/{creatorId}/public")
     public ResponseEntity<UserChallengesResponse> getPublicChallengesByCreator(
             @AuthenticationPrincipal UserPrincipal principal,
-            @PathVariable Long creatorId,
-            @RequestParam(defaultValue = "1") Integer page,
-            @RequestParam(defaultValue = "10") Integer pageSize) throws ChallengeSphereException {
+            @PathVariable String creatorId,
+            @RequestParam(defaultValue = "10") Integer limit,
+            @RequestParam(required = false) String cursor) throws ChallengeSphereException {
         return ResponseEntity.ok(challengeService.getPublicChallengesByCreator(
                 creatorId,
-                page,
-                pageSize,
-                SecurityAccess.requireUserId(principal)
+                SecurityAccess.requireUserId(principal).toString(),
+                limit,
+                cursor
         ));
     }
 
     @PostMapping("/batch")
     public ResponseEntity<List<Challenge>> getChallengesByIds(
             @AuthenticationPrincipal UserPrincipal principal,
-            @RequestBody @Size(max = 100, message = "A batch can contain at most 100 challenge ids") List<Long> ids)
+            @RequestBody @Size(max = 100, message = "A batch can contain at most 100 challenge ids") List<String> ids)
             throws ChallengeSphereException {
-        List<Challenge> challenges = challengeService.getChallengeByIds(ids, SecurityAccess.requireUserId(principal));
+        List<Challenge> challenges = challengeService.getChallengeByIds(ids, SecurityAccess.requireUserId(principal).toString());
         return ResponseEntity.ok(challenges);
     }
 
@@ -139,8 +140,8 @@ public class ChallengeController {
     @DeleteMapping("/{challengeId}")
     public ResponseEntity<Void> deleteChallenge(
             @AuthenticationPrincipal UserPrincipal principal,
-            @PathVariable Long challengeId) throws ChallengeSphereException {
-        Long actorUserId = SecurityAccess.requireUserId(principal);
+            @PathVariable String challengeId) throws ChallengeSphereException {
+        String actorUserId = SecurityAccess.requireUserId(principal).toString();
         challengeService.deleteChallenge(challengeId, actorUserId);
         return ResponseEntity.ok().build();
     }
@@ -157,7 +158,7 @@ public class ChallengeController {
     public ResponseEntity<JoinChallengeResponse> joinChallenge(
             @AuthenticationPrincipal UserPrincipal principal,
             @Valid @RequestBody JoinChallengeRequest request) throws ChallengeSphereException {
-        Long actorUserId = SecurityAccess.requireUserId(principal);
+        String actorUserId = SecurityAccess.requireUserId(principal).toString();
         request.setUserIds(List.of(actorUserId));
         JoinChallengeResponse response = challengeService.joinChallenge(request);
         return ResponseEntity.ok(response);
@@ -166,9 +167,9 @@ public class ChallengeController {
     @PostMapping("/{challengeId}/invites")
     public ResponseEntity<Void> inviteChallengeUsers(
             @AuthenticationPrincipal UserPrincipal principal,
-            @PathVariable Long challengeId,
+            @PathVariable String challengeId,
             @Valid @RequestBody InviteChallengeUsersRequest request) throws ChallengeSphereException {
-        Long actorUserId = SecurityAccess.requireUserId(principal);
+        String actorUserId = SecurityAccess.requireUserId(principal).toString();
         challengeService.inviteChallengeUsers(challengeId, actorUserId, request.getInvitedUserIds());
         return ResponseEntity.accepted().build();
     }
@@ -185,7 +186,7 @@ public class ChallengeController {
     public ResponseEntity<LeaveChallengeResponse> leaveChallenge(
             @AuthenticationPrincipal UserPrincipal principal,
             @Valid @RequestBody LeaveChallengeRequest request) throws ChallengeSphereException {
-        Long actorUserId = SecurityAccess.requireUserId(principal);
+        String actorUserId = SecurityAccess.requireUserId(principal).toString();
         request.setUserIds(List.of(actorUserId));
         LeaveChallengeResponse response = challengeService.leaveChallenge(request);
         return ResponseEntity.ok(response);
@@ -194,10 +195,10 @@ public class ChallengeController {
     @PostMapping("/{challengeId}/participants/{participantUserId}/remove")
     public ResponseEntity<LeaveChallengeResponse> removeParticipant(
             @AuthenticationPrincipal UserPrincipal principal,
-            @PathVariable Long challengeId,
-            @PathVariable Long participantUserId,
+            @PathVariable String challengeId,
+            @PathVariable String participantUserId,
             @Valid @RequestBody RemoveParticipantRequest request) throws ChallengeSphereException {
-        Long actorUserId = SecurityAccess.requireUserId(principal);
+        String actorUserId = SecurityAccess.requireUserId(principal).toString();
         LeaveChallengeResponse response = challengeService.removeParticipant(
                 challengeId,
                 actorUserId,
@@ -209,10 +210,14 @@ public class ChallengeController {
     @GetMapping("/{challengeId}/participants")
     public ResponseEntity<ChallengeParticipantsResponse> getChallengeParticipants(
             @AuthenticationPrincipal UserPrincipal principal,
-            @PathVariable Long challengeId) throws ChallengeSphereException {
+            @PathVariable String challengeId,
+            @RequestParam(defaultValue = "50") int limit,
+            @RequestParam(required = false) String cursor) throws ChallengeSphereException {
         GetChallengeParticipantsRequest request = new GetChallengeParticipantsRequest();
         request.setChallengeId(challengeId);
-        request.setCurrentUserId(SecurityAccess.requireUserId(principal));
+        request.setCurrentUserId(SecurityAccess.requireUserId(principal).toString());
+        request.setLimit(limit);
+        request.setCursor(cursor);
         ChallengeParticipantsResponse response = challengeService.getChallengeParticipants(request);
         return ResponseEntity.ok(response);
     }
@@ -221,15 +226,15 @@ public class ChallengeController {
     public ResponseEntity<ChallengesByHashtagResponse> getChallengesByHashtag(
             @AuthenticationPrincipal UserPrincipal principal,
             @RequestParam @Size(max = 20, message = "At most 20 hashtags may be requested") List<String> hashtags,
-            @RequestParam(required = false) Long currentUserId,
-            @RequestParam(defaultValue = "1") int page,
-            @RequestParam(defaultValue = "10") int pageSize) throws ChallengeSphereException {
+            @RequestParam(required = false) String currentUserId,
+            @RequestParam(defaultValue = "10") int limit,
+            @RequestParam(required = false) String cursor) throws ChallengeSphereException {
 
         GetChallengesByHashtagRequest request = new GetChallengesByHashtagRequest();
         request.setHashtags(hashtags);
-        request.setCurrentUserId(SecurityAccess.requireUserId(principal));
-        request.setPage(page);
-        request.setPageSize(pageSize);
+        request.setCurrentUserId(SecurityAccess.requireUserId(principal).toString());
+        request.setLimit(limit);
+        request.setCursor(cursor);
 
         ChallengesByHashtagResponse response = challengeService.getChallengesByHashtag(request);
         return ResponseEntity.ok(response);
@@ -238,15 +243,15 @@ public class ChallengeController {
     @GetMapping("/popular")
     public ResponseEntity<PopularChallengesResponse> getPopularChallenges(
             @AuthenticationPrincipal UserPrincipal principal,
-            @RequestParam(required = false) Long currentUserId,
+            @RequestParam(required = false) String currentUserId,
             @RequestParam(required = false) Boolean active,
             @RequestParam(required = false) String startDate,
             @RequestParam(required = false) String endDate,
-            @RequestParam(defaultValue = "1") int page,
-            @RequestParam(defaultValue = "10") int pageSize) throws ChallengeSphereException {
+            @RequestParam(defaultValue = "10") int limit,
+            @RequestParam(required = false) String cursor) throws ChallengeSphereException {
 
         GetPopularChallengesRequest request = new GetPopularChallengesRequest();
-        request.setCurrentUserId(SecurityAccess.requireUserId(principal));
+        request.setCurrentUserId(SecurityAccess.requireUserId(principal).toString());
         request.setActive(active);
         if (startDate != null && !startDate.isEmpty()) {
             request.setStartDate(java.time.LocalDate.parse(startDate));
@@ -254,8 +259,8 @@ public class ChallengeController {
         if (endDate != null && !endDate.isEmpty()) {
             request.setEndDate(java.time.LocalDate.parse(endDate));
         }
-        request.setPage(page);
-        request.setPageSize(pageSize);
+        request.setLimit(limit);
+        request.setCursor(cursor);
 
         PopularChallengesResponse response = challengeService.getPopularChallenges(request);
         return ResponseEntity.ok(response);
@@ -264,33 +269,33 @@ public class ChallengeController {
     @GetMapping("/recent")
     public ResponseEntity<RecentChallengesResponse> getRecentChallenges(
             @AuthenticationPrincipal UserPrincipal principal,
-            @RequestParam(required = false) Long currentUserId,
-            @RequestParam(defaultValue = "1") int page,
-            @RequestParam(defaultValue = "10") int pageSize) throws ChallengeSphereException {
+            @RequestParam(required = false) String currentUserId,
+            @RequestParam(defaultValue = "10") int limit,
+            @RequestParam(required = false) String cursor) throws ChallengeSphereException {
         
-        Long actorUserId = SecurityAccess.requireUserId(principal);
-        logger.info("GET /api/v1/challenges/recent - currentUserId: {}, page: {}, pageSize: {}",
-                actorUserId, page, pageSize);
-        RecentChallengesResponse response = challengeService.getRecentChallenges(page, pageSize, actorUserId);
+        String actorUserId = SecurityAccess.requireUserId(principal).toString();
+        logger.info("GET /api/v1/challenges/recent - currentUserId: {}, limit: {}",
+                actorUserId, limit);
+        RecentChallengesResponse response = challengeService.getRecentChallenges(actorUserId, limit, cursor);
         return ResponseEntity.ok(response);
     }
 
     @GetMapping("/trending/ids")
-    public ResponseEntity<List<Long>> getTrendingChallengeIds(
-            @RequestParam(defaultValue = "10") int limit) {
+    public ResponseEntity<CursorPageResponse<String>> getTrendingChallengeIds(
+            @RequestParam(defaultValue = "10") int limit,
+            @RequestParam(required = false) String cursor) {
 
         logger.info("GET /api/v1/challenges/trending/ids - limit: {}", limit);
-        List<Long> trendingIds = challengeService.getTrendingChallengeIds(limit);
-        return ResponseEntity.ok(trendingIds);
+        return ResponseEntity.ok(challengeService.getTrendingChallengeIds(limit, cursor));
     }
 
     @PutMapping("/{id}")
     public ResponseEntity<Challenge> updateChallenge(
             @AuthenticationPrincipal UserPrincipal principal,
-            @PathVariable Long id,
+            @PathVariable String id,
             @Valid @RequestBody ChallengeUpdateRequest request) throws ChallengeSphereException {
         logger.info("PUT /api/v1/challenges/{}", id);
-        Long actorUserId = SecurityAccess.requireUserId(principal);
+        String actorUserId = SecurityAccess.requireUserId(principal).toString();
         Challenge updated = challengeService.updateChallenge(id, request, actorUserId, false);
         return ResponseEntity.ok(updated);
     }
@@ -298,19 +303,19 @@ public class ChallengeController {
     @GetMapping("/{challengeId}/detail")
     public ResponseEntity<ChallengeDetailResponse> getChallengeDetail(
             @AuthenticationPrincipal UserPrincipal principal,
-            @PathVariable Long challengeId,
-            @RequestParam(required = false) Long currentUserId) throws ChallengeSphereException {
+            @PathVariable String challengeId,
+            @RequestParam(required = false) String currentUserId) throws ChallengeSphereException {
         logger.info("GET /api/v1/challenges/{}/detail", challengeId);
-        return ResponseEntity.ok(challengeService.getChallengeDetail(challengeId, SecurityAccess.requireUserId(principal)));
+        return ResponseEntity.ok(challengeService.getChallengeDetail(challengeId, SecurityAccess.requireUserId(principal).toString()));
     }
 
     @GetMapping("/{challengeId}/my-progress")
     public ResponseEntity<ChallengeProgressResponse> getChallengeProgress(
             @AuthenticationPrincipal UserPrincipal principal,
-            @PathVariable Long challengeId,
-            @RequestParam(required = false) Long userId,
+            @PathVariable String challengeId,
+            @RequestParam(required = false) String userId,
             @RequestParam(name = "timezone", required = false) String timezone) throws ChallengeSphereException {
-        Long actorUserId = SecurityAccess.requireUserId(principal);
+        String actorUserId = SecurityAccess.requireUserId(principal).toString();
         LocalDate currentDate = resolveCurrentDate(timezone);
         logger.info("GET /api/v1/challenges/{}/my-progress?userId={} localDate={}",
                 challengeId, actorUserId, currentDate);
@@ -321,8 +326,8 @@ public class ChallengeController {
     @PutMapping("/{challengeId}/favorite")
     public ResponseEntity<ChallengeFavoriteResponse> favoriteChallenge(
             @AuthenticationPrincipal UserPrincipal principal,
-            @PathVariable Long challengeId) throws ChallengeSphereException {
-        Long actorUserId = SecurityAccess.requireUserId(principal);
+            @PathVariable String challengeId) throws ChallengeSphereException {
+        String actorUserId = SecurityAccess.requireUserId(principal).toString();
         return ResponseEntity.ok(challengeService.setChallengeFavorite(
                 challengeId, actorUserId, true));
     }
@@ -330,8 +335,8 @@ public class ChallengeController {
     @DeleteMapping("/{challengeId}/favorite")
     public ResponseEntity<ChallengeFavoriteResponse> unfavoriteChallenge(
             @AuthenticationPrincipal UserPrincipal principal,
-            @PathVariable Long challengeId) throws ChallengeSphereException {
-        Long actorUserId = SecurityAccess.requireUserId(principal);
+            @PathVariable String challengeId) throws ChallengeSphereException {
+        String actorUserId = SecurityAccess.requireUserId(principal).toString();
         return ResponseEntity.ok(challengeService.setChallengeFavorite(
                 challengeId, actorUserId, false));
     }
@@ -339,25 +344,25 @@ public class ChallengeController {
     @GetMapping("/my")
     public ResponseEntity<MyChallengesResponse> getMyChallenges(
             @AuthenticationPrincipal UserPrincipal principal,
-            @RequestParam(required = false) Long userId,
+            @RequestParam(required = false) String userId,
             @RequestParam(required = false) String status,
-            @RequestParam(defaultValue = "1") int page,
-            @RequestParam(defaultValue = "10") int pageSize,
+            @RequestParam(defaultValue = "10") int limit,
+            @RequestParam(required = false) String cursor,
             @RequestParam(name = "timezone", required = false) String timezone) throws ChallengeSphereException {
-        Long actorUserId = SecurityAccess.requireUserId(principal);
-        Long targetUserId = userId != null ? userId : actorUserId;
+        String actorUserId = SecurityAccess.requireUserId(principal).toString();
+        String targetUserId = userId != null ? userId : actorUserId;
         LocalDate currentDate = resolveCurrentDate(timezone);
-        logger.info("GET /api/v1/challenges/my?userId={}&status={}&page={}&pageSize={} actor={} localDate={}",
-                targetUserId, status, page, pageSize, actorUserId, currentDate);
+        logger.info("GET /api/v1/challenges/my?userId={}&status={}&limit={} actor={} localDate={}",
+                targetUserId, status, limit, actorUserId, currentDate);
         return ResponseEntity.ok(challengeService.getMyChallenges(
-                targetUserId, actorUserId, status, page, pageSize, currentDate));
+                targetUserId, actorUserId, status, limit, cursor, currentDate));
     }
 
     @PostMapping("/presigned-urls")
     public ResponseEntity<PresignedUrlsResponse> generateChallengePresignedUrls(
             @AuthenticationPrincipal UserPrincipal principal,
             @Valid @RequestBody GeneratePresignedUrlsRequest request) throws ChallengeSphereException {
-        request.setUserId(SecurityAccess.requireUserId(principal));
+        request.setUserId(SecurityAccess.requireUserId(principal).toString());
         logger.info("POST /api/v1/challenges/presigned-urls for userId={}", request.getUserId());
         return ResponseEntity.ok(challengeService.generateChallengePresignedUrls(request));
     }

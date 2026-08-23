@@ -12,8 +12,8 @@ import java.sql.Timestamp;
 @NoArgsConstructor
 @AllArgsConstructor
 public class PeerNudgeResponse {
-    private Long challengeId;
-    private Long recipientUserId;
+    private String challengeId;
+    private String recipientUserId;
     private Timestamp sentAt;
     private Timestamp nextAllowedAt;
     private String message;

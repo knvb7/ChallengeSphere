@@ -2,6 +2,7 @@ package com.ironside.challengesphere.api.response;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.ironside.challengesphere.model.Challenge;
+import lombok.EqualsAndHashCode;
 import lombok.Data;
 
 import java.sql.Timestamp;
@@ -9,16 +10,13 @@ import java.time.LocalDate;
 import java.util.List;
 
 @Data
-public class MyChallengesResponse {
+@EqualsAndHashCode(callSuper = true)
+public class MyChallengesResponse extends CursorResponse {
     private List<ChallengeSummary> challenges;
-    private int totalChallenges;
-    private int page;
-    private int pageSize;
-    private int totalPages;
 
     @Data
     public static class ChallengeSummary {
-        private Long id;
+        private String id;
         private String hashtags;
         private String categories;
         private String title;
@@ -28,10 +26,10 @@ public class MyChallengesResponse {
         private LocalDate startDate;
         private Boolean active;
         private Timestamp createdAt;
-        private Long creatorId;
+        private String creatorId;
         private String creatorUsername;
         private String creatorProfilePicUrl;
-        private Long currentOwnerId;
+        private String currentOwnerId;
         private Integer numberOfDays;
         private String challengeMode;
         private String proofMode;
@@ -54,7 +52,7 @@ public class MyChallengesResponse {
 
         public static ChallengeSummary from(Challenge challenge) {
             ChallengeSummary summary = new ChallengeSummary();
-            summary.id = challenge.getId();
+            summary.id = stringId(challenge.getId());
             summary.hashtags = challenge.getHashtags();
             summary.categories = challenge.getCategories();
             summary.title = challenge.getTitle();
@@ -64,10 +62,10 @@ public class MyChallengesResponse {
             summary.startDate = challenge.getStartDate();
             summary.active = challenge.getActive();
             summary.createdAt = challenge.getCreatedAt();
-            summary.creatorId = challenge.getCreatorId();
+            summary.creatorId = stringId(challenge.getCreatorId());
             summary.creatorUsername = challenge.getCreatorUsername();
             summary.creatorProfilePicUrl = challenge.getCreatorProfilePicUrl();
-            summary.currentOwnerId = challenge.getCurrentOwnerId();
+            summary.currentOwnerId = stringId(challenge.getCurrentOwnerId());
             summary.numberOfDays = challenge.getNumberOfDays();
             summary.challengeMode = challenge.getChallengeMode();
             summary.proofMode = challenge.getProofMode();
@@ -91,13 +89,19 @@ public class MyChallengesResponse {
         }
     }
 
-    public static MyChallengesResponse create(List<ChallengeSummary> challenges, int page, int pageSize, int totalCount) {
+    public static MyChallengesResponse create(
+            List<ChallengeSummary> challenges,
+            String nextCursor,
+            boolean hasMore
+    ) {
         MyChallengesResponse r = new MyChallengesResponse();
         r.challenges = challenges;
-        r.page = page;
-        r.pageSize = pageSize;
-        r.totalChallenges = totalCount;
-        r.totalPages = pageSize > 0 ? (int) Math.ceil((double) totalCount / pageSize) : 0;
+        r.setNextCursor(nextCursor);
+        r.setHasMore(hasMore);
         return r;
+    }
+
+    private static String stringId(Object value) {
+        return value == null ? null : value.toString();
     }
 }

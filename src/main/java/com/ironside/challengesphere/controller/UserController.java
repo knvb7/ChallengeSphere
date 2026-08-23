@@ -7,6 +7,7 @@ import com.ironside.challengesphere.api.request.GetUserPayload;
 import com.ironside.challengesphere.api.request.UpdateUserRequest;
 import com.ironside.challengesphere.api.request.DeleteAccountRequest;
 import com.ironside.challengesphere.api.response.AccountDeletionResponse;
+import com.ironside.challengesphere.api.response.CursorPageResponse;
 import com.ironside.challengesphere.api.request.UserRegistrationRequest;
 import com.ironside.challengesphere.api.response.ToggleUserActivationResponse;
 import com.ironside.challengesphere.api.response.FollowActionResponse;
@@ -35,7 +36,6 @@ import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 
 import jakarta.validation.Valid;
-import java.util.List;
 import java.util.Map;
 
 @RestController
@@ -74,12 +74,12 @@ public class UserController {
     @GetMapping
     public ResponseEntity<PublicUserResponse> getUser(
             @AuthenticationPrincipal UserPrincipal principal,
-            @RequestParam(required = false) Long userId,
-            @RequestParam(required = false) Long currentUserId,
+            @RequestParam(required = false) String userId,
+            @RequestParam(required = false) String currentUserId,
             @RequestParam(required = false) String emailId,
             @RequestParam(required = false) String phone,
             @RequestParam(required = false) String username) throws ChallengeSphereException {
-        Long actorUserId = SecurityAccess.requireUserId(principal);
+        String actorUserId = SecurityAccess.requireUserId(principal).toString();
         if ((emailId != null && !emailId.isBlank()) || (phone != null && !phone.isBlank())) {
             userId = actorUserId;
             emailId = null;
@@ -100,20 +100,20 @@ public class UserController {
     public ResponseEntity<UserSearchResponse> searchUsers(
             @AuthenticationPrincipal UserPrincipal principal,
             @RequestParam String query,
-            @RequestParam(defaultValue = "1") Integer page,
-            @RequestParam(defaultValue = "10") Integer pageSize) throws ChallengeSphereException {
-        Long actorUserId = SecurityAccess.requireUserId(principal);
-        UserSearchResponse response = userService.searchUsers(query, actorUserId, page, pageSize);
+            @RequestParam(defaultValue = "10") Integer limit,
+            @RequestParam(required = false) String cursor) throws ChallengeSphereException {
+        String actorUserId = SecurityAccess.requireUserId(principal).toString();
+        UserSearchResponse response = userService.searchUsers(query, actorUserId, limit, cursor);
         return ResponseEntity.ok(response);
     }
 
     @GetMapping("/suggestions")
     public ResponseEntity<UserSearchResponse> getSuggestedUsers(
             @AuthenticationPrincipal UserPrincipal principal,
-            @RequestParam(defaultValue = "1") Integer page,
-            @RequestParam(defaultValue = "10") Integer pageSize) throws ChallengeSphereException {
-        Long actorUserId = SecurityAccess.requireUserId(principal);
-        UserSearchResponse response = userService.getSuggestedUsers(actorUserId, page, pageSize);
+            @RequestParam(defaultValue = "10") Integer limit,
+            @RequestParam(required = false) String cursor) throws ChallengeSphereException {
+        String actorUserId = SecurityAccess.requireUserId(principal).toString();
+        UserSearchResponse response = userService.getSuggestedUsers(actorUserId, limit, cursor);
         return ResponseEntity.ok(response);
     }
 
@@ -127,7 +127,7 @@ public class UserController {
     public ResponseEntity<SelfUserResponse> updateUserDetails(
             @AuthenticationPrincipal UserPrincipal principal,
             @Valid @RequestBody UpdateUserRequest updateUserRequest) throws ChallengeSphereException {
-        Long actorUserId = SecurityAccess.requireUserId(principal);
+        String actorUserId = SecurityAccess.requireUserId(principal).toString();
         User updatedUser = userService.updateUserDetails(actorUserId, updateUserRequest);
         return ResponseEntity.ok(SelfUserResponse.from(updatedUser));
     }
@@ -136,7 +136,7 @@ public class UserController {
     public ResponseEntity<AccountDeletionResponse> deleteOwnAccount(
             @AuthenticationPrincipal UserPrincipal principal,
             @Valid @RequestBody DeleteAccountRequest request) throws ChallengeSphereException {
-        Long actorUserId = SecurityAccess.requireUserId(principal);
+        String actorUserId = SecurityAccess.requireUserId(principal).toString();
         return ResponseEntity.ok(
                 accountDeletionService.deleteAccount(actorUserId, request.getConfirmation())
         );
@@ -149,9 +149,9 @@ public class UserController {
     @PostMapping("/follow")
     public ResponseEntity<FollowActionResponse> followUser(
             @AuthenticationPrincipal UserPrincipal principal,
-            @RequestParam(required = false) Long followerId,
-            @RequestParam Long followingId) throws ChallengeSphereException {
-        Long actorUserId = SecurityAccess.requireUserId(principal);
+            @RequestParam(required = false) String followerId,
+            @RequestParam String followingId) throws ChallengeSphereException {
+        String actorUserId = SecurityAccess.requireUserId(principal).toString();
         if (followerId != null) {
             SecurityAccess.requireSelf(principal, followerId);
         }
@@ -163,8 +163,8 @@ public class UserController {
     @GetMapping("/{userId}/relationship")
     public ResponseEntity<FollowRelationshipResponse> getFollowRelationship(
             @AuthenticationPrincipal UserPrincipal principal,
-            @PathVariable Long userId) throws ChallengeSphereException {
-        Long actorUserId = SecurityAccess.requireUserId(principal);
+            @PathVariable String userId) throws ChallengeSphereException {
+        String actorUserId = SecurityAccess.requireUserId(principal).toString();
         FollowRelationshipResponse response = userService.getFollowRelationship(actorUserId, userId);
         return ResponseEntity.ok(response);
     }
@@ -176,9 +176,9 @@ public class UserController {
     @PostMapping("/unfollow")
     public ResponseEntity<FollowActionResponse> unfollowUser(
             @AuthenticationPrincipal UserPrincipal principal,
-            @RequestParam(required = false) Long followerId,
-            @RequestParam Long followingId) throws ChallengeSphereException {
-        Long actorUserId = SecurityAccess.requireUserId(principal);
+            @RequestParam(required = false) String followerId,
+            @RequestParam String followingId) throws ChallengeSphereException {
+        String actorUserId = SecurityAccess.requireUserId(principal).toString();
         if (followerId != null) {
             SecurityAccess.requireSelf(principal, followerId);
         }
@@ -190,15 +190,15 @@ public class UserController {
     @GetMapping("/{userId}/followers")
     public ResponseEntity<FollowersFollowingResponse> getFollowers(
             @AuthenticationPrincipal UserPrincipal principal,
-            @PathVariable Long userId,
-            @RequestParam(required = false) Long currentUserId,
-            @RequestParam(defaultValue = "1") Integer page,
-            @RequestParam(defaultValue = "10") Integer pageSize) throws ChallengeSphereException {
+            @PathVariable String userId,
+            @RequestParam(required = false) String currentUserId,
+            @RequestParam(defaultValue = "10") Integer limit,
+            @RequestParam(required = false) String cursor) throws ChallengeSphereException {
         GetFollowersFollowingRequest request = new GetFollowersFollowingRequest();
         request.setUserId(userId);
-        request.setCurrentUserId(SecurityAccess.requireUserId(principal));
-        request.setPage(page);
-        request.setPageSize(pageSize);
+        request.setCurrentUserId(SecurityAccess.requireUserId(principal).toString());
+        request.setLimit(limit);
+        request.setCursor(cursor);
         FollowersFollowingResponse response = userService.getFollowers(request);
         return ResponseEntity.ok(response);
     }
@@ -206,15 +206,15 @@ public class UserController {
     @GetMapping("/{userId}/following")
     public ResponseEntity<FollowersFollowingResponse> getFollowing(
             @AuthenticationPrincipal UserPrincipal principal,
-            @PathVariable Long userId,
-            @RequestParam(required = false) Long currentUserId,
-            @RequestParam(defaultValue = "1") Integer page,
-            @RequestParam(defaultValue = "10") Integer pageSize) throws ChallengeSphereException {
+            @PathVariable String userId,
+            @RequestParam(required = false) String currentUserId,
+            @RequestParam(defaultValue = "10") Integer limit,
+            @RequestParam(required = false) String cursor) throws ChallengeSphereException {
         GetFollowersFollowingRequest request = new GetFollowersFollowingRequest();
         request.setUserId(userId);
-        request.setCurrentUserId(SecurityAccess.requireUserId(principal));
-        request.setPage(page);
-        request.setPageSize(pageSize);
+        request.setCurrentUserId(SecurityAccess.requireUserId(principal).toString());
+        request.setLimit(limit);
+        request.setCursor(cursor);
         FollowersFollowingResponse response = userService.getFollowing(request);
         return ResponseEntity.ok(response);
     }
@@ -229,7 +229,7 @@ public class UserController {
     @PutMapping("/{userId}/profile-picture")
     public ResponseEntity<Map<String, Object>> uploadProfilePicture(
             @AuthenticationPrincipal UserPrincipal principal,
-            @PathVariable Long userId,
+            @PathVariable String userId,
             @RequestBody Map<String, String> body) throws ChallengeSphereException {
         SecurityAccess.requireSelf(principal, userId);
         String profilePicUrl = body.getOrDefault("profilePicUrl", "");
@@ -242,7 +242,7 @@ public class UserController {
     @PostMapping("/{userId}/profile-picture/presigned-url")
     public ResponseEntity<PresignedUrlsResponse> generateProfilePhotoUpload(
             @AuthenticationPrincipal UserPrincipal principal,
-            @PathVariable Long userId,
+            @PathVariable String userId,
             @Valid @RequestBody GeneratePresignedUrlsRequest.MediaFileInfo file)
             throws ChallengeSphereException {
         SecurityAccess.requireSelf(principal, userId);
@@ -253,8 +253,8 @@ public class UserController {
     public ResponseEntity<Map<String, Object>> blockUser(
             @AuthenticationPrincipal UserPrincipal principal,
             @RequestBody Map<String, Object> body) throws ChallengeSphereException {
-        Long actorUserId = SecurityAccess.requireUserId(principal);
-        Long targetUserId = extractTargetUserId(body);
+        String actorUserId = SecurityAccess.requireUserId(principal).toString();
+        String targetUserId = extractTargetUserId(body);
         userService.blockUser(actorUserId, targetUserId);
         return ResponseEntity.ok(Map.of("success", true, "message", "User blocked"));
     }
@@ -263,8 +263,8 @@ public class UserController {
     public ResponseEntity<Map<String, Object>> unblockUser(
             @AuthenticationPrincipal UserPrincipal principal,
             @RequestBody Map<String, Object> body) throws ChallengeSphereException {
-        Long actorUserId = SecurityAccess.requireUserId(principal);
-        Long targetUserId = extractTargetUserId(body);
+        String actorUserId = SecurityAccess.requireUserId(principal).toString();
+        String targetUserId = extractTargetUserId(body);
         userService.unblockUser(actorUserId, targetUserId);
         return ResponseEntity.ok(Map.of("success", true, "message", "User unblocked"));
     }
@@ -273,8 +273,8 @@ public class UserController {
     public ResponseEntity<Map<String, Object>> reportUser(
             @AuthenticationPrincipal UserPrincipal principal,
             @RequestBody Map<String, Object> body) throws ChallengeSphereException {
-        Long actorUserId = SecurityAccess.requireUserId(principal);
-        Long targetUserId = extractTargetUserId(body);
+        String actorUserId = SecurityAccess.requireUserId(principal).toString();
+        String targetUserId = extractTargetUserId(body);
         String reason = body.get("reason") == null ? null : body.get("reason").toString();
         String details = body.get("details") == null ? null : body.get("details").toString();
         userService.reportUser(actorUserId, targetUserId, reason, details);
@@ -282,32 +282,26 @@ public class UserController {
     }
 
     @GetMapping("/{userId}/blocked")
-    public ResponseEntity<Map<String, Object>> getBlockedUsers(
+    public ResponseEntity<CursorPageResponse<PublicUserResponse>> getBlockedUsers(
             @AuthenticationPrincipal UserPrincipal principal,
-            @PathVariable Long userId) throws ChallengeSphereException {
+            @PathVariable String userId,
+            @RequestParam(defaultValue = "20") int limit,
+            @RequestParam(required = false) String cursor) throws ChallengeSphereException {
         SecurityAccess.requireSelf(principal, userId);
-        List<User> users = userService.getBlockedUsers(userId);
-        return ResponseEntity.ok(Map.of(
-                "users", PublicUserResponse.fromUsers(users),
-                "totalCount", users.size(),
-                "hasMore", false
-        ));
+        return ResponseEntity.ok(userService.getBlockedUsers(userId, limit, cursor));
     }
 
-    private Long extractTargetUserId(Map<String, Object> body) throws ChallengeSphereException {
+    private String extractTargetUserId(Map<String, Object> body) throws ChallengeSphereException {
         Object raw = body.getOrDefault("blockedUserId",
                 body.getOrDefault("targetUserId",
                         body.getOrDefault("reportedUserId", body.get("userId"))));
         if (raw == null) {
             throw new ChallengeSphereException("targetUserId is required", HttpStatus.BAD_REQUEST, logger);
         }
-        if (raw instanceof Number number) {
-            return number.longValue();
+        String targetUserId = raw.toString().trim();
+        if (targetUserId.isEmpty()) {
+            throw new ChallengeSphereException("targetUserId must not be blank", HttpStatus.BAD_REQUEST, logger);
         }
-        try {
-            return Long.parseLong(raw.toString());
-        } catch (NumberFormatException e) {
-            throw new ChallengeSphereException("targetUserId must be a valid number", HttpStatus.BAD_REQUEST, logger);
-        }
+        return targetUserId;
     }
 }

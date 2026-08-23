@@ -1,5 +1,6 @@
 package com.ironside.challengesphere.service.impl;
 
+import com.ironside.challengesphere.api.response.CursorPageResponse;
 import com.ironside.challengesphere.api.response.GloryUserResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.model.Challenge;
@@ -7,6 +8,8 @@ import com.ironside.challengesphere.model.Glory;
 import com.ironside.challengesphere.model.Submission;
 import com.ironside.challengesphere.model.User;
 import com.ironside.challengesphere.model.UserChallenge;
+import com.ironside.challengesphere.persistence.dynamodb.domain.DynamoPage;
+import com.ironside.challengesphere.persistence.dynamodb.foundation.DynamoDbCursorCodec;
 import com.ironside.challengesphere.repository.ChallengeRepository;
 import com.ironside.challengesphere.repository.GloryRepository;
 import com.ironside.challengesphere.repository.SubmissionRepository;
@@ -14,29 +17,28 @@ import com.ironside.challengesphere.repository.UserBlockRepository;
 import com.ironside.challengesphere.repository.UserChallengeRepository;
 import com.ironside.challengesphere.repository.UserRepository;
 import com.ironside.challengesphere.service.GloryService;
-import com.ironside.challengesphere.service.LeaderboardService;
 import com.ironside.challengesphere.service.NotificationService;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
-import java.sql.Timestamp;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.stream.Collectors;
+
+import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 
 @Service
 public class GloryServiceImpl implements GloryService {
 
     private static final Logger logger = LogManager.getLogger(GloryServiceImpl.class);
+    private static final int MAX_LIMIT = 100;
 
     @Autowired
     private GloryRepository gloryRepository;
@@ -63,10 +65,10 @@ public class GloryServiceImpl implements GloryService {
     private NotificationService notificationService;
 
     @Autowired
-    private LeaderboardService leaderboardService;
+    private MediaUrlService mediaUrlService;
 
     @Autowired
-    private MediaUrlService mediaUrlService;
+    private DynamoDbCursorCodec cursorCodec;
 
     private GloryUserResponse toGloryUserResponse(Glory glory, User user) {
         GloryUserResponse response = GloryUserResponse.from(glory, user);
@@ -79,7 +81,7 @@ public class GloryServiceImpl implements GloryService {
 
     @Override
     @Transactional
-    public boolean toggleGlory(Long submissionId, Long userId) throws ChallengeSphereException {
+    public boolean toggleGlory(String submissionId, String userId) throws ChallengeSphereException {
         logger.info("Toggle glory for submission: {} by user: {}", submissionId, userId);
 
         Submission submission = submissionRepository.findById(submissionId)
@@ -89,7 +91,7 @@ public class GloryServiceImpl implements GloryService {
                         logger
                 ));
 
-        if (canInteractWithSubmission(submission, userId)) {
+        if (userId.equals(submission.getUserId()) || interactionForbidden(submission, userId)) {
             throw new ChallengeSphereException(
                     "Not authorized to glory this submission",
                     HttpStatus.FORBIDDEN,
@@ -97,37 +99,14 @@ public class GloryServiceImpl implements GloryService {
             );
         }
 
-        Optional<Glory> existingGlory = gloryRepository.findBySubmissionIdAndUserId(submissionId, userId);
-        boolean isGiven = false;
-        if (existingGlory.isPresent()) {
-            Glory glory = existingGlory.get();
-            // Toggle: if active → deactivate, if inactive → reactivate
-            boolean wasActive = Boolean.TRUE.equals(glory.getActive());
-            glory.setActive(!wasActive);
-            // Giving glory clears any unglory — can't have both states active
-            if (!wasActive) glory.setUngloried(false);
-            gloryRepository.save(glory);
-            isGiven = !wasActive;
-            logger.info("Toggled glory active={} for submission: {} by user: {}",
-                    isGiven, submissionId, userId);
-        } else {
-            Glory newGlory = new Glory();
-            newGlory.setSubmissionId(submissionId);
-            newGlory.setUserId(userId);
-            newGlory.setCreatedAt(new Timestamp(System.currentTimeMillis()));
-            newGlory.setActive(true);
-            gloryRepository.save(newGlory);
-            isGiven = true;
-            logger.info("Created new glory for submission: {} by user: {}", submissionId, userId);
-        }
+        GloryRepository.GloryTransition transition = gloryRepository.toggleGlory(submissionId, userId);
+        submission = transition.submission();
+        boolean isGiven = transition.active();
 
-        // Atomically update glory count directly in DB (avoids optimistic locking issues)
-        if (isGiven)
-            submissionRepository.incrementGloryCount(submissionId);
-        else
-            submissionRepository.decrementGloryCount(submissionId);
-        logger.info("Updated glory count for submission: {} ({})", submissionId, isGiven ? "incremented" : "decremented");
-        updateLeaderboardForGloryToggle(submission, isGiven, userId);
+        if (transition.activeDelta() != 0) {
+            logger.info("Atomically updated glory, submission count, and leaderboard: {} ({})", submissionId,
+                    transition.activeDelta() > 0 ? "incremented" : "decremented");
+        }
 
         invalidateInteractionCaches(submission);
         if (isGiven) {
@@ -137,7 +116,7 @@ public class GloryServiceImpl implements GloryService {
         return isGiven;
     }
 
-    private void notifyGloryAfterCommit(Submission submission, Long actorUserId) {
+    private void notifyGloryAfterCommit(Submission submission, String actorUserId) {
         Runnable notify = () -> {
             try {
                 notificationService.notifyGloryAsync(submission, actorUserId);
@@ -162,44 +141,95 @@ public class GloryServiceImpl implements GloryService {
 
 
     @Override
-    public List<Glory> getGloriesForSubmission(Long submissionId) {
+    public List<Glory> getGloriesForSubmission(String submissionId) {
         logger.info("Getting glories for submission: {}", submissionId);
         return gloryRepository.findActiveBySubmissionId(submissionId);
     }
 
     @Override
-    public Page<GloryUserResponse> getGloriesForSubmission(Long submissionId, Pageable pageable, Long callerId) throws ChallengeSphereException {
-        logger.info("Getting glories page for submission: {}, page: {}, size: {}",
-                submissionId, pageable.getPageNumber(), pageable.getPageSize());
+    public CursorPageResponse<GloryUserResponse> getGloriesForSubmission(
+            String submissionId,
+            String callerId,
+            int limit,
+            String cursor
+    ) throws ChallengeSphereException {
+        int boundedLimit = Math.max(1, Math.min(limit, MAX_LIMIT));
+        String queryBinding = "glories:v1|submission=" + submissionId
+                + "|viewer=" + callerId
+                + "|limit=" + boundedLimit;
+        logger.info("Getting glories for submission: {}, limit: {}", submissionId, boundedLimit);
         Submission submission = submissionRepository.findById(submissionId)
                 .orElseThrow(() -> new ChallengeSphereException(
                         "Submission not found with id: " + submissionId,
                         HttpStatus.NOT_FOUND,
                         logger
                 ));
-        if (canInteractWithSubmission(submission, callerId)) {
+        if (interactionForbidden(submission, callerId)) {
             throw new ChallengeSphereException("Not authorized to view glories for this submission",
                     HttpStatus.FORBIDDEN, logger);
         }
-        Page<Glory> glories = gloryRepository.findActiveBySubmissionIdForViewer(
-                submissionId,
-                callerId,
-                pageable
+        Map<String, AttributeValue> continuation = decodeCursor(cursor, queryBinding);
+        java.util.Set<String> blockedUserIds = java.util.Set.copyOf(
+                userBlockRepository.findActiveBlockedCounterpartIds(callerId)
         );
-        List<Long> userIds = glories.getContent().stream()
+        List<Glory> glories = new ArrayList<>(boundedLimit);
+        for (int pageNumber = 0; pageNumber < 10 && glories.size() < boundedLimit; pageNumber++) {
+            DynamoPage<Glory> page = gloryRepository.findActivePageBySubmissionId(
+                    submissionId,
+                    Math.max(1, boundedLimit - glories.size()),
+                    continuation
+            );
+            page.items().stream()
+                    .filter(glory -> !blockedUserIds.contains(glory.getUserId()))
+                    .forEach(glories::add);
+            continuation = page.lastEvaluatedKey();
+            if (continuation.isEmpty()) break;
+        }
+        List<String> userIds = glories.stream()
                 .map(Glory::getUserId)
                 .distinct()
                 .toList();
-        Map<Long, User> usersById = userIds.isEmpty()
+        Map<String, User> usersById = userIds.isEmpty()
                 ? Map.of()
                 : userRepository.findAllById(userIds).stream()
                 .collect(Collectors.toMap(User::getId, user -> user));
 
-        return glories.map(glory -> toGloryUserResponse(glory, usersById.get(glory.getUserId())));
+        List<GloryUserResponse> responses = glories.stream()
+                .filter(glory -> usersById.containsKey(glory.getUserId()))
+                .map(glory -> toGloryUserResponse(glory, usersById.get(glory.getUserId())))
+                .toList();
+        boolean hasMore = !continuation.isEmpty();
+        return CursorPageResponse.of(
+                responses,
+                encodeCursor(queryBinding, continuation),
+                hasMore
+        );
+    }
+
+    private Map<String, AttributeValue> decodeCursor(String cursor, String queryBinding)
+            throws ChallengeSphereException {
+        if (cursor == null || cursor.isBlank()) {
+            return Map.of();
+        }
+        try {
+            return cursorCodec.decode(cursor, queryBinding).lastEvaluatedKey();
+        } catch (IllegalArgumentException exception) {
+            throw new ChallengeSphereException("Invalid cursor", HttpStatus.BAD_REQUEST, logger);
+        }
+    }
+
+    private String encodeCursor(String queryBinding, Map<String, AttributeValue> continuation) {
+        if (continuation == null || continuation.isEmpty()) {
+            return null;
+        }
+        return cursorCodec.encode(
+                queryBinding,
+                new DynamoDbCursorCodec.CursorState(continuation)
+        );
     }
 
     @Override
-    public boolean hasUserGivenGlory(Long submissionId, Long userId) throws ChallengeSphereException {
+    public boolean hasUserGivenGlory(String submissionId, String userId) throws ChallengeSphereException {
         logger.info("Checking if user {} has given glory to submission {}", userId, submissionId);
         requireSubmissionAccess(submissionId, userId, "view glory status for");
         return gloryRepository.existsBySubmissionIdAndUserId(submissionId, userId);
@@ -207,7 +237,7 @@ public class GloryServiceImpl implements GloryService {
 
     @Override
     @Transactional
-    public boolean toggleUnglory(Long submissionId, Long userId) throws ChallengeSphereException {
+    public boolean toggleUnglory(String submissionId, String userId) throws ChallengeSphereException {
         logger.info("Toggle unglory for submission: {} by user: {}", submissionId, userId);
 
         Submission submission = submissionRepository.findById(submissionId)
@@ -220,7 +250,7 @@ public class GloryServiceImpl implements GloryService {
                     logger
             );
         }
-        if (canInteractWithSubmission(submission, userId)) {
+        if (interactionForbidden(submission, userId)) {
             throw new ChallengeSphereException(
                     "Not authorized to unglory this submission",
                     HttpStatus.FORBIDDEN,
@@ -228,33 +258,9 @@ public class GloryServiceImpl implements GloryService {
             );
         }
 
-        Optional<Glory> existing = gloryRepository.findBySubmissionIdAndUserId(submissionId, userId);
-        boolean isUngloried;
-
-        if (existing.isPresent()) {
-            Glory glory = existing.get();
-            boolean wasUngloried = Boolean.TRUE.equals(glory.getUngloried());
-            glory.setUngloried(!wasUngloried);
-            // Unglorying clears glory — can't have both states active
-            if (!wasUngloried) {
-                if (Boolean.TRUE.equals(glory.getActive())) {
-                    glory.setActive(false);
-                    submissionRepository.decrementGloryCount(submissionId);
-                    updateLeaderboardForGloryToggle(submission, false, userId);
-                }
-            }
-            gloryRepository.save(glory);
-            isUngloried = !wasUngloried;
-        } else {
-            Glory glory = new Glory();
-            glory.setSubmissionId(submissionId);
-            glory.setUserId(userId);
-            glory.setCreatedAt(new Timestamp(System.currentTimeMillis()));
-            glory.setActive(false);
-            glory.setUngloried(true);
-            gloryRepository.save(glory);
-            isUngloried = true;
-        }
+        GloryRepository.GloryTransition transition = gloryRepository.toggleUnglory(submissionId, userId);
+        submission = transition.submission();
+        boolean isUngloried = transition.ungloried();
 
         logger.info("Toggled unglory={} for submission: {} by user: {}", isUngloried, submissionId, userId);
         invalidateInteractionCaches(submission);
@@ -262,20 +268,20 @@ public class GloryServiceImpl implements GloryService {
     }
 
     @Override
-    public boolean hasUserUngloried(Long submissionId, Long userId) throws ChallengeSphereException {
+    public boolean hasUserUngloried(String submissionId, String userId) throws ChallengeSphereException {
         logger.info("Checking if user {} has ungloried submission {}", userId, submissionId);
         requireSubmissionAccess(submissionId, userId, "view glory status for");
         return gloryRepository.existsUngloriedBySubmissionIdAndUserId(submissionId, userId);
     }
 
     @Override
-    public Long getGloryCount(Long submissionId, Long viewerUserId) throws ChallengeSphereException {
+    public Long getGloryCount(String submissionId, String viewerUserId) throws ChallengeSphereException {
         logger.info("Getting glory count for submission: {}", submissionId);
-        requireSubmissionAccess(submissionId, viewerUserId, "view glory count for");
-        return gloryRepository.countActiveBySubmissionId(submissionId);
+        Submission submission = requireSubmissionAccess(submissionId, viewerUserId, "view glory count for");
+        return submission.getGloriesCount() == null ? 0L : submission.getGloriesCount();
     }
 
-    private Submission requireSubmissionAccess(Long submissionId, Long viewerUserId, String action)
+    private Submission requireSubmissionAccess(String submissionId, String viewerUserId, String action)
             throws ChallengeSphereException {
         Submission submission = submissionRepository.findById(submissionId)
                 .orElseThrow(() -> new ChallengeSphereException(
@@ -283,7 +289,7 @@ public class GloryServiceImpl implements GloryService {
                         HttpStatus.NOT_FOUND,
                         logger
                 ));
-        if (canInteractWithSubmission(submission, viewerUserId)) {
+        if (interactionForbidden(submission, viewerUserId)) {
             throw new ChallengeSphereException(
                     "Not authorized to " + action + " this submission",
                     HttpStatus.FORBIDDEN,
@@ -291,30 +297,6 @@ public class GloryServiceImpl implements GloryService {
             );
         }
         return submission;
-    }
-
-    private void updateLeaderboardForGloryToggle(Submission submission, boolean isGiven, Long actorUserId) {
-        if (submission == null || submission.getChallengeId() == null || submission.getUserId() == null) {
-            return;
-        }
-        try {
-            if (isGiven) {
-                leaderboardService.incrementGloryScore(
-                        submission.getChallengeId(),
-                        submission.getUserId(),
-                        1,
-                        "Glory received from user " + actorUserId);
-            } else {
-                leaderboardService.decrementGloryScore(
-                        submission.getChallengeId(),
-                        submission.getUserId(),
-                        1,
-                        "Glory removed by user " + actorUserId);
-            }
-        } catch (Exception e) {
-            logger.warn("Failed to update leaderboard for glory toggle: submissionId={}, actorUserId={}, given={}: {}",
-                    submission.getId(), actorUserId, isGiven, e.getClass().getSimpleName());
-        }
     }
 
     private void invalidateInteractionCaches(Submission submission) {
@@ -329,7 +311,7 @@ public class GloryServiceImpl implements GloryService {
         }
     }
 
-    private boolean canInteractWithSubmission(Submission submission, Long viewerId) {
+    private boolean interactionForbidden(Submission submission, String viewerId) {
         if (submission == null || viewerId == null) {
             return true;
         }

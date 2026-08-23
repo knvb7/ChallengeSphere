@@ -10,8 +10,8 @@ import lombok.NoArgsConstructor;
 @NoArgsConstructor
 @AllArgsConstructor
 public class ChallengeRematchResponse {
-    private Long sourceChallengeId;
-    private Long challengeId;
+    private String sourceChallengeId;
+    private String challengeId;
     private int copiedInviteCount;
     private String message;
 }

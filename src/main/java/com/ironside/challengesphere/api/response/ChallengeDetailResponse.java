@@ -8,7 +8,7 @@ import java.time.LocalDate;
 
 @Data
 public class ChallengeDetailResponse {
-    private Long id;
+    private String id;
     private String hashtags;
     private String categories;
     private String title;
@@ -18,10 +18,10 @@ public class ChallengeDetailResponse {
     private LocalDate startDate;
     private Boolean active;
     private Timestamp createdAt;
-    private Long creatorId;
+    private String creatorId;
     private String creatorUsername;
     private String creatorProfilePicUrl;
-    private Long currentOwnerId;
+    private String currentOwnerId;
     private Integer numberOfDays;
     private String challengeMode;
     private String proofMode;
@@ -33,7 +33,7 @@ public class ChallengeDetailResponse {
 
     public static ChallengeDetailResponse from(Challenge challenge, int participantCount, boolean isJoined) {
         ChallengeDetailResponse r = new ChallengeDetailResponse();
-        r.id = challenge.getId();
+        r.id = stringId(challenge.getId());
         r.hashtags = challenge.getHashtags();
         r.categories = challenge.getCategories();
         r.title = challenge.getTitle();
@@ -43,10 +43,10 @@ public class ChallengeDetailResponse {
         r.startDate = challenge.getStartDate();
         r.active = challenge.getActive();
         r.createdAt = challenge.getCreatedAt();
-        r.creatorId = challenge.getCreatorId();
+        r.creatorId = stringId(challenge.getCreatorId());
         r.creatorUsername = challenge.getCreatorUsername();
         r.creatorProfilePicUrl = challenge.getCreatorProfilePicUrl();
-        r.currentOwnerId = challenge.getCurrentOwnerId();
+        r.currentOwnerId = stringId(challenge.getCurrentOwnerId());
         r.numberOfDays = challenge.getNumberOfDays();
         r.challengeMode = challenge.getChallengeMode();
         r.proofMode = challenge.getProofMode();
@@ -56,5 +56,9 @@ public class ChallengeDetailResponse {
         r.participantCount = participantCount;
         r.isJoined = isJoined;
         return r;
+    }
+
+    private static String stringId(Object value) {
+        return value == null ? null : value.toString();
     }
 }

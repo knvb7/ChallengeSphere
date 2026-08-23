@@ -6,6 +6,6 @@ import java.util.List;
 
 @Data
 public class BulkUserChallengeUpdateRequest {
-    private List<Long> userIds;
+    private List<String> userIds;
 }
 

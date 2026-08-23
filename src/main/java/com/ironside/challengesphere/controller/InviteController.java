@@ -36,7 +36,7 @@ public class InviteController {
     public ResponseEntity<InviteLinkResponse> generateInviteLink(
             @AuthenticationPrincipal UserPrincipal principal,
             @Valid @RequestBody CreateInviteLinkRequest request) throws ChallengeSphereException {
-        request.setUserId(SecurityAccess.requireUserId(principal));
+        request.setUserId(SecurityAccess.requireUserId(principal).toString());
         logger.info("POST /api/v1/invites - Generate invite for challenge {}", request.getChallengeId());
         InviteLinkResponse response = inviteService.generateInviteLink(request);
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
@@ -50,7 +50,7 @@ public class InviteController {
     public ResponseEntity<RedeemInviteResponse> redeemInvite(
             @AuthenticationPrincipal UserPrincipal principal,
             @Valid @RequestBody RedeemInviteRequest request) throws ChallengeSphereException {
-        request.setUserId(SecurityAccess.requireUserId(principal));
+        request.setUserId(SecurityAccess.requireUserId(principal).toString());
         logger.info("POST /api/v1/invites/redeem by user {}", request.getUserId());
         RedeemInviteResponse response = inviteService.redeemInvite(request);
         return ResponseEntity.ok(response);
@@ -75,10 +75,17 @@ public class InviteController {
     @GetMapping("/challenge/{challengeId}")
     public ResponseEntity<ChallengeInvitesResponse> getInvitesForChallenge(
             @AuthenticationPrincipal UserPrincipal principal,
-            @PathVariable Long challengeId) throws ChallengeSphereException {
-        Long userId = SecurityAccess.requireUserId(principal);
+            @PathVariable String challengeId,
+            @RequestParam(defaultValue = "50") int limit,
+            @RequestParam(required = false) String cursor) throws ChallengeSphereException {
+        String userId = SecurityAccess.requireUserId(principal).toString();
         logger.info("GET /api/v1/invites/challenge/{} by user {}", challengeId, userId);
-        ChallengeInvitesResponse response = inviteService.getInvitesForChallenge(challengeId, userId);
+        ChallengeInvitesResponse response = inviteService.getInvitesForChallenge(
+                challengeId,
+                userId,
+                limit,
+                cursor
+        );
         return ResponseEntity.ok(response);
     }
 
@@ -89,8 +96,8 @@ public class InviteController {
     @DeleteMapping("/{inviteId}")
     public ResponseEntity<Void> deactivateInvite(
             @AuthenticationPrincipal UserPrincipal principal,
-            @PathVariable Long inviteId) throws ChallengeSphereException {
-        Long userId = SecurityAccess.requireUserId(principal);
+            @PathVariable String inviteId) throws ChallengeSphereException {
+        String userId = SecurityAccess.requireUserId(principal).toString();
         logger.info("DELETE /api/v1/invites/{} by user {}", inviteId, userId);
         inviteService.deactivateInvite(inviteId, userId);
         return ResponseEntity.noContent().build();

@@ -8,7 +8,7 @@ import java.sql.Timestamp;
 @Data
 @AllArgsConstructor
 public class FeatureRequestResponse {
-    private Long id;
+    private String id;
     private String status;
     private Timestamp createdAt;
     private String message;

@@ -9,11 +9,11 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class DeactivateUserResponse {
 
-    private Long userId;
+    private String userId;
     private Boolean active;
     private String message;
 
-    public static DeactivateUserResponse success(Long userId) {
+    public static DeactivateUserResponse success(String userId) {
         return new DeactivateUserResponse(userId, false, "User successfully deactivated");
     }
 }

@@ -20,11 +20,11 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class FeedItemResponse {
 
-    private Long submissionId;
-    private Long userId;
+    private String submissionId;
+    private String userId;
     private String username;
     private String userProfilePicUrl;
-    private Long challengeId;
+    private String challengeId;
     private String challengeTitle;
     private Integer dayNumber;
     private String description;
@@ -52,11 +52,11 @@ public class FeedItemResponse {
         }
 
         return FeedItemResponse.builder()
-                .submissionId(submission.getId())
-                .userId(submission.getUserId())
+                .submissionId(stringId(submission.getId()))
+                .userId(stringId(submission.getUserId()))
                 .username(username)
                 .userProfilePicUrl(userProfilePicUrl)
-                .challengeId(submission.getChallengeId())
+                .challengeId(stringId(submission.getChallengeId()))
                 .challengeTitle(challengeTitle)
                 .dayNumber(submission.getDayNumber())
                 .description(submission.getDescription())
@@ -67,5 +67,9 @@ public class FeedItemResponse {
                 .isGloriedByCurrentUser(isGloriedByCurrentUser)
                 .isUngloriedByCurrentUser(isUngloriedByCurrentUser)
                 .build();
+    }
+
+    private static String stringId(Object value) {
+        return value == null ? null : value.toString();
     }
 }

@@ -2,11 +2,10 @@ package com.ironside.challengesphere.security;
 
 import com.ironside.challengesphere.api.request.GeneratePresignedUrlsRequest;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
+import com.ironside.challengesphere.persistence.dynamodb.ephemeral.EphemeralStore;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
@@ -25,61 +24,28 @@ import java.util.List;
 public class UploadQuotaService {
 
     private static final Logger logger = LogManager.getLogger(UploadQuotaService.class);
-    private static final DefaultRedisScript<Long> RESERVE_SCRIPT;
 
-    static {
-        RESERVE_SCRIPT = new DefaultRedisScript<>();
-        RESERVE_SCRIPT.setResultType(Long.class);
-        RESERVE_SCRIPT.setScriptText("""
-                local currentObjects = tonumber(redis.call('GET', KEYS[1]) or '0')
-                local currentBytes = tonumber(redis.call('GET', KEYS[2]) or '0')
-                local requestedObjects = tonumber(ARGV[1])
-                local requestedBytes = tonumber(ARGV[2])
-                local maxObjects = tonumber(ARGV[3])
-                local maxBytes = tonumber(ARGV[4])
-                local ttlMillis = tonumber(ARGV[5])
-
-                if (currentObjects + requestedObjects > maxObjects)
-                        or (currentBytes + requestedBytes > maxBytes) then
-                    return 0
-                end
-
-                redis.call('INCRBY', KEYS[1], requestedObjects)
-                redis.call('INCRBY', KEYS[2], requestedBytes)
-                if redis.call('PTTL', KEYS[1]) < 0 then
-                    redis.call('PEXPIRE', KEYS[1], ttlMillis)
-                end
-                if redis.call('PTTL', KEYS[2]) < 0 then
-                    redis.call('PEXPIRE', KEYS[2], ttlMillis)
-                end
-                return 1
-                """);
-    }
-
-    private final StringRedisTemplate redisTemplate;
+    private final EphemeralStore ephemeralStore;
     private final long maxObjectsPerUserPerDay;
     private final long maxBytesPerUserPerDay;
 
     public UploadQuotaService(
-            StringRedisTemplate redisTemplate,
+            EphemeralStore ephemeralStore,
             @Value("${app.security.upload.max-objects-per-user-per-day:50}") long maxObjectsPerUserPerDay,
-            @Value("${app.security.upload.max-bytes-per-user-per-day:104857600}") long maxBytesPerUserPerDay) {
+            @Value("${app.security.upload.max-bytes-per-user-per-day:104857600}") long maxBytesPerUserPerDay
+    ) {
         if (maxObjectsPerUserPerDay < 1 || maxBytesPerUserPerDay < 1) {
             throw new IllegalStateException("Upload quota configuration must be positive");
         }
-        this.redisTemplate = redisTemplate;
+        this.ephemeralStore = ephemeralStore;
         this.maxObjectsPerUserPerDay = maxObjectsPerUserPerDay;
         this.maxBytesPerUserPerDay = maxBytesPerUserPerDay;
     }
 
-    public void reserve(Long userId, List<GeneratePresignedUrlsRequest.MediaFileInfo> mediaFiles)
+    public void reserve(String userId, List<GeneratePresignedUrlsRequest.MediaFileInfo> mediaFiles)
             throws ChallengeSphereException {
-        if (userId == null || userId <= 0 || mediaFiles == null || mediaFiles.isEmpty()) {
-            throw new ChallengeSphereException(
-                    "Upload quota request is invalid",
-                    HttpStatus.BAD_REQUEST,
-                    logger
-            );
+        if (userId == null || userId.isBlank() || mediaFiles == null || mediaFiles.isEmpty()) {
+            throw invalidRequest();
         }
 
         long requestedBytes = 0;
@@ -105,36 +71,30 @@ public class UploadQuotaService {
         reserve(userId, mediaFiles.size(), requestedBytes);
     }
 
-    public void reserve(Long userId, long requestedObjects, long requestedBytes)
+    public void reserve(String userId, long requestedObjects, long requestedBytes)
             throws ChallengeSphereException {
-        if (userId == null
-                || userId <= 0
-                || requestedObjects <= 0
-                || requestedBytes <= 0) {
-            throw new ChallengeSphereException(
-                    "Upload quota request is invalid",
-                    HttpStatus.BAD_REQUEST,
-                    logger
-            );
+        if (userId == null || userId.isBlank() || requestedObjects <= 0 || requestedBytes <= 0) {
+            throw invalidRequest();
         }
 
-        String day = LocalDate.now(ZoneOffset.UTC).toString();
-        String keyPrefix = "upload-quota:{" + userId + "}:" + day + ":";
-        long ttlMillis = Math.max(60_000L, Duration.between(
-                Instant.now(),
-                LocalDate.now(ZoneOffset.UTC).plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant()
-        ).toMillis());
+        Instant now = Instant.now();
+        LocalDate utcDate = now.atZone(ZoneOffset.UTC).toLocalDate();
+        Instant midnight = utcDate.plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant();
+        Instant expiresAt = Duration.between(now, midnight).compareTo(Duration.ofMinutes(1)) < 0
+                ? now.plus(Duration.ofMinutes(1))
+                : midnight;
 
-        Long reserved;
+        boolean reserved;
         try {
-            reserved = redisTemplate.execute(
-                    RESERVE_SCRIPT,
-                    List.of(keyPrefix + "objects", keyPrefix + "bytes"),
-                    Long.toString(requestedObjects),
-                    Long.toString(requestedBytes),
-                    Long.toString(maxObjectsPerUserPerDay),
-                    Long.toString(maxBytesPerUserPerDay),
-                    Long.toString(ttlMillis)
+            reserved = ephemeralStore.reserveUploadQuota(
+                    userId,
+                    utcDate,
+                    requestedObjects,
+                    requestedBytes,
+                    maxObjectsPerUserPerDay,
+                    maxBytesPerUserPerDay,
+                    expiresAt,
+                    now
             );
         } catch (RuntimeException unavailable) {
             logger.error("Upload quota store is unavailable for userId={}: {}",
@@ -146,12 +106,20 @@ public class UploadQuotaService {
             );
         }
 
-        if (!Long.valueOf(1L).equals(reserved)) {
+        if (!reserved) {
             throw new ChallengeSphereException(
                     "Daily upload allowance reached. Please try again tomorrow.",
                     HttpStatus.TOO_MANY_REQUESTS,
                     logger
             );
         }
+    }
+
+    private ChallengeSphereException invalidRequest() {
+        return new ChallengeSphereException(
+                "Upload quota request is invalid",
+                HttpStatus.BAD_REQUEST,
+                logger
+        );
     }
 }

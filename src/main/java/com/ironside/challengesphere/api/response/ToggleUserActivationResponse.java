@@ -9,11 +9,11 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class ToggleUserActivationResponse {
 
-    private Long userId;
+    private String userId;
     private Boolean active;
     private String message;
 
-    public static ToggleUserActivationResponse success(Long userId, Boolean newStatus, String action) {
+    public static ToggleUserActivationResponse success(String userId, Boolean newStatus, String action) {
         return new ToggleUserActivationResponse(userId, newStatus, "User successfully " + action);
     }
 }

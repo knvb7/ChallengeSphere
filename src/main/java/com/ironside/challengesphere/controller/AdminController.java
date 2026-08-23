@@ -66,9 +66,9 @@ public class AdminController {
     @PostMapping("/content-reports/{reportId}/resolve")
     public ResponseEntity<Map<String, Object>> resolveContentReport(
             @AuthenticationPrincipal UserPrincipal principal,
-            @PathVariable Long reportId,
+            @PathVariable String reportId,
             @RequestParam String resolution) throws ChallengeSphereException {
-        Long reviewerId = SecurityAccess.requireUserId(principal);
+        String reviewerId = SecurityAccess.requireUserId(principal).toString();
         return ResponseEntity.ok(contentReportService.resolve(reportId, reviewerId, resolution));
     }
 
@@ -81,9 +81,9 @@ public class AdminController {
     @Transactional
     public ResponseEntity<Map<String, Object>> resolveUserReport(
             @AuthenticationPrincipal UserPrincipal principal,
-            @PathVariable Long reportId,
+            @PathVariable String reportId,
             @RequestParam String resolution) throws ChallengeSphereException {
-        Long reviewerId = SecurityAccess.requireUserId(principal);
+        String reviewerId = SecurityAccess.requireUserId(principal).toString();
         String normalized = resolution == null ? "" : resolution.trim().toUpperCase(Locale.ROOT);
         if (!List.of("DISMISSED", "ACTIONED", "BANNED_USER").contains(normalized)) {
             throw new ChallengeSphereException(
@@ -121,7 +121,7 @@ public class AdminController {
      */
     @PostMapping("/users/{id}/reactivate")
     @Transactional
-    public ResponseEntity<Map<String, Object>> reactivateUser(@PathVariable Long id) throws ChallengeSphereException {
+    public ResponseEntity<Map<String, Object>> reactivateUser(@PathVariable String id) throws ChallengeSphereException {
         User user = userRepository.findById(id)
                 .orElseThrow(() -> new ChallengeSphereException("User not found", HttpStatus.NOT_FOUND, logger));
         user.setActive(true);
@@ -152,9 +152,9 @@ public class AdminController {
     @Transactional
     public ResponseEntity<Map<String, Object>> resolveFlag(
             @AuthenticationPrincipal UserPrincipal principal,
-            @PathVariable Long flagId,
+            @PathVariable String flagId,
             @RequestParam String resolution) throws ChallengeSphereException {
-        Long reviewerId = SecurityAccess.requireUserId(principal);
+        String reviewerId = SecurityAccess.requireUserId(principal).toString();
         ModerationFlag flag = moderationFlagRepository.findById(flagId)
                 .orElseThrow(() -> new ChallengeSphereException("Flag not found", HttpStatus.NOT_FOUND, logger));
         if (flag.getReviewedAt() != null) {
@@ -166,8 +166,10 @@ public class AdminController {
             case "APPROVED" -> {
                 Submission s = submissionRepository.findById(flag.getSubmissionId()).orElse(null);
                 if (s != null) {
-                    s.setActive(true);
-                    submissionRepository.save(s);
+                    submissionRepository.mutateExisting(
+                            flag.getSubmissionId(),
+                            submission -> submission.setActive(true)
+                    );
                 }
             }
             case "REMOVED" -> { /* submission already hidden — no-op */ }

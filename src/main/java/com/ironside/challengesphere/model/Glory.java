@@ -11,14 +11,13 @@ import java.sql.Timestamp;
 @Data
 public class Glory {
     @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
+    private String id;
 
     @Column(name = "submission_id", nullable = false)
-    private Long submissionId;
+    private String submissionId;
 
     @Column(name = "user_id", nullable = false)
-    private Long userId;
+    private String userId;
 
     @Column(name = "created_at", nullable = false)
     private Timestamp createdAt;

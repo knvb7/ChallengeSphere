@@ -14,11 +14,10 @@ import java.time.LocalDate;
 public class PushDeviceToken {
 
     @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
+    private String id;
 
     @Column(name = "user_id", nullable = false)
-    private Long userId;
+    private String userId;
 
     @Column(name = "expo_push_token", nullable = false, unique = true, length = 255)
     private String expoPushToken;

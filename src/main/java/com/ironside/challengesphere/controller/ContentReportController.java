@@ -29,7 +29,7 @@ public class ContentReportController {
     public ResponseEntity<Map<String, Object>> report(
             @AuthenticationPrincipal UserPrincipal principal,
             @Valid @RequestBody ContentReportRequest request) throws ChallengeSphereException {
-        Long reporterUserId = SecurityAccess.requireUserId(principal);
+        String reporterUserId = SecurityAccess.requireUserId(principal).toString();
         return ResponseEntity.ok(contentReportService.report(reporterUserId, request));
     }
 }

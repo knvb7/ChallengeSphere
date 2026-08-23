@@ -13,16 +13,14 @@ import java.sql.Timestamp;
 public class InviteUsage {
 
     @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
+    private String id;
 
     @Column(name = "invite_id", nullable = false)
-    private Long inviteId;
+    private String inviteId;
 
     @Column(name = "user_id", nullable = false)
-    private Long userId;
+    private String userId;
 
     @Column(name = "joined_at", nullable = false, columnDefinition = "TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP")
     private Timestamp joinedAt;
 }
-

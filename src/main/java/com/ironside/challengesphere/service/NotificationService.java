@@ -1,6 +1,7 @@
 package com.ironside.challengesphere.service;
 
 import com.ironside.challengesphere.api.response.ChallengeInviteDetailsResponse;
+import com.ironside.challengesphere.api.response.CursorPageResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.model.Challenge;
 import com.ironside.challengesphere.model.Notification;
@@ -11,46 +12,49 @@ import java.util.Collection;
 
 public interface NotificationService {
 
-    Notification createNotification(Long userId, String type, String message, String actionObject);
+    CursorPageResponse<Notification> getNotifications(String userId, int limit, String cursor)
+            throws ChallengeSphereException;
 
-    Notification notifyChallengeUpdate(Long recipientUserId, String message, String actionObject);
+    Notification createNotification(String userId, String type, String message, String actionObject);
+
+    Notification notifyChallengeUpdate(String recipientUserId, String message, String actionObject);
 
     Notification notifyParticipantRemoved(
             Challenge challenge,
-            Long recipientUserId,
-            Long actorUserId,
+            String recipientUserId,
+            String actorUserId,
             String reason);
 
-    Notification notifyFollow(Long recipientUserId, Long actorUserId);
+    Notification notifyFollow(String recipientUserId, String actorUserId);
 
-    void notifyFollowAsync(Long recipientUserId, Long actorUserId);
+    void notifyFollowAsync(String recipientUserId, String actorUserId);
 
-    int notifySubmission(Submission submission, Challenge challenge, Collection<Long> recipientUserIds);
+    int notifySubmission(Submission submission, Challenge challenge, Collection<String> recipientUserIds);
 
-    void notifyChallengeInvitesAsync(Challenge challenge, Long actorUserId, Collection<Long> requestedRecipientUserIds);
+    void notifyChallengeInvitesAsync(Challenge challenge, String actorUserId, Collection<String> requestedRecipientUserIds);
 
-    ChallengeInviteDetailsResponse getChallengeInviteDetails(Long notificationId, Long recipientUserId)
+    ChallengeInviteDetailsResponse getChallengeInviteDetails(String notificationId, String recipientUserId)
             throws ChallengeSphereException;
 
-    int invalidateChallengeInvitesForChallenge(Long challengeId);
+    int invalidateChallengeInvitesForChallenge(String challengeId);
 
-    int invalidateChallengeInviteForRecipient(Long challengeId, Long recipientUserId);
+    int invalidateChallengeInviteForRecipient(String challengeId, String recipientUserId);
 
-    int notifyChallengeJoined(Challenge challenge, Long joiningUserId, Collection<Long> recipientUserIds);
+    int notifyChallengeJoined(Challenge challenge, String joiningUserId, Collection<String> recipientUserIds);
 
-    void notifyChallengeJoinedAsync(Challenge challenge, Long joiningUserId, Collection<Long> recipientUserIds);
+    void notifyChallengeJoinedAsync(Challenge challenge, String joiningUserId, Collection<String> recipientUserIds);
 
-    Notification notifyGlory(Submission submission, Long actorUserId);
+    Notification notifyGlory(Submission submission, String actorUserId);
 
-    void notifyGloryAsync(Submission submission, Long actorUserId);
+    void notifyGloryAsync(Submission submission, String actorUserId);
 
-    Notification notifyComment(Submission submission, Long actorUserId, Long commentId);
+    Notification notifyComment(Submission submission, String actorUserId, String commentId);
 
-    void notifyCommentAsync(Submission submission, Long actorUserId, Long commentId);
+    void notifyCommentAsync(Submission submission, String actorUserId, String commentId);
 
     void notifyMomentumMilestonesAfterSubmissionAsync(
-            Long userId,
-            Long challengeId,
+            String userId,
+            String challengeId,
             LocalDate currentDate,
             boolean evaluateRank);
 }

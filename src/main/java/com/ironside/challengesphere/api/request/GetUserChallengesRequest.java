@@ -1,7 +1,7 @@
 package com.ironside.challengesphere.api.request;
 
 import jakarta.validation.constraints.Min;
-import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.NotBlank;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
@@ -9,16 +9,15 @@ import lombok.NoArgsConstructor;
 @NoArgsConstructor
 public class GetUserChallengesRequest {
 
-    @NotNull(message = "User ID is required")
-    private Long userId;
+    @NotBlank(message = "User ID is required")
+    private String userId;
 
-    private Long currentUserId;
+    private String currentUserId;
 
-    @Min(value = 1, message = "Page must be greater than 0")
-    private Integer page = 1;
+    private String cursor;
 
-    @Min(value = 1, message = "Page size must be greater than 0")
-    private Integer pageSize = 10;
+    @Min(value = 1, message = "Limit must be greater than 0")
+    private Integer limit = 10;
 
     // Optional filter for challenge status
     private Boolean active;

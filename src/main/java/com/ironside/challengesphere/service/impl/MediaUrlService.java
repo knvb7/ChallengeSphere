@@ -1,6 +1,7 @@
 package com.ironside.challengesphere.service.impl;
 
 import com.ironside.challengesphere.api.request.GeneratePresignedUrlsRequest;
+import com.ironside.challengesphere.repository.UserRepository;
 import com.ironside.challengesphere.util.GetSignedUrlForS3;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -30,19 +31,20 @@ public class MediaUrlService {
     private static final long READ_SIGNED_URL_TTL_SECONDS = 30 * 60;
     private static final long READ_SIGNED_URL_CACHE_SAFETY_SECONDS = 5 * 60;
     private static final int MAX_READ_URL_CACHE_ENTRIES = 10_000;
+    private static final String USER_ID_PATTERN = "(?:[0-9A-HJKMNP-TV-Z]{26}|\\d+)";
     private static final Pattern PROFILE_OBJECT_KEY = Pattern.compile(
-            "^profiles/user_(\\d+)/\\d{10,17}_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-"
+            "^profiles/user_(" + USER_ID_PATTERN + ")/\\d{10,17}_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-"
                     + "[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\\.(?:jpg|png|gif)$"
     );
     private static final Pattern SIGNABLE_PRIVATE_OBJECT_KEY = Pattern.compile(
             "^(?:"
-                    + "submissions/user_\\d+/SUBMISSION_(?:PHOTO|VIDEO)/"
+                    + "submissions/user_" + USER_ID_PATTERN + "/SUBMISSION_(?:PHOTO|VIDEO)/"
                     + "\\d{13}_[0-9a-fA-F-]{36}\\.(?:jpg|jpeg|png|gif|mp4)"
-                    + "|challenges/user_\\d+/covers/"
+                    + "|challenges/user_" + USER_ID_PATTERN + "/covers/"
                     + "\\d{13}_[0-9a-fA-F-]{36}\\.(?:jpg|png|gif)"
-                    + "|profiles/user_\\d+/"
+                    + "|profiles/user_" + USER_ID_PATTERN + "/"
                     + "\\d{10,17}_[0-9a-fA-F-]{36}\\.(?:jpg|png|gif)"
-                    + "|support/user_\\d+/screenshots/"
+                    + "|support/user_" + USER_ID_PATTERN + "/screenshots/"
                     + "\\d{13}_[0-9a-fA-F-]{36}\\.(?:jpg|png|gif)"
                     + "|official/global-challenges/[A-Za-z0-9._-]+\\.(?:jpg|png|gif)"
                     + ")$"
@@ -57,8 +59,14 @@ public class MediaUrlService {
     @Value("${aws.s3.bucket.name}")
     private String bucketName;
 
+    private final UserRepository userRepository;
+
     private final Object readUrlCacheLock = new Object();
     private final Map<String, CachedSignedUrl> readUrlCache = new LinkedHashMap<>(256, 0.75f, true);
+
+    public MediaUrlService(UserRepository userRepository) {
+        this.userRepository = userRepository;
+    }
 
     public String toReadableMediaUrls(String mediaUrls) {
         if (mediaUrls == null || mediaUrls.isBlank()) {
@@ -135,7 +143,7 @@ public class MediaUrlService {
         }
     }
 
-    public String toReadableProfilePhoto(Long ownerUserId, String profilePhotoValue) {
+    public String toReadableProfilePhoto(String ownerUserId, String profilePhotoValue) {
         if (ownerUserId == null || profilePhotoValue == null || profilePhotoValue.isBlank()) {
             return null;
         }
@@ -158,10 +166,19 @@ public class MediaUrlService {
         Matcher matcher = objectKey == null
                 ? PROFILE_OBJECT_KEY.matcher("")
                 : PROFILE_OBJECT_KEY.matcher(objectKey);
-        if (!matcher.matches() || !Long.toString(ownerUserId).equals(matcher.group(1))) {
+        if (!matcher.matches() || !matchesCurrentOrLegacyOwner(ownerUserId, matcher.group(1))) {
             return null;
         }
         return toReadableMediaUrl(objectKey);
+    }
+
+    private boolean matchesCurrentOrLegacyOwner(String ownerUserId, String objectOwnerId) {
+        if (ownerUserId.equals(objectOwnerId)) return true;
+        return userRepository.findById(ownerUserId)
+                .map(com.ironside.challengesphere.model.User::getLegacyId)
+                .filter(MediaUrlService::hasText)
+                .filter(objectOwnerId::equals)
+                .isPresent();
     }
 
     public String createUploadUrl(
@@ -184,6 +201,10 @@ public class MediaUrlService {
             iterator.next();
             iterator.remove();
         }
+    }
+
+    private static boolean hasText(String value) {
+        return value != null && !value.isBlank();
     }
 
     public void uploadObject(String objectName, byte[] content, String contentType) {

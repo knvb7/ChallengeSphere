@@ -11,10 +11,10 @@ import java.util.List;
 
 @Data
 public class CreateSubmissionRequest {
-    private Long userId;
+    private String userId;
 
-    @NotNull(message = "Challenge ID is required")
-    private Long challengeId;
+    @NotBlank(message = "Challenge ID is required")
+    private String challengeId;
 
     @NotNull(message = "Day number is required")
     @Min(value = 1, message = "Day number must be at least 1")

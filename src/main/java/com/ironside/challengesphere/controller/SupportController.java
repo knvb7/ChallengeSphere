@@ -39,7 +39,7 @@ public class SupportController {
             @AuthenticationPrincipal UserPrincipal principal,
             @Valid @RequestBody GeneratePresignedUrlsRequest request
     ) throws ChallengeSphereException {
-        Long userId = SecurityAccess.requireUserId(principal);
+        String userId = SecurityAccess.requireUserId(principal).toString();
         return ResponseEntity.ok(supportService.generatePresignedUrls(userId, request));
     }
 
@@ -48,7 +48,7 @@ public class SupportController {
             @AuthenticationPrincipal UserPrincipal principal,
             @Valid @RequestBody CreateSupportTicketRequest request
     ) throws ChallengeSphereException {
-        Long userId = SecurityAccess.requireUserId(principal);
+        String userId = SecurityAccess.requireUserId(principal).toString();
         return ResponseEntity.ok(supportService.createTicket(userId, request));
     }
 
@@ -57,7 +57,7 @@ public class SupportController {
             @AuthenticationPrincipal UserPrincipal principal,
             @Valid @RequestBody CreateFeatureRequest request
     ) throws ChallengeSphereException {
-        Long userId = SecurityAccess.requireUserId(principal);
+        String userId = SecurityAccess.requireUserId(principal).toString();
         return ResponseEntity.ok(featureRequestService.createFeatureRequest(userId, request));
     }
 }

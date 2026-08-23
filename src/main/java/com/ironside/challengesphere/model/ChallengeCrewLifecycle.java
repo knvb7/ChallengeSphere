@@ -16,16 +16,16 @@ import java.sql.Timestamp;
 public class ChallengeCrewLifecycle {
     @Id
     @Column(name = "challenge_id")
-    private Long challengeId;
+    private String challengeId;
 
     @Column(name = "started_at")
     private Timestamp startedAt;
 
     @Column(name = "started_by_user_id")
-    private Long startedByUserId;
+    private String startedByUserId;
 
     @Column(name = "rematch_of_challenge_id")
-    private Long rematchOfChallengeId;
+    private String rematchOfChallengeId;
 
     @Column(name = "recap_ready_at")
     private Timestamp recapReadyAt;

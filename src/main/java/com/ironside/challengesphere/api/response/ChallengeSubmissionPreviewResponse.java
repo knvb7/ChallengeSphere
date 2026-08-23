@@ -3,8 +3,10 @@ package com.ironside.challengesphere.api.response;
 import java.util.List;
 
 public record ChallengeSubmissionPreviewResponse(
-        Long challengeId,
+        String challengeId,
         List<SubmissionPreviewItemResponse> submissions,
-        long totalCount
+        long totalCount,
+        boolean totalCountExact,
+        boolean hasMore
 ) {
 }

@@ -1,6 +1,7 @@
 package com.ironside.challengesphere.controller;
 
 import com.ironside.challengesphere.api.response.CommentResponse;
+import com.ironside.challengesphere.api.response.CursorPageResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.model.Comment;
 import com.ironside.challengesphere.security.SecurityAccess;
@@ -13,9 +14,6 @@ import jakarta.validation.constraints.Size;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageRequest;
-import org.springframework.data.domain.Pageable;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.validation.annotation.Validated;
@@ -36,15 +34,19 @@ public class CommentController {
      * GET /api/v1/comments/submission/{submissionId}
      */
     @GetMapping("/submission/{submissionId}")
-    public ResponseEntity<Page<CommentResponse>> getCommentsForSubmission(
-            @PathVariable Long submissionId,
+    public ResponseEntity<CursorPageResponse<CommentResponse>> getCommentsForSubmission(
+            @PathVariable String submissionId,
             @AuthenticationPrincipal UserPrincipal principal,
-            @RequestParam(required = false) Long callerId,
-            @RequestParam(defaultValue = "0") @Min(0) int page,
-            @RequestParam(defaultValue = "20") @Min(1) @Max(100) int size) throws ChallengeSphereException {
-        logger.info("Get comments for submission: {}, page: {}, size: {}", submissionId, page, size);
-        Pageable pageable = PageRequest.of(page, size);
-        return ResponseEntity.ok(commentService.getCommentsForSubmission(submissionId, SecurityAccess.requireUserId(principal), pageable));
+            @RequestParam(required = false) String callerId,
+            @RequestParam(defaultValue = "20") @Min(1) @Max(100) int limit,
+            @RequestParam(required = false) String cursor) throws ChallengeSphereException {
+        logger.info("Get comments for submission: {}, limit: {}", submissionId, limit);
+        return ResponseEntity.ok(commentService.getCommentsForSubmission(
+                submissionId,
+                SecurityAccess.requireUserId(principal).toString(),
+                limit,
+                cursor
+        ));
     }
 
     /**
@@ -54,10 +56,10 @@ public class CommentController {
     @PostMapping("")
     public ResponseEntity<CommentResponse> createComment(
             @AuthenticationPrincipal UserPrincipal principal,
-            @RequestParam Long submissionId,
-            @RequestParam(required = false) Long userId,
+            @RequestParam String submissionId,
+            @RequestParam(required = false) String userId,
             @RequestParam @NotBlank @Size(max = 2000) String content) throws ChallengeSphereException {
-        Long actorUserId = SecurityAccess.requireUserId(principal);
+        String actorUserId = SecurityAccess.requireUserId(principal).toString();
         logger.info("Create comment for submission: {} by user: {}", submissionId, actorUserId);
         CommentResponse comment = commentService.createComment(submissionId, actorUserId, content);
         return ResponseEntity.ok(comment);
@@ -70,10 +72,10 @@ public class CommentController {
     @PutMapping("/{commentId}")
     public ResponseEntity<Comment> updateComment(
             @AuthenticationPrincipal UserPrincipal principal,
-            @PathVariable Long commentId,
-            @RequestParam(required = false) Long userId,
+            @PathVariable String commentId,
+            @RequestParam(required = false) String userId,
             @RequestParam @NotBlank @Size(max = 2000) String content) throws ChallengeSphereException {
-        Long actorUserId = SecurityAccess.requireUserId(principal);
+        String actorUserId = SecurityAccess.requireUserId(principal).toString();
         logger.info("Update comment: {} by user: {}", commentId, actorUserId);
         Comment comment = commentService.updateComment(commentId, actorUserId, content);
         return ResponseEntity.ok(comment);
@@ -86,9 +88,9 @@ public class CommentController {
     @DeleteMapping("/{commentId}")
     public ResponseEntity<Void> deleteComment(
             @AuthenticationPrincipal UserPrincipal principal,
-            @PathVariable Long commentId,
-            @RequestParam(required = false) Long userId) throws ChallengeSphereException {
-        Long actorUserId = SecurityAccess.requireUserId(principal);
+            @PathVariable String commentId,
+            @RequestParam(required = false) String userId) throws ChallengeSphereException {
+        String actorUserId = SecurityAccess.requireUserId(principal).toString();
         logger.info("Delete comment: {} by user: {}", commentId, actorUserId);
         commentService.deleteComment(commentId, actorUserId);
         return ResponseEntity.ok().build();

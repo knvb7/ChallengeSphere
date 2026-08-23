@@ -53,11 +53,11 @@ public class JwtService {
         signingKey = createSigningKey();
     }
 
-    public String generateAccessToken(Long userId, String username) {
+    public String generateAccessToken(String userId, String username) {
         return generateToken(userId, username, "access", accessTokenExpiryMs);
     }
 
-    public String generateRefreshToken(Long userId, String username) {
+    public String generateRefreshToken(String userId, String username) {
         return generateToken(userId, username, "refresh", refreshTokenExpiryMs);
     }
 
@@ -70,9 +70,9 @@ public class JwtService {
         }
     }
 
-    public Long extractUserId(String token) {
+    public String extractUserId(String token) {
         Claims claims = extractClaims(token);
-        return claims.get("uid", Long.class);
+        return claims.get("uid", String.class);
     }
 
     public boolean isRefreshToken(String token) {
@@ -87,7 +87,7 @@ public class JwtService {
         return isValidToken(token) && isAccessToken(token);
     }
 
-    private String generateToken(Long userId, String username, String type, long ttlMs) {
+    private String generateToken(String userId, String username, String type, long ttlMs) {
         Date now = new Date();
         Date expiry = new Date(now.getTime() + ttlMs);
         return Jwts.builder()

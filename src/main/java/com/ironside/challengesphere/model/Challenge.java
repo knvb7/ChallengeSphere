@@ -1,5 +1,7 @@
 package com.ironside.challengesphere.model;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.ironside.challengesphere.persistence.dynamodb.domain.DynamoVersionedAggregate;
 import jakarta.persistence.*;
 import lombok.Data;
 import lombok.NoArgsConstructor;
@@ -10,15 +12,14 @@ import java.sql.Timestamp;
 @Table(name = "challenges")
 @Data
 @NoArgsConstructor
-public class Challenge {
+public class Challenge implements DynamoVersionedAggregate {
     public static final String MODE_DAILY = "DAILY";
     public static final String MODE_ONE_OFF = "ONE_OFF";
     public static final String PROOF_MODE_FLEXIBLE = "FLEXIBLE";
     public static final String PROOF_MODE_PHOTO_REQUIRED = "PHOTO_REQUIRED";
 
     @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
+    private String id;
 
     @Column(name = "hashtags")
     private String hashtags;
@@ -48,7 +49,7 @@ public class Challenge {
     private Timestamp createdAt;
 
     @Column(name = "creator_id", nullable = false)
-    private Long creatorId;
+    private String creatorId;
 
     @Transient
     private String creatorUsername;
@@ -57,7 +58,7 @@ public class Challenge {
     private String creatorProfilePicUrl;
 
     @Column(name = "current_owner_id", nullable = false)
-    private Long currentOwnerId;
+    private String currentOwnerId;
 
     @Column(name = "number_of_days", nullable = false)
     private Integer numberOfDays;
@@ -76,6 +77,10 @@ public class Challenge {
 
     @Column(name = "cohort_key", length = 120)
     private String cohortKey;
+
+    @Transient
+    @JsonIgnore
+    private Long dynamoVersion;
 
     public static boolean isOneOffMode(String challengeMode) {
         return MODE_ONE_OFF.equalsIgnoreCase(challengeMode);

@@ -2,8 +2,6 @@ package com.ironside.challengesphere.model;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
-import jakarta.persistence.GeneratedValue;
-import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.Table;
@@ -19,14 +17,13 @@ import java.sql.Timestamp;
 public class UserReport {
 
     @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
+    private String id;
 
     @Column(name = "reporter_user_id", nullable = false)
-    private Long reporterUserId;
+    private String reporterUserId;
 
     @Column(name = "reported_user_id", nullable = false)
-    private Long reportedUserId;
+    private String reportedUserId;
 
     @Column(name = "reason", nullable = false, length = 128)
     private String reason;
@@ -41,7 +38,7 @@ public class UserReport {
     private String resolution;
 
     @Column(name = "reviewed_by")
-    private Long reviewedBy;
+    private String reviewedBy;
 
     @Column(name = "reviewed_at")
     private Timestamp reviewedAt;

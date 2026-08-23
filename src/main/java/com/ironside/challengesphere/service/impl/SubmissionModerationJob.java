@@ -43,7 +43,7 @@ public class SubmissionModerationJob {
 
     @Async("moderationExecutor")
     @Transactional
-    public void moderateSubmissionAsync(Long submissionId) {
+    public void moderateSubmissionAsync(String submissionId) {
         moderateIfPending(submissionId);
     }
 
@@ -53,7 +53,7 @@ public class SubmissionModerationJob {
      * a given row, while stale claims are eligible again after 30 minutes.
      */
     @Transactional
-    public boolean moderateIfPending(Long submissionId) {
+    public boolean moderateIfPending(String submissionId) {
         if (submissionId == null) {
             logger.warn("Skipping moderation without a submission id");
             return false;
@@ -115,33 +115,40 @@ public class SubmissionModerationJob {
 
     private void markPassed(Submission submission) {
         Timestamp now = new Timestamp(System.currentTimeMillis());
-        submission.setModerationStatus(Submission.MODERATION_PASSED);
-        submission.setModerationStartedAt(null);
-        submission.setModeratedAt(now);
-        submission.setModerationError(null);
-        submission.setUpdatedAt(now);
-        submissionRepository.save(submission);
+        submissionRepository.mutateExisting(submission.getId(), latest -> {
+            latest.setModerationStatus(Submission.MODERATION_PASSED);
+            latest.setModerationStartedAt(null);
+            latest.setModeratedAt(now);
+            latest.setModerationError(null);
+            latest.setUpdatedAt(now);
+        });
     }
 
     private void markFlagged(Submission submission) {
         Timestamp now = new Timestamp(System.currentTimeMillis());
-        submission.setActive(false);
-        submission.setModerationStatus(Submission.MODERATION_FLAGGED);
-        submission.setModerationStartedAt(null);
-        submission.setModeratedAt(now);
-        submission.setModerationError(null);
-        submission.setUpdatedAt(now);
-        submissionRepository.save(submission);
+        submissionRepository.mutateExisting(submission.getId(), latest -> {
+            latest.setActive(false);
+            latest.setModerationStatus(Submission.MODERATION_FLAGGED);
+            latest.setModerationStartedAt(null);
+            latest.setModeratedAt(now);
+            latest.setModerationError(null);
+            latest.setUpdatedAt(now);
+        });
     }
 
     private void markFailed(Submission submission, Exception error) {
         Timestamp now = new Timestamp(System.currentTimeMillis());
-        submission.setActive(false);
-        submission.setModerationStatus(Submission.MODERATION_FAILED);
-        submission.setModerationStartedAt(null);
-        submission.setModerationError(truncate(error.getClass().getSimpleName() + ": " + error.getMessage(), 512));
-        submission.setUpdatedAt(now);
-        submissionRepository.save(submission);
+        String moderationError = truncate(
+                error.getClass().getSimpleName() + ": " + error.getMessage(),
+                512
+        );
+        submissionRepository.mutateExisting(submission.getId(), latest -> {
+            latest.setActive(false);
+            latest.setModerationStatus(Submission.MODERATION_FAILED);
+            latest.setModerationStartedAt(null);
+            latest.setModerationError(moderationError);
+            latest.setUpdatedAt(now);
+        });
     }
 
     private void saveModerationFlags(Submission submission, ContentModerationService.Result result) {

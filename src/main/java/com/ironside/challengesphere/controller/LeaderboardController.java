@@ -50,19 +50,21 @@ public class LeaderboardController {
                description = "Returns the top participants ranked by their scores")
     public ResponseEntity<LeaderboardResponse> getLeaderboard(
             @AuthenticationPrincipal UserPrincipal principal,
-            @PathVariable @Parameter(description = "Challenge ID") Long challengeId,
+            @PathVariable @Parameter(description = "Challenge ID") String challengeId,
             @RequestParam(defaultValue = "10") @Parameter(description = "Number of entries to return (max 100)") Integer limit,
-            @RequestParam(required = false) @Parameter(description = "Optional user ID to include their rank") Long userId,
+            @RequestParam(required = false) @Parameter(description = "Opaque continuation cursor") String cursor,
+            @RequestParam(required = false) @Parameter(description = "Optional user ID to include their rank") String userId,
             @RequestParam(defaultValue = "OVERALL") @Parameter(description = "Leaderboard type: SUBMISSIONS, GLORIES, STREAK, OVERALL") String type) throws ChallengeSphereException {
         
         logger.info("GET /api/v1/leaderboard/challenge/{} - limit: {}, userId: {}, type: {}", 
             challengeId, limit, userId, type);
         
-        Long actorUserId = SecurityAccess.requireUserId(principal);
+        String actorUserId = SecurityAccess.requireUserId(principal).toString();
         GetLeaderboardRequest request = GetLeaderboardRequest.builder()
                 .challengeId(challengeId)
                 .viewerUserId(actorUserId)
                 .limit(Math.min(limit, 100)) // Cap at 100
+                .cursor(cursor)
                 .userId(userId == null ? actorUserId : userId)
                 .type(GetLeaderboardRequest.LeaderboardType.valueOf(type.toUpperCase()))
                 .build();
@@ -79,12 +81,12 @@ public class LeaderboardController {
                description = "Returns the user's current rank, score, and percentile")
     public ResponseEntity<LeaderboardResponse.UserRankDTO> getUserRank(
             @AuthenticationPrincipal UserPrincipal principal,
-            @PathVariable @Parameter(description = "Challenge ID") Long challengeId,
-            @PathVariable @Parameter(description = "User ID") Long userId) throws ChallengeSphereException {
+            @PathVariable @Parameter(description = "Challenge ID") String challengeId,
+            @PathVariable @Parameter(description = "User ID") String userId) throws ChallengeSphereException {
         
         logger.info("GET /api/v1/leaderboard/challenge/{}/user/{}/rank", challengeId, userId);
         
-        Long actorUserId = SecurityAccess.requireUserId(principal);
+        String actorUserId = SecurityAccess.requireUserId(principal).toString();
         LeaderboardResponse.UserRankDTO rank = leaderboardService.getUserRank(
                 challengeId, userId, actorUserId);
         return ResponseEntity.ok(rank);
@@ -115,7 +117,7 @@ public class LeaderboardController {
     @Operation(summary = "Rebuild leaderboard from database", 
                description = "Recalculates all scores from database (admin use)")
     public ResponseEntity<Map<String, String>> rebuildLeaderboard(
-            @PathVariable @Parameter(description = "Challenge ID") Long challengeId) throws ChallengeSphereException {
+            @PathVariable @Parameter(description = "Challenge ID") String challengeId) throws ChallengeSphereException {
         
         logger.info("POST /api/v1/leaderboard/challenge/{}/rebuild", challengeId);
         
@@ -131,8 +133,8 @@ public class LeaderboardController {
     @Operation(summary = "Remove user from leaderboard", 
                description = "Removes a user from the challenge leaderboard (admin use)")
     public ResponseEntity<Map<String, String>> removeFromLeaderboard(
-            @PathVariable @Parameter(description = "Challenge ID") Long challengeId,
-            @PathVariable @Parameter(description = "User ID") Long userId) {
+            @PathVariable @Parameter(description = "Challenge ID") String challengeId,
+            @PathVariable @Parameter(description = "User ID") String userId) {
         
         logger.info("DELETE /api/v1/leaderboard/challenge/{}/user/{}", challengeId, userId);
         

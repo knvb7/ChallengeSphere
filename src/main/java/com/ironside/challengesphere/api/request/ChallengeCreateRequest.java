@@ -18,7 +18,7 @@ public class ChallengeCreateRequest {
     @NotBlank(message = "Description is required")
     private String description;
 
-    private Long creatorUserId;
+    private String creatorUserId;
 
     private String hashtags;
 
@@ -52,5 +52,5 @@ public class ChallengeCreateRequest {
     private String mediaUrl; // Backward-compatible single cover photo alias
 
     @Size(max = 20, message = "A challenge can invite at most 20 users at once")
-    private List<Long> invitedUserIds;
+    private List<String> invitedUserIds;
 }

@@ -15,6 +15,7 @@ import com.ironside.challengesphere.api.response.SelfUserResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.model.AuthIdentity;
 import com.ironside.challengesphere.model.User;
+import com.ironside.challengesphere.persistence.dynamodb.operations.DynamoOperationalStore;
 import com.ironside.challengesphere.repository.AuthIdentityRepository;
 import com.ironside.challengesphere.repository.UserRepository;
 import com.ironside.challengesphere.security.AuthTokenStore;
@@ -67,6 +68,7 @@ public class AuthServiceImpl implements AuthService {
     private static final String GOOGLE_TOKEN_VERIFICATION_FAILED = "Google token verification failed";
     private static final String PASSWORD_RESET_TOKEN_TYPE = "password_reset";
     private static final Duration PASSWORD_RESET_TOKEN_TTL = Duration.ofMinutes(30);
+    private static final Duration PASSWORD_MUTATION_LEASE = Duration.ofMinutes(1);
     private static final String RESET_CODE_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
     private static final int RESET_CODE_LENGTH = 10;
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
@@ -76,6 +78,7 @@ public class AuthServiceImpl implements AuthService {
     private final AppleSignInService appleSignInService;
     private final JwtService jwtService;
     private final AuthTokenStore authTokenStore;
+    private final DynamoOperationalStore operationalStore;
     private final PasswordEncoder passwordEncoder;
     private final RedisCacheServiceImpl redisCacheServiceImpl;
     private final UserService userService;
@@ -95,6 +98,7 @@ public class AuthServiceImpl implements AuthService {
                            AppleSignInService appleSignInService,
                            JwtService jwtService,
                            AuthTokenStore authTokenStore,
+                           DynamoOperationalStore operationalStore,
                            PasswordEncoder passwordEncoder,
                            RedisCacheServiceImpl redisCacheServiceImpl,
                            UserService userService,
@@ -104,6 +108,7 @@ public class AuthServiceImpl implements AuthService {
         this.appleSignInService = appleSignInService;
         this.jwtService = jwtService;
         this.authTokenStore = authTokenStore;
+        this.operationalStore = operationalStore;
         this.passwordEncoder = passwordEncoder;
         this.redisCacheServiceImpl = redisCacheServiceImpl;
         this.userService = userService;
@@ -251,7 +256,7 @@ public class AuthServiceImpl implements AuthService {
             throw new ChallengeSphereException("Invalid or expired refresh token",
                     HttpStatus.UNAUTHORIZED, logger);
         }
-        Long userId = jwtService.extractUserId(refreshToken);
+        String userId = jwtService.extractUserId(refreshToken);
         if (!authTokenStore.exists(refreshToken, "refresh", userId)) {
             throw new ChallengeSphereException("Invalid or expired refresh token",
                     HttpStatus.UNAUTHORIZED, logger);
@@ -279,7 +284,7 @@ public class AuthServiceImpl implements AuthService {
             throw new ChallengeSphereException("Invalid or expired access token",
                     HttpStatus.UNAUTHORIZED, logger);
         }
-        Long userId = jwtService.extractUserId(accessToken);
+        String userId = jwtService.extractUserId(accessToken);
         if (!authTokenStore.exists(accessToken, "access", userId)) {
             throw new ChallengeSphereException("Invalid or expired access token",
                     HttpStatus.UNAUTHORIZED, logger);
@@ -298,7 +303,7 @@ public class AuthServiceImpl implements AuthService {
 
     @Override
     @Transactional
-    public void changePassword(Long userId, String currentPassword, String newPassword, String confirmPassword)
+    public void changePassword(String userId, String currentPassword, String newPassword, String confirmPassword)
             throws ChallengeSphereException {
         if (userId == null) {
             throw new ChallengeSphereException("Authentication required", HttpStatus.UNAUTHORIZED, logger);
@@ -308,25 +313,53 @@ public class AuthServiceImpl implements AuthService {
         }
         validatePasswordPolicy(newPassword);
 
-        User user = userRepository.findById(userId)
-                .orElseThrow(() -> new ChallengeSphereException("User not found", HttpStatus.NOT_FOUND, logger));
-        if (user.getHashedPassword() == null || user.getHashedPassword().isBlank()) {
-            throw new ChallengeSphereException("Password login is not configured for this account",
-                    HttpStatus.BAD_REQUEST, logger);
-        }
-        if (!passwordEncoder.matches(currentPassword, user.getHashedPassword())) {
-            throw new ChallengeSphereException("Current password is incorrect", HttpStatus.UNAUTHORIZED, logger);
-        }
-        if (passwordEncoder.matches(newPassword, user.getHashedPassword())) {
-            throw new ChallengeSphereException("New password must be different from the current password",
-                    HttpStatus.BAD_REQUEST, logger);
-        }
+        DynamoOperationalStore.Lease lease = acquirePasswordMutationLease(userId);
+        try {
+            User user = userRepository.findById(userId)
+                    .orElseThrow(() -> new ChallengeSphereException(
+                            "User not found", HttpStatus.NOT_FOUND, logger
+                    ));
+            if (user.getHashedPassword() == null || user.getHashedPassword().isBlank()) {
+                throw new ChallengeSphereException(
+                        "Password login is not configured for this account",
+                        HttpStatus.BAD_REQUEST,
+                        logger
+                );
+            }
 
-        user.setHashedPassword(passwordEncoder.encode(newPassword));
-        userRepository.save(user);
-        authTokenStore.revokeAllForUser(userId);
-        redisCacheServiceImpl.invalidateUserProfile(userId);
-        logger.info("Password changed and sessions revoked for userId={}", userId);
+            boolean currentPasswordMatches = passwordMatches(
+                    currentPassword, user.getHashedPassword()
+            );
+            boolean requestedPasswordAlreadyApplied = passwordMatches(
+                    newPassword, user.getHashedPassword()
+            );
+            if (!currentPasswordMatches && !requestedPasswordAlreadyApplied) {
+                throw new ChallengeSphereException(
+                        "Current password is incorrect", HttpStatus.UNAUTHORIZED, logger
+                );
+            }
+            if (currentPasswordMatches && requestedPasswordAlreadyApplied) {
+                throw new ChallengeSphereException(
+                        "New password must be different from the current password",
+                        HttpStatus.BAD_REQUEST,
+                        logger
+                );
+            }
+
+            // Keep the durable password unchanged unless every existing session
+            // has first been revoked. A failed main-table write is then safely
+            // retryable with the old password; an ambiguous committed write is
+            // recognized by requestedPasswordAlreadyApplied on the next attempt.
+            authTokenStore.revokeAllForUser(userId);
+            if (!requestedPasswordAlreadyApplied) {
+                user.setHashedPassword(passwordEncoder.encode(newPassword));
+                userRepository.save(user);
+            }
+            safeInvalidateUserProfile(userId);
+            logger.info("Password changed and sessions revoked for userId={}", userId);
+        } finally {
+            operationalStore.releaseLease(lease);
+        }
     }
 
     @Override
@@ -343,27 +376,106 @@ public class AuthServiceImpl implements AuthService {
         }
         validatePasswordPolicy(newPassword);
 
-        Long userId = authTokenStore.consume(normalizedResetCode, PASSWORD_RESET_TOKEN_TYPE)
-                .orElseThrow(() -> new ChallengeSphereException(
-                        "Password reset code is invalid or expired",
-                        HttpStatus.BAD_REQUEST,
-                        logger
-                ));
-        User user = userRepository.findById(userId)
-                .orElseThrow(() -> new ChallengeSphereException(
-                        "Password reset code is invalid or expired",
-                        HttpStatus.BAD_REQUEST,
-                        logger
-                ));
+        String userId = resolveResetCodeUser(normalizedResetCode);
+        DynamoOperationalStore.Lease lease = acquirePasswordMutationLease(userId);
+        try {
+            // Re-read after acquiring the per-user lease so two reset requests
+            // cannot both pass token validation and race the password write.
+            String leasedUserId = resolveResetCodeUser(normalizedResetCode);
+            if (!userId.equals(leasedUserId)) {
+                throw invalidResetCode();
+            }
+            User user = userRepository.findById(userId)
+                    .orElseThrow(this::invalidResetCode);
+            boolean requestedPasswordAlreadyApplied = passwordMatches(
+                    newPassword, user.getHashedPassword()
+            );
 
-        user.setHashedPassword(passwordEncoder.encode(newPassword));
-        userRepository.save(user);
-        authTokenStore.revokeAllForUser(userId);
-        redisCacheServiceImpl.invalidateUserProfile(userId);
-        logger.info("Password reset completed and sessions revoked for userId={}", userId);
+            // Revoke every session while deliberately retaining the reset code
+            // as a retry credential until the main-table password write is done.
+            authTokenStore.revokeAllForUserExcept(
+                    userId,
+                    normalizedResetCode,
+                    PASSWORD_RESET_TOKEN_TYPE
+            );
+            if (!requestedPasswordAlreadyApplied) {
+                user.setHashedPassword(passwordEncoder.encode(newPassword));
+                userRepository.save(user);
+            }
+            safeInvalidateUserProfile(userId);
+
+            // This is the terminal operation. If anything before it fails, the
+            // same code can resume; revocation itself is an atomic Dynamo write.
+            authTokenStore.revoke(normalizedResetCode, PASSWORD_RESET_TOKEN_TYPE);
+            logger.info("Password reset completed and sessions revoked for userId={}", userId);
+        } finally {
+            operationalStore.releaseLease(lease);
+        }
     }
 
     // --- helpers ---
+
+    private DynamoOperationalStore.Lease acquirePasswordMutationLease(String userId)
+            throws ChallengeSphereException {
+        try {
+            return operationalStore.tryAcquireLease(
+                            "PASSWORD_MUTATION", userId, PASSWORD_MUTATION_LEASE
+                    )
+                    .orElseThrow(() -> new ChallengeSphereException(
+                            "A password update is already in progress. Please try again.",
+                            HttpStatus.CONFLICT,
+                            logger
+                    ));
+        } catch (ChallengeSphereException exception) {
+            throw exception;
+        } catch (RuntimeException unavailable) {
+            throw new ChallengeSphereException(
+                    "Password service is temporarily unavailable. Please try again.",
+                    HttpStatus.SERVICE_UNAVAILABLE,
+                    logger,
+                    unavailable
+            );
+        }
+    }
+
+    private String resolveResetCodeUser(String normalizedResetCode)
+            throws ChallengeSphereException {
+        try {
+            return authTokenStore.findUser(
+                            normalizedResetCode, PASSWORD_RESET_TOKEN_TYPE
+                    )
+                    .orElseThrow(this::invalidResetCode);
+        } catch (ChallengeSphereException exception) {
+            throw exception;
+        } catch (RuntimeException unavailable) {
+            throw new ChallengeSphereException(
+                    "Password reset service is temporarily unavailable. Please try again.",
+                    HttpStatus.SERVICE_UNAVAILABLE,
+                    logger,
+                    unavailable
+            );
+        }
+    }
+
+    private ChallengeSphereException invalidResetCode() {
+        return new ChallengeSphereException(
+                "Password reset code is invalid or expired",
+                HttpStatus.BAD_REQUEST,
+                logger
+        );
+    }
+
+    private void safeInvalidateUserProfile(String userId) {
+        try {
+            redisCacheServiceImpl.invalidateUserProfile(userId);
+        } catch (RuntimeException unavailable) {
+            logger.warn(
+                    "User-profile cache invalidation remains pending for userId={}: {}",
+                    userId,
+                    unavailable.getClass().getSimpleName()
+            );
+        }
+    }
 
     private String generateResetCode() {
         StringBuilder code = new StringBuilder(RESET_CODE_LENGTH);

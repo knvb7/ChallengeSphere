@@ -18,20 +18,20 @@ import java.util.List;
 @Service
 public interface SubmissionService {
     SubmissionResponse createSubmission(CreateSubmissionRequest request) throws ChallengeSphereException;
-    SubmissionResponse reuploadSubmission(Long submissionId, CreateSubmissionRequest request) throws ChallengeSphereException;
-    void deleteSubmission(Long submissionId, Long userId) throws ChallengeSphereException;
-    SubmissionsResponse getSubmissionsByUserAndChallenge(Long userId, Long challengeId, int page, int pageSize, Long callerId) throws ChallengeSphereException;
-    SubmissionsResponse getSubmissionsByChallenge(Long challengeId, int page, int pageSize, Long callerId, String sortBy, String participantQuery) throws ChallengeSphereException;
+    SubmissionResponse reuploadSubmission(String submissionId, CreateSubmissionRequest request) throws ChallengeSphereException;
+    void deleteSubmission(String submissionId, String userId) throws ChallengeSphereException;
+    SubmissionsResponse getSubmissionsByUserAndChallenge(String userId, String challengeId, String callerId, int limit, String cursor) throws ChallengeSphereException;
+    SubmissionsResponse getSubmissionsByChallenge(String challengeId, String callerId, int limit, String cursor, String sortBy, String participantQuery) throws ChallengeSphereException;
     List<ChallengeSubmissionPreviewResponse> getSubmissionPreviews(
-            List<Long> challengeIds,
-            Long userId,
-            Long callerId
+            List<String> challengeIds,
+            String userId,
+            String callerId
     ) throws ChallengeSphereException;
-    SubmissionsResponse getRandomChallengeSubmissionsByDay(Long challengeId, Integer dayNumber, int page, int pageSize, Long callerId, String sortBy, String participantQuery) throws ChallengeSphereException;
-    SubmissionsResponse getSubmissionsByUser(Long userId, int page, int pageSize, Long callerId) throws ChallengeSphereException;
+    SubmissionsResponse getRandomChallengeSubmissionsByDay(String challengeId, Integer dayNumber, String callerId, int limit, String cursor, String sortBy, String participantQuery) throws ChallengeSphereException;
+    SubmissionsResponse getSubmissionsByUser(String userId, String callerId, int limit, String cursor) throws ChallengeSphereException;
     PresignedUrlsResponse generatePresignedUrls(GeneratePresignedUrlsRequest request) throws ChallengeSphereException;
     String uploadSubmissionMedia(
-            Long userId,
+            String userId,
             MultipartFile file,
             MediaTypes mediaType,
             GeneratePresignedUrlsRequest.ContentType contentType) throws ChallengeSphereException;
@@ -42,5 +42,5 @@ public interface SubmissionService {
      * @param callerId the id of the requesting user — required to authorize access to private submissions
      * @return the submission or null if not found
      */
-    Submission getSubmissionById(Long submissionId, Long callerId) throws ChallengeSphereException;
+    Submission getSubmissionById(String submissionId, String callerId) throws ChallengeSphereException;
 }

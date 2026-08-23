@@ -6,10 +6,10 @@ import com.ironside.challengesphere.api.response.SubscriptionStatusResponse;
 import com.ironside.challengesphere.config.ChallengeParticipationProperties;
 import com.ironside.challengesphere.config.RevenueCatProperties;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
-import com.ironside.challengesphere.model.SubscriptionWebhookEvent;
 import com.ironside.challengesphere.model.User;
 import com.ironside.challengesphere.model.UserSubscription;
 import com.ironside.challengesphere.repository.SubscriptionWebhookEventRepository;
+import com.ironside.challengesphere.repository.SubscriptionWebhookEventRepository.WebhookEventClaim;
 import com.ironside.challengesphere.repository.UserChallengeRepository;
 import com.ironside.challengesphere.repository.UserRepository;
 import com.ironside.challengesphere.repository.UserSubscriptionRepository;
@@ -65,14 +65,14 @@ public class SubscriptionServiceImpl implements SubscriptionService {
 
     @Override
     @Transactional(readOnly = true)
-    public SubscriptionStatusResponse getStatus(Long userId) throws ChallengeSphereException {
+    public SubscriptionStatusResponse getStatus(String userId) throws ChallengeSphereException {
         User user = requireUser(userId, false);
         return toResponse(user, subscriptionRepository.findById(userId).orElse(null));
     }
 
     @Override
     @Transactional
-    public SubscriptionStatusResponse sync(Long userId) throws ChallengeSphereException {
+    public SubscriptionStatusResponse sync(String userId) throws ChallengeSphereException {
         User user = requireUser(userId, true);
         UserSubscription subscription = reconcile(user, null);
         return toResponse(user, subscription);
@@ -86,39 +86,56 @@ public class SubscriptionServiceImpl implements SubscriptionService {
         try {
             JsonNode event = objectMapper.readTree(rawBody).path("event");
             String eventId = requiredText(event, "id");
-            if (eventRepository.existsById(eventId)) return;
-
             String eventType = requiredText(event, "type");
             String appUserId = textOrNull(event, "app_user_id");
             String environment = textOrNull(event, "environment");
-            if ("TRANSFER".equals(eventType)) {
-                Set<Long> affectedUserIds = new TreeSet<>();
-                collectUserIds(event.path("transferred_from"), affectedUserIds);
-                collectUserIds(event.path("transferred_to"), affectedUserIds);
-                if (affectedUserIds.isEmpty()) {
-                    throw new IllegalArgumentException(
-                            "RevenueCat transfer does not reference a ChallengeSphere App User ID"
-                    );
-                }
-                for (Long affectedUserId : affectedUserIds) {
-                    reconcileWebhookUser(affectedUserId, environment, eventId);
-                }
-                if (appUserId == null) {
-                    appUserId = firstChallengeSphereAppUserId(event.path("transferred_to"));
-                }
-            } else {
-                Long userId = resolveSubscriberUserId(event, appUserId);
-                if (userId != null) {
-                    reconcileWebhookUser(userId, environment, eventId);
-                }
+
+            WebhookEventClaim claim = eventRepository.claimForProcessing(
+                    eventId,
+                    eventType,
+                    appUserId,
+                    environment
+            ).orElse(null);
+            if (claim == null) {
+                return;
             }
 
-            SubscriptionWebhookEvent storedEvent = new SubscriptionWebhookEvent();
-            storedEvent.setEventId(eventId);
-            storedEvent.setEventType(eventType);
-            storedEvent.setAppUserId(appUserId);
-            storedEvent.setEnvironment(environment);
-            eventRepository.save(storedEvent);
+            try {
+                if ("TRANSFER".equals(eventType)) {
+                    Set<String> affectedUserIds = new TreeSet<>();
+                    collectUserIds(event.path("transferred_from"), affectedUserIds);
+                    collectUserIds(event.path("transferred_to"), affectedUserIds);
+                    if (affectedUserIds.isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "RevenueCat transfer does not reference a ChallengeSphere App User ID"
+                        );
+                    }
+                    for (String affectedUserId : affectedUserIds) {
+                        reconcileWebhookUser(affectedUserId, environment, eventId);
+                    }
+                    if (appUserId == null) {
+                        appUserId = firstChallengeSphereAppUserId(event.path("transferred_to"));
+                    }
+                } else {
+                    String userId = resolveSubscriberUserId(event, appUserId);
+                    if (userId != null) {
+                        reconcileWebhookUser(userId, environment, eventId);
+                    }
+                }
+
+                if (!eventRepository.completeClaim(claim, appUserId, environment)) {
+                    logger.warn("RevenueCat webhook completion lost its claim | eventId={}", eventId);
+                }
+            } catch (Exception failure) {
+                try {
+                    if (!eventRepository.failClaim(claim, failure)) {
+                        logger.warn("RevenueCat webhook failure lost its claim | eventId={}", eventId);
+                    }
+                } catch (RuntimeException transitionFailure) {
+                    failure.addSuppressed(transitionFailure);
+                }
+                throw failure;
+            }
         } catch (ChallengeSphereException e) {
             throw e;
         } catch (Exception e) {
@@ -135,12 +152,12 @@ public class SubscriptionServiceImpl implements SubscriptionService {
 
     private UserSubscription reconcile(User user, String environment)
             throws ChallengeSphereException {
-        String appUserId = appUserIdFor(user.getId());
+        UserSubscription subscription = subscriptionRepository.findById(user.getId())
+                .orElseGet(UserSubscription::new);
+        String appUserId = existingOrPreferredAppUserId(user, subscription);
         RevenueCatClient.EntitlementSnapshot snapshot =
                 revenueCatClient.getPremiumEntitlement(appUserId);
 
-        UserSubscription subscription = subscriptionRepository.findById(user.getId())
-                .orElseGet(UserSubscription::new);
         subscription.setUserId(user.getId());
         subscription.setProvider("REVENUECAT");
         subscription.setAppUserId(appUserId);
@@ -162,8 +179,8 @@ public class SubscriptionServiceImpl implements SubscriptionService {
         return subscription;
     }
 
-    private Long resolveSubscriberUserId(JsonNode event, String appUserId) {
-        Long userId = parseUserId(appUserId);
+    private String resolveSubscriberUserId(JsonNode event, String appUserId) {
+        String userId = parseUserId(appUserId);
         if (userId != null) return userId;
 
         userId = parseUserId(textOrNull(event, "original_app_user_id"));
@@ -178,10 +195,10 @@ public class SubscriptionServiceImpl implements SubscriptionService {
         return null;
     }
 
-    private void collectUserIds(JsonNode values, Set<Long> destination) {
+    private void collectUserIds(JsonNode values, Set<String> destination) {
         if (!values.isArray()) return;
         for (JsonNode value : values) {
-            Long userId = parseUserId(value.asText(null));
+            String userId = parseUserId(value.asText(null));
             if (userId != null) destination.add(userId);
         }
     }
@@ -195,7 +212,7 @@ public class SubscriptionServiceImpl implements SubscriptionService {
         return null;
     }
 
-    private void reconcileWebhookUser(Long userId, String environment, String eventId)
+    private void reconcileWebhookUser(String userId, String environment, String eventId)
             throws ChallengeSphereException {
         User user = userRepository.findByIdForUpdate(userId).orElse(null);
         if (user != null && Boolean.TRUE.equals(user.getActive()) && user.getDeletedAt() == null) {
@@ -216,7 +233,7 @@ public class SubscriptionServiceImpl implements SubscriptionService {
                 .tier(premium ? "PREMIUM" : "FREE")
                 .premium(premium)
                 .purchasesEnabled(properties.isPurchasesReady())
-                .appUserId(appUserIdFor(user.getId()))
+                .appUserId(existingOrPreferredAppUserId(user, subscription))
                 .productId(subscription == null ? null : subscription.getProductId())
                 .status(subscription == null ? (premium ? "ACTIVE" : "INACTIVE") : subscription.getStatus())
                 .expiresAt(subscription == null ? null : subscription.getExpiresAt())
@@ -230,7 +247,7 @@ public class SubscriptionServiceImpl implements SubscriptionService {
                 .build();
     }
 
-    private User requireUser(Long userId, boolean lock) throws ChallengeSphereException {
+    private User requireUser(String userId, boolean lock) throws ChallengeSphereException {
         return (lock ? userRepository.findByIdForUpdate(userId) : userRepository.findById(userId))
                 .orElseThrow(() -> new ChallengeSphereException(
                         "User not found",
@@ -297,17 +314,28 @@ public class SubscriptionServiceImpl implements SubscriptionService {
         }
     }
 
-    private Long parseUserId(String appUserId) {
+    private String parseUserId(String appUserId) {
         if (appUserId == null || !appUserId.startsWith(properties.getAppUserIdPrefix())) return null;
-        try {
-            return Long.parseLong(appUserId.substring(properties.getAppUserIdPrefix().length()));
-        } catch (NumberFormatException ignored) {
-            return null;
+        String userId = appUserId.substring(properties.getAppUserIdPrefix().length()).strip();
+        if (userId.matches("[0-9A-HJKMNP-TV-Z]{26}")) {
+            return userId;
         }
+        if (userId.matches("[0-9]+")) {
+            return userRepository.findByLegacyId(userId).map(User::getId).orElse(null);
+        }
+        return null;
     }
 
-    private String appUserIdFor(Long userId) {
-        return properties.getAppUserIdPrefix() + userId;
+    private String existingOrPreferredAppUserId(User user, UserSubscription subscription) {
+        if (subscription != null
+                && subscription.getAppUserId() != null
+                && user.getId().equals(parseUserId(subscription.getAppUserId()))) {
+            return subscription.getAppUserId();
+        }
+        String stableProviderId = user.getLegacyId() == null || user.getLegacyId().isBlank()
+                ? user.getId()
+                : user.getLegacyId().strip();
+        return properties.getAppUserIdPrefix() + stableProviderId;
     }
 
     private static String requiredText(JsonNode node, String field) {

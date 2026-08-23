@@ -2,26 +2,46 @@ package com.ironside.challengesphere.api.response;
 
 import com.ironside.challengesphere.model.User;
 import lombok.Data;
+import lombok.EqualsAndHashCode;
+import lombok.NoArgsConstructor;
 
 import java.util.List;
 
 @Data
-public class ChallengeParticipantsResponse {
-    private Long challengeId;
+@EqualsAndHashCode(callSuper = true)
+@NoArgsConstructor
+public class ChallengeParticipantsResponse extends CursorResponse {
+    private String challengeId;
     private List<PublicUserResponse> participants;
     private int totalParticipants;
 
-    public ChallengeParticipantsResponse(Long challengeId, List<PublicUserResponse> participants, int totalParticipants) {
+    public ChallengeParticipantsResponse(
+            String challengeId,
+            List<PublicUserResponse> participants,
+            int totalParticipants,
+            String nextCursor,
+            boolean hasMore
+    ) {
         this.challengeId = challengeId;
         this.participants = participants;
         this.totalParticipants = totalParticipants;
+        setNextCursor(nextCursor);
+        setHasMore(hasMore);
     }
 
-    public static ChallengeParticipantsResponse create(Long challengeId, List<User> participants) {
+    public static ChallengeParticipantsResponse create(
+            String challengeId,
+            List<User> participants,
+            int totalParticipants,
+            String nextCursor,
+            boolean hasMore
+    ) {
         return new ChallengeParticipantsResponse(
                 challengeId,
                 PublicUserResponse.fromUsers(participants),
-                participants.size()
+                totalParticipants,
+                nextCursor,
+                hasMore
         );
     }
 }

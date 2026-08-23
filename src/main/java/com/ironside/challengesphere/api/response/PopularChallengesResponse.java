@@ -1,6 +1,7 @@
 package com.ironside.challengesphere.api.response;
 
 import com.ironside.challengesphere.model.Challenge;
+import lombok.EqualsAndHashCode;
 import lombok.Data;
 
 import java.sql.Timestamp;
@@ -8,16 +9,13 @@ import java.time.LocalDate;
 import java.util.List;
 
 @Data
-public class PopularChallengesResponse {
+@EqualsAndHashCode(callSuper = true)
+public class PopularChallengesResponse extends CursorResponse {
     private List<ChallengeWithParticipantCount> challenges;
-    private int currentPage;
-    private int pageSize;
-    private int totalCount;
-    private int totalPages;
 
     @Data
     public static class ChallengeWithParticipantCount {
-        private Long id;
+        private String id;
         private String hashtags;
         private String categories;
         private String title;
@@ -27,10 +25,10 @@ public class PopularChallengesResponse {
         private LocalDate startDate;
         private Boolean active;
         private Timestamp createdAt;
-        private Long creatorId;
+        private String creatorId;
         private String creatorUsername;
         private String creatorProfilePicUrl;
-        private Long currentOwnerId;
+        private String currentOwnerId;
         private Integer numberOfDays;
         private String challengeMode;
         private String proofMode;
@@ -40,7 +38,7 @@ public class PopularChallengesResponse {
         private int participantCount;
 
         public ChallengeWithParticipantCount(Challenge challenge, int participantCount) {
-            this.id = challenge.getId();
+            this.id = stringId(challenge.getId());
             this.hashtags = challenge.getHashtags();
             this.categories = challenge.getCategories();
             this.title = challenge.getTitle();
@@ -50,10 +48,10 @@ public class PopularChallengesResponse {
             this.startDate = challenge.getStartDate();
             this.active = challenge.getActive();
             this.createdAt = challenge.getCreatedAt();
-            this.creatorId = challenge.getCreatorId();
+            this.creatorId = stringId(challenge.getCreatorId());
             this.creatorUsername = challenge.getCreatorUsername();
             this.creatorProfilePicUrl = challenge.getCreatorProfilePicUrl();
-            this.currentOwnerId = challenge.getCurrentOwnerId();
+            this.currentOwnerId = stringId(challenge.getCurrentOwnerId());
             this.numberOfDays = challenge.getNumberOfDays();
             this.challengeMode = challenge.getChallengeMode();
             this.proofMode = challenge.getProofMode();
@@ -64,14 +62,19 @@ public class PopularChallengesResponse {
         }
     }
 
-    public static PopularChallengesResponse create(List<ChallengeWithParticipantCount> challenges,
-                                                    int page, int pageSize, int totalCount) {
+    public static PopularChallengesResponse create(
+            List<ChallengeWithParticipantCount> challenges,
+            String nextCursor,
+            boolean hasMore
+    ) {
         PopularChallengesResponse response = new PopularChallengesResponse();
         response.setChallenges(challenges);
-        response.setCurrentPage(page);
-        response.setPageSize(pageSize);
-        response.setTotalCount(totalCount);
-        response.setTotalPages((int) Math.ceil((double) totalCount / pageSize));
+        response.setNextCursor(nextCursor);
+        response.setHasMore(hasMore);
         return response;
+    }
+
+    private static String stringId(Object value) {
+        return value == null ? null : value.toString();
     }
 }

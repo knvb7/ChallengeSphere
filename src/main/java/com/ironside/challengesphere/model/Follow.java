@@ -14,18 +14,25 @@ import java.sql.Timestamp;
 public class Follow {
 
     @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
+    private String id;
 
     @Column(name = "follower_id", nullable = false)
-    private Long followerId;
+    private String followerId;
 
     @Column(name = "following_id", nullable = false)
-    private Long followingId;
+    private String followingId;
 
     @Column(name = "created_at", nullable = false, columnDefinition = "TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
     private Timestamp createdAt;
 
     @Column(name = "active", nullable = false, columnDefinition = "BOOLEAN DEFAULT TRUE")
     private Boolean active = true;
+
+    /** Durable cursor for bounded historical-submission backfill after a follow begins. */
+    @Transient
+    private String feedTimelineBackfillCursor;
+
+    /** Set only after this follower's historical timeline backfill is complete. */
+    @Transient
+    private Timestamp feedTimelineBackfillCompletedAt;
 }

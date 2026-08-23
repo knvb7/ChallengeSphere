@@ -18,7 +18,7 @@ import java.sql.Timestamp;
 public class UserSubscription {
     @Id
     @Column(name = "user_id")
-    private Long userId;
+    private String userId;
 
     @Column(name = "provider", nullable = false, length = 32)
     private String provider = "REVENUECAT";

@@ -68,13 +68,13 @@ public class CacheAdminController {
     }
 
     @PostMapping("/challenges/{challengeId}/invalidate")
-    public ResponseEntity<Map<String, Object>> invalidateChallenge(@PathVariable Long challengeId) {
+    public ResponseEntity<Map<String, Object>> invalidateChallenge(@PathVariable String challengeId) {
         cacheService.clearChallengeCache(challengeId);
         return accepted("challenge", challengeId);
     }
 
     @PostMapping("/users/{userId}/invalidate")
-    public ResponseEntity<Map<String, Object>> invalidateUser(@PathVariable Long userId) {
+    public ResponseEntity<Map<String, Object>> invalidateUser(@PathVariable String userId) {
         cacheService.clearUserCache(userId);
         cacheService.invalidateAllUserCaches(userId);
         cacheService.invalidateUserChallenges(userId);
@@ -84,7 +84,7 @@ public class CacheAdminController {
     }
 
     @PostMapping("/submissions/{submissionId}/invalidate")
-    public ResponseEntity<Map<String, Object>> invalidateSubmission(@PathVariable Long submissionId) {
+    public ResponseEntity<Map<String, Object>> invalidateSubmission(@PathVariable String submissionId) {
         cacheService.invalidateSubmission(submissionId);
         cacheService.invalidateCommentsForSubmission(submissionId);
         cacheService.invalidateGloryCaches(submissionId);
@@ -93,21 +93,21 @@ public class CacheAdminController {
     }
 
     @PostMapping("/users/{userId}/challenges/invalidate")
-    public ResponseEntity<Map<String, Object>> invalidateUserChallenges(@PathVariable Long userId) {
+    public ResponseEntity<Map<String, Object>> invalidateUserChallenges(@PathVariable String userId) {
         cacheService.invalidateUserChallenges(userId);
         return accepted("user-challenges", userId);
     }
 
     @PostMapping("/challenges/{challengeId}/participants/invalidate")
-    public ResponseEntity<Map<String, Object>> invalidateChallengeParticipants(@PathVariable Long challengeId) {
+    public ResponseEntity<Map<String, Object>> invalidateChallengeParticipants(@PathVariable String challengeId) {
         cacheService.invalidateChallengeParticipants(challengeId);
         return accepted("challenge-participants", challengeId);
     }
 
     @PostMapping("/users/{userId}/submissions/invalidate")
     public ResponseEntity<Map<String, Object>> invalidateUserSubmissions(
-            @PathVariable Long userId,
-            @RequestParam Long challengeId) {
+            @PathVariable String userId,
+            @RequestParam String challengeId) {
         cacheService.invalidateUserSubmissions(userId, challengeId);
         return ResponseEntity.accepted().body(Map.of(
                 "status", "accepted",
@@ -130,25 +130,25 @@ public class CacheAdminController {
     }
 
     @PostMapping("/users/{userId}/feeds/invalidate")
-    public ResponseEntity<Map<String, Object>> invalidateUserFeeds(@PathVariable Long userId) {
+    public ResponseEntity<Map<String, Object>> invalidateUserFeeds(@PathVariable String userId) {
         cacheService.invalidateUserFeeds(userId);
         return accepted("user-feeds", userId);
     }
 
     @PostMapping("/users/{userId}/timeline/invalidate")
-    public ResponseEntity<Map<String, Object>> invalidateTimeline(@PathVariable Long userId) {
+    public ResponseEntity<Map<String, Object>> invalidateTimeline(@PathVariable String userId) {
         cacheService.invalidateTimeline(userId);
         return accepted("timeline", userId);
     }
 
     @PostMapping("/submissions/{submissionId}/comments/invalidate")
-    public ResponseEntity<Map<String, Object>> invalidateComments(@PathVariable Long submissionId) {
+    public ResponseEntity<Map<String, Object>> invalidateComments(@PathVariable String submissionId) {
         cacheService.invalidateCommentsForSubmission(submissionId);
         return accepted("comments", submissionId);
     }
 
     @PostMapping("/submissions/{submissionId}/glories/invalidate")
-    public ResponseEntity<Map<String, Object>> invalidateGlories(@PathVariable Long submissionId) {
+    public ResponseEntity<Map<String, Object>> invalidateGlories(@PathVariable String submissionId) {
         cacheService.invalidateGloryCaches(submissionId);
         return accepted("glories", submissionId);
     }

@@ -8,6 +8,7 @@ import com.ironside.challengesphere.model.Challenge;
 
 import lombok.AllArgsConstructor;
 import lombok.Builder;
+import lombok.EqualsAndHashCode;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
@@ -18,14 +19,10 @@ import lombok.NoArgsConstructor;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class RecentChallengesResponse {
+@EqualsAndHashCode(callSuper = true)
+public class RecentChallengesResponse extends CursorResponse {
     
     private List<ChallengeInfo> challenges;
-    private int page;
-    private int pageSize;
-    private int totalCount;
-    private int totalPages;
-    private boolean hasMore;
 
     /**
      * Challenge info with engagement metrics
@@ -35,7 +32,7 @@ public class RecentChallengesResponse {
     @NoArgsConstructor
     @AllArgsConstructor
     public static class ChallengeInfo {
-        private Long id;
+        private String id;
         private String hashtags;
         private String categories;
         private String title;
@@ -45,10 +42,10 @@ public class RecentChallengesResponse {
         private LocalDate startDate;
         private Boolean active;
         private Timestamp createdAt;
-        private Long creatorId;
+        private String creatorId;
         private String creatorUsername;
         private String creatorProfilePicUrl;
-        private Long currentOwnerId;
+        private String currentOwnerId;
         private Integer numberOfDays;
         private String challengeMode;
         private String proofMode;
@@ -61,7 +58,7 @@ public class RecentChallengesResponse {
 
         public static ChallengeInfo fromChallenge(Challenge challenge) {
             return ChallengeInfo.builder()
-                    .id(challenge.getId())
+                    .id(stringId(challenge.getId()))
                     .hashtags(challenge.getHashtags())
                     .categories(challenge.getCategories())
                     .title(challenge.getTitle())
@@ -71,10 +68,10 @@ public class RecentChallengesResponse {
                     .startDate(challenge.getStartDate())
                     .active(challenge.getActive())
                     .createdAt(challenge.getCreatedAt())
-                    .creatorId(challenge.getCreatorId())
+                    .creatorId(stringId(challenge.getCreatorId()))
                     .creatorUsername(challenge.getCreatorUsername())
                     .creatorProfilePicUrl(challenge.getCreatorProfilePicUrl())
-                    .currentOwnerId(challenge.getCurrentOwnerId())
+                    .currentOwnerId(stringId(challenge.getCurrentOwnerId()))
                     .numberOfDays(challenge.getNumberOfDays())
                     .challengeMode(challenge.getChallengeMode())
                     .proofMode(challenge.getProofMode())
@@ -99,31 +96,31 @@ public class RecentChallengesResponse {
     /**
      * Create a RecentChallengesResponse from a list of challenges
      */
-    public static RecentChallengesResponse create(List<ChallengeInfo> challenges, int page, int pageSize, int totalCount) {
-        int totalPages = (int) Math.ceil((double) totalCount / pageSize);
-        boolean hasMore = page < totalPages;
-        
-        return RecentChallengesResponse.builder()
+    public static RecentChallengesResponse create(
+            List<ChallengeInfo> challenges,
+            String nextCursor,
+            boolean hasMore
+    ) {
+        RecentChallengesResponse response = RecentChallengesResponse.builder()
                 .challenges(challenges)
-                .page(page)
-                .pageSize(pageSize)
-                .totalCount(totalCount)
-                .totalPages(totalPages)
-                .hasMore(hasMore)
                 .build();
+        response.setNextCursor(nextCursor);
+        response.setHasMore(hasMore);
+        return response;
     }
 
     /**
      * Create an empty response
      */
-    public static RecentChallengesResponse empty(int page, int pageSize) {
-        return RecentChallengesResponse.builder()
+    public static RecentChallengesResponse empty() {
+        RecentChallengesResponse response = RecentChallengesResponse.builder()
                 .challenges(List.of())
-                .page(page)
-                .pageSize(pageSize)
-                .totalCount(0)
-                .totalPages(0)
-                .hasMore(false)
                 .build();
+        response.setHasMore(false);
+        return response;
+    }
+
+    private static String stringId(Object value) {
+        return value == null ? null : value.toString();
     }
 }

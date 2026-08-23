@@ -2,8 +2,56 @@ package com.ironside.challengesphere.service.impl;
 
 import com.ironside.challengesphere.api.response.AccountDeletionResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
+import com.ironside.challengesphere.model.AuthIdentity;
+import com.ironside.challengesphere.model.Challenge;
+import com.ironside.challengesphere.model.ChallengeCrewInvite;
+import com.ironside.challengesphere.model.ChallengeCrewLifecycle;
+import com.ironside.challengesphere.model.ChallengeInvite;
+import com.ironside.challengesphere.model.ChallengePeerNudge;
+import com.ironside.challengesphere.model.ChallengePeerReminderPreference;
+import com.ironside.challengesphere.model.Comment;
+import com.ironside.challengesphere.model.FeatureRequest;
+import com.ironside.challengesphere.model.Follow;
+import com.ironside.challengesphere.model.Glory;
+import com.ironside.challengesphere.model.InviteUsage;
+import com.ironside.challengesphere.model.LeaderboardEntry;
+import com.ironside.challengesphere.model.Notification;
+import com.ironside.challengesphere.model.PushDeviceToken;
+import com.ironside.challengesphere.model.Report;
+import com.ironside.challengesphere.model.Submission;
 import com.ironside.challengesphere.model.User;
+import com.ironside.challengesphere.model.UserBlock;
+import com.ironside.challengesphere.model.UserChallenge;
+import com.ironside.challengesphere.model.UserPreferences;
+import com.ironside.challengesphere.model.UserReport;
+import com.ironside.challengesphere.persistence.dynamodb.domain.DynamoDomainStore;
+import com.ironside.challengesphere.persistence.dynamodb.domain.DynamoPage;
+import com.ironside.challengesphere.persistence.dynamodb.operations.DynamoOperationalStore;
+import com.ironside.challengesphere.persistence.dynamodb.repository.challenge.ChallengeRepositoryKeys;
+import com.ironside.challengesphere.persistence.dynamodb.repository.user.UserDynamoKeys;
+import com.ironside.challengesphere.repository.AuthIdentityRepository;
+import com.ironside.challengesphere.repository.ChallengeCrewInviteRepository;
+import com.ironside.challengesphere.repository.ChallengeCrewLifecycleRepository;
+import com.ironside.challengesphere.repository.ChallengeInviteRepository;
+import com.ironside.challengesphere.repository.ChallengePeerNudgeRepository;
+import com.ironside.challengesphere.repository.ChallengePeerReminderPreferenceRepository;
+import com.ironside.challengesphere.repository.ChallengeRepository;
+import com.ironside.challengesphere.repository.CommentRepository;
+import com.ironside.challengesphere.repository.FeatureRequestRepository;
+import com.ironside.challengesphere.repository.FollowRepository;
+import com.ironside.challengesphere.repository.GloryRepository;
+import com.ironside.challengesphere.repository.InviteUsageRepository;
+import com.ironside.challengesphere.repository.LeaderboardEntryRepository;
+import com.ironside.challengesphere.repository.NotificationRepository;
+import com.ironside.challengesphere.repository.PushDeviceTokenRepository;
+import com.ironside.challengesphere.repository.ReportRepository;
+import com.ironside.challengesphere.repository.SubmissionRepository;
+import com.ironside.challengesphere.repository.UserBlockRepository;
+import com.ironside.challengesphere.repository.UserChallengeRepository;
+import com.ironside.challengesphere.repository.UserPreferencesRepository;
+import com.ironside.challengesphere.repository.UserReportRepository;
 import com.ironside.challengesphere.repository.UserRepository;
+import com.ironside.challengesphere.repository.UserSubscriptionRepository;
 import com.ironside.challengesphere.security.AuthTokenStore;
 import com.ironside.challengesphere.util.UserRole;
 import jakarta.annotation.PostConstruct;
@@ -11,10 +59,10 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
 import java.sql.Timestamp;
@@ -22,122 +70,118 @@ import java.text.Normalizer;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HexFormat;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
+import java.util.function.Consumer;
 
-import javax.crypto.Mac;
-import javax.crypto.spec.SecretKeySpec;
+import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 
+/** Account erasure orchestration backed only by keyed DynamoDB access patterns. */
 @Service
 public class AccountDeletionService {
 
     private static final Logger logger = LogManager.getLogger(AccountDeletionService.class);
     private static final String REQUIRED_CONFIRMATION = "DELETE";
     private static final Duration IDENTITY_HASH_RETENTION = Duration.ofDays(90);
-
-    private static final String UPSERT_REQUEST_SQL = """
-            INSERT INTO challengesphere.account_deletion_requests AS deletion_request (
-                user_id,
-                email_identity_hmac,
-                username_identity_hmac,
-                identity_hash_expires_at,
-                identity_hash_purged_at,
-                status,
-                requested_at,
-                processed_at,
-                media_cleanup_count
-            ) VALUES (?, ?, ?, ?, NULL, 'PROCESSING', CURRENT_TIMESTAMP, NULL, 0)
-            ON CONFLICT (user_id) DO UPDATE SET
-                email_identity_hmac = EXCLUDED.email_identity_hmac,
-                username_identity_hmac = EXCLUDED.username_identity_hmac,
-                identity_hash_expires_at = EXCLUDED.identity_hash_expires_at,
-                identity_hash_purged_at = NULL,
-                status = 'PROCESSING',
-                requested_at = CURRENT_TIMESTAMP,
-                processed_at = NULL,
-                media_cleanup_count = 0
-            RETURNING deletion_request.id
-            """;
-
-    private static final String MEDIA_REFERENCES_SQL = """
-            SELECT 'PROFILE' AS source_type, id AS source_id, profile_pic_url AS media_references
-            FROM challengesphere.users
-            WHERE id = ? AND profile_pic_url IS NOT NULL AND BTRIM(profile_pic_url) <> ''
-            UNION ALL
-            SELECT 'SUBMISSION', id, media_urls
-            FROM challengesphere.submissions
-            WHERE user_id = ? AND media_urls IS NOT NULL AND BTRIM(media_urls) <> ''
-            UNION ALL
-            SELECT 'CHALLENGE', id, cover_photo_urls
-            FROM challengesphere.challenges
-            WHERE creator_id = ?
-              AND private = TRUE
-              AND cover_photo_urls IS NOT NULL
-              AND BTRIM(cover_photo_urls) <> ''
-            """;
-
-    private static final String QUEUE_MEDIA_SQL = """
-            INSERT INTO challengesphere.account_media_cleanup_queue (
-                deletion_request_id,
-                requested_by_user_id,
-                source_type,
-                source_id,
-                object_key,
-                status
-            ) VALUES (?, ?, ?, ?, ?, 'PENDING')
-            ON CONFLICT (requested_by_user_id, object_key) DO UPDATE SET
-                deletion_request_id = EXCLUDED.deletion_request_id,
-                source_type = EXCLUDED.source_type,
-                source_id = EXCLUDED.source_id,
-                status = 'PENDING',
-                requested_at = CURRENT_TIMESTAMP,
-                processed_at = NULL,
-                failure_reason = NULL
-            """;
-
-    private static final List<String> USER_DATA_DELETE_SQL = List.of(
-            "DELETE FROM challengesphere.challenge_peer_nudges WHERE sender_user_id = ? OR recipient_user_id = ?",
-            "DELETE FROM challengesphere.challenge_peer_reminder_preferences WHERE user_id = ?",
-            "DELETE FROM challengesphere.challenge_crew_invites WHERE invited_user_id = ? OR invited_by_user_id = ?",
-            "UPDATE challengesphere.challenge_crew_lifecycle SET started_by_user_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE started_by_user_id = ?",
-            "DELETE FROM challengesphere.comments WHERE user_id = ?",
-            "DELETE FROM challengesphere.glories WHERE user_id = ?",
-            "DELETE FROM challengesphere.reports WHERE user_id = ?",
-            "DELETE FROM challengesphere.user_blocks WHERE blocker_user_id = ? OR blocked_user_id = ?",
-            "DELETE FROM challengesphere.follows WHERE follower_id = ? OR following_id = ?",
-            "DELETE FROM challengesphere.invite_usages WHERE user_id = ?",
-            "DELETE FROM challengesphere.challenge_invites WHERE created_by = ?",
-            "DELETE FROM challengesphere.leaderboard_entries WHERE user_id = ?",
-            "DELETE FROM challengesphere.submissions WHERE user_id = ?",
-            "DELETE FROM challengesphere.user_challenges WHERE user_id = ?",
-            "DELETE FROM challengesphere.notifications WHERE user_id = ?",
-            "DELETE FROM challengesphere.push_device_tokens WHERE user_id = ?",
-            "DELETE FROM challengesphere.user_preferences WHERE user_id = ?",
-            "DELETE FROM challengesphere.feature_requests WHERE user_id = ?",
-            "DELETE FROM challengesphere.user_subscriptions WHERE user_id = ?",
-            "DELETE FROM challengesphere.auth_identities WHERE user_id = ?"
-    );
+    private static final Duration DELETION_LEASE = Duration.ofMinutes(15);
+    private static final int DELETION_PAGE_SIZE = 100;
+    private static final String DELETED_ACTIVITY_MESSAGE = "Activity from a deleted account";
 
     private final UserRepository userRepository;
-    private final JdbcTemplate jdbcTemplate;
+    private final DynamoDomainStore domainStore;
+    private final DynamoOperationalStore operationalStore;
     private final AuthTokenStore authTokenStore;
     private final RedisCacheServiceImpl cacheService;
+    private final AuthIdentityRepository authIdentityRepository;
+    private final ChallengeRepository challengeRepository;
+    private final SubmissionRepository submissionRepository;
+    private final CommentRepository commentRepository;
+    private final GloryRepository gloryRepository;
+    private final ReportRepository reportRepository;
+    private final UserReportRepository userReportRepository;
+    private final UserBlockRepository userBlockRepository;
+    private final FollowRepository followRepository;
+    private final InviteUsageRepository inviteUsageRepository;
+    private final ChallengeInviteRepository challengeInviteRepository;
+    private final LeaderboardEntryRepository leaderboardEntryRepository;
+    private final UserChallengeRepository userChallengeRepository;
+    private final NotificationRepository notificationRepository;
+    private final PushDeviceTokenRepository pushDeviceTokenRepository;
+    private final UserPreferencesRepository userPreferencesRepository;
+    private final FeatureRequestRepository featureRequestRepository;
+    private final UserSubscriptionRepository userSubscriptionRepository;
+    private final ChallengePeerNudgeRepository peerNudgeRepository;
+    private final ChallengePeerReminderPreferenceRepository peerReminderRepository;
+    private final ChallengeCrewInviteRepository crewInviteRepository;
+    private final ChallengeCrewLifecycleRepository crewLifecycleRepository;
 
     @Value("${app.account-deletion.identity-hash-key}")
     private String identityHashKey;
 
     public AccountDeletionService(
             UserRepository userRepository,
-            JdbcTemplate jdbcTemplate,
+            DynamoDomainStore domainStore,
+            DynamoOperationalStore operationalStore,
             AuthTokenStore authTokenStore,
-            RedisCacheServiceImpl cacheService) {
+            RedisCacheServiceImpl cacheService,
+            AuthIdentityRepository authIdentityRepository,
+            ChallengeRepository challengeRepository,
+            SubmissionRepository submissionRepository,
+            CommentRepository commentRepository,
+            GloryRepository gloryRepository,
+            ReportRepository reportRepository,
+            UserReportRepository userReportRepository,
+            UserBlockRepository userBlockRepository,
+            FollowRepository followRepository,
+            InviteUsageRepository inviteUsageRepository,
+            ChallengeInviteRepository challengeInviteRepository,
+            LeaderboardEntryRepository leaderboardEntryRepository,
+            UserChallengeRepository userChallengeRepository,
+            NotificationRepository notificationRepository,
+            PushDeviceTokenRepository pushDeviceTokenRepository,
+            UserPreferencesRepository userPreferencesRepository,
+            FeatureRequestRepository featureRequestRepository,
+            UserSubscriptionRepository userSubscriptionRepository,
+            ChallengePeerNudgeRepository peerNudgeRepository,
+            ChallengePeerReminderPreferenceRepository peerReminderRepository,
+            ChallengeCrewInviteRepository crewInviteRepository,
+            ChallengeCrewLifecycleRepository crewLifecycleRepository
+    ) {
         this.userRepository = userRepository;
-        this.jdbcTemplate = jdbcTemplate;
+        this.domainStore = domainStore;
+        this.operationalStore = operationalStore;
         this.authTokenStore = authTokenStore;
         this.cacheService = cacheService;
+        this.authIdentityRepository = authIdentityRepository;
+        this.challengeRepository = challengeRepository;
+        this.submissionRepository = submissionRepository;
+        this.commentRepository = commentRepository;
+        this.gloryRepository = gloryRepository;
+        this.reportRepository = reportRepository;
+        this.userReportRepository = userReportRepository;
+        this.userBlockRepository = userBlockRepository;
+        this.followRepository = followRepository;
+        this.inviteUsageRepository = inviteUsageRepository;
+        this.challengeInviteRepository = challengeInviteRepository;
+        this.leaderboardEntryRepository = leaderboardEntryRepository;
+        this.userChallengeRepository = userChallengeRepository;
+        this.notificationRepository = notificationRepository;
+        this.pushDeviceTokenRepository = pushDeviceTokenRepository;
+        this.userPreferencesRepository = userPreferencesRepository;
+        this.featureRequestRepository = featureRequestRepository;
+        this.userSubscriptionRepository = userSubscriptionRepository;
+        this.peerNudgeRepository = peerNudgeRepository;
+        this.peerReminderRepository = peerReminderRepository;
+        this.crewInviteRepository = crewInviteRepository;
+        this.crewLifecycleRepository = crewLifecycleRepository;
     }
 
     @PostConstruct
@@ -149,274 +193,366 @@ public class AccountDeletionService {
         }
     }
 
-    @Transactional
-    public AccountDeletionResponse deleteAccount(Long userId, String confirmation)
+    public AccountDeletionResponse deleteAccount(String userId, String confirmation)
             throws ChallengeSphereException {
-        if (userId == null) {
-            throw new ChallengeSphereException("Authenticated user required", HttpStatus.UNAUTHORIZED, logger);
+        if (userId == null || userId.isBlank()) {
+            throw new ChallengeSphereException(
+                    "Authenticated user required", HttpStatus.UNAUTHORIZED, logger
+            );
         }
-        if (!REQUIRED_CONFIRMATION.equals(confirmation == null ? "" : confirmation.trim().toUpperCase(Locale.ROOT))) {
+        String normalizedConfirmation = confirmation == null
+                ? ""
+                : confirmation.trim().toUpperCase(Locale.ROOT);
+        if (!REQUIRED_CONFIRMATION.equals(normalizedConfirmation)) {
             throw new ChallengeSphereException(
                     "Type DELETE to confirm account deletion",
                     HttpStatus.BAD_REQUEST,
                     logger
             );
         }
-
         return deleteAccountInternal(userId, true);
     }
 
-    @Transactional
-    public void deleteAccountFromAppleNotification(Long userId) throws ChallengeSphereException {
-        if (userId == null) {
+    public void deleteAccountFromAppleNotification(String userId) throws ChallengeSphereException {
+        if (userId == null || userId.isBlank()) {
             return;
         }
         User user = userRepository.findByIdForUpdate(userId).orElse(null);
-        if (user == null || user.getDeletedAt() != null || !Boolean.TRUE.equals(user.getActive())) {
+        if (user == null) {
+            return;
+        }
+        if (user.getDeletedAt() == null
+                && !Boolean.TRUE.equals(user.getActive())
+                && operationalStore.findAccountDeletionCheckpoint(userId).isEmpty()) {
             return;
         }
         deleteAccountInternal(userId, false);
     }
 
-    private AccountDeletionResponse deleteAccountInternal(Long userId, boolean queueAppleRevocation)
+    private AccountDeletionResponse deleteAccountInternal(String userId, boolean queueAppleRevocation)
             throws ChallengeSphereException {
-        User user = userRepository.findByIdForUpdate(userId)
-                .orElseThrow(() -> new ChallengeSphereException("User not found", HttpStatus.NOT_FOUND, logger));
-        if (user.getDeletedAt() != null || !Boolean.TRUE.equals(user.getActive())) {
-            throw new ChallengeSphereException("This account is already disabled", HttpStatus.CONFLICT, logger);
-        }
+        DynamoOperationalStore.Lease lease = operationalStore.tryAcquireLease(
+                        "ACCOUNT_DELETION", userId, DELETION_LEASE
+                )
+                .orElseThrow(() -> new ChallengeSphereException(
+                        "Account deletion is already being processed",
+                        HttpStatus.CONFLICT,
+                        logger
+                ));
+        try {
+            User user = requireDeletionUser(userId);
+            DynamoOperationalStore.AccountDeletionCheckpoint checkpoint = operationalStore
+                    .findAccountDeletionCheckpoint(userId)
+                    .orElse(null);
+            if (user.getDeletedAt() != null && checkpoint == null) {
+                // Historical tombstones may predate the Dynamo workflow. Token
+                // cleanup is still safe and idempotent, but never fabricate a
+                // retention record from already-anonymized identity values.
+                authTokenStore.revokeAllForUser(userId);
+                return completedResponse(0);
+            }
+            if (user.getDeletedAt() == null
+                    && !Boolean.TRUE.equals(user.getActive())
+                    && checkpoint == null) {
+                throw new ChallengeSphereException(
+                        "This account is already disabled", HttpStatus.CONFLICT, logger
+                );
+            }
+            String requestId = checkpoint == null
+                    ? operationalStore.upsertAccountDeletionRetention(
+                            userId,
+                            pseudonymizeIdentity("email", user.getEmailId()),
+                            pseudonymizeIdentity("username", user.getUsername()),
+                            Instant.now().plus(IDENTITY_HASH_RETENTION)
+                    )
+                    : checkpoint.requestId();
 
-        Long requestId = jdbcTemplate.queryForObject(
-                UPSERT_REQUEST_SQL,
-                Long.class,
-                userId,
-                pseudonymizeIdentity("email", user.getEmailId()),
-                pseudonymizeIdentity("username", user.getUsername()),
-                Timestamp.from(Instant.now().plus(IDENTITY_HASH_RETENTION))
-        );
-        if (requestId == null) {
-            throw new ChallengeSphereException(
-                    "Could not create the account deletion request",
-                    HttpStatus.INTERNAL_SERVER_ERROR,
-                    logger
+            if (user.getDeletedAt() == null && Boolean.TRUE.equals(user.getActive())) {
+                user.setActive(false);
+                userRepository.saveAndFlush(user);
+            }
+
+            runPagedDeletionCleanup(user, requestId, queueAppleRevocation);
+            repairDurableDeletionImpacts(userId);
+            assertDeletionPartitionsDrained(userId);
+            int queuedMedia = countMediaCleanupEvidence(userId);
+
+            // Keep the user record retryable until both cross-store security
+            // cleanup and the durable deletion checkpoint have succeeded.
+            authTokenStore.revokeAllForUser(userId);
+            if (!operationalStore.completeAccountDeletionRetention(userId, queuedMedia)) {
+                throw new ChallengeSphereException(
+                        "Could not complete the account deletion checkpoint",
+                        HttpStatus.INTERNAL_SERVER_ERROR,
+                        logger
+                );
+            }
+            if (user.getDeletedAt() == null) {
+                anonymizeUser(user);
+            }
+            clearMediaCleanupEvidence(userId);
+
+            safeInvalidateCaches(userId, List.of());
+            logger.info(
+                    "Account deletion completed for userId={} with {} media object(s) queued",
+                    userId,
+                    queuedMedia
             );
+            return completedResponse(queuedMedia);
+        } finally {
+            operationalStore.releaseLease(lease);
         }
-
-        int queuedMedia = queueOwnedMediaReferences(requestId, userId);
-        if (queueAppleRevocation) {
-            queueProviderTokenRevocations(userId);
-        }
-        deactivatePrivateCreatedChallenges(userId);
-        redactSafetyRecords(userId);
-        deleteAssociatedRows(userId);
-        repairAggregateCounts();
-        anonymizeUser(user);
-        authTokenStore.revokeAllForUser(userId);
-
-        jdbcTemplate.update(
-                """
-                UPDATE challengesphere.account_deletion_requests
-                SET status = 'COMPLETED', processed_at = CURRENT_TIMESTAMP, media_cleanup_count = ?
-                WHERE id = ?
-                """,
-                queuedMedia,
-                requestId
-        );
-
-        safeInvalidateCaches(userId);
-        logger.info("Account deletion completed for userId={} with {} media object(s) queued", userId, queuedMedia);
-        return new AccountDeletionResponse(
-                true,
-                "Account deleted. ChallengeSphere keeps keyed, non-readable fingerprints of your "
-                        + "email and username for up to 90 days for deletion auditing and abuse prevention; "
-                        + "your original values and display name are not retained in that record. "
-                        + "Private challenges you created are taken offline, "
-                        + "while anonymized public challenges and their cover media remain available for their "
-                        + "participants. Profile, submission, and private-challenge media are queued for "
-                        + "controlled cleanup.",
-                queuedMedia
-        );
     }
 
-    private int queueOwnedMediaReferences(Long requestId, Long userId) {
-        List<Map<String, Object>> rows = jdbcTemplate.queryForList(
-                MEDIA_REFERENCES_SQL,
-                userId,
-                userId,
-                userId
+    private User requireDeletionUser(String userId) throws ChallengeSphereException {
+        return userRepository.findByIdForUpdate(userId)
+                .orElseThrow(() -> new ChallengeSphereException(
+                        "User not found", HttpStatus.NOT_FOUND, logger
+                ));
+    }
+
+    private int queueOwnedMediaReferences(
+            String requestId,
+            User user,
+            Collection<Submission> submissions,
+            Collection<Challenge> createdChallenges
+    ) {
+        String userId = user.getId();
+        Set<String> mediaOwnerIds = new LinkedHashSet<>();
+        mediaOwnerIds.add(userId);
+        if (hasText(user.getLegacyId())) {
+            mediaOwnerIds.add(user.getLegacyId());
+        }
+        Set<MediaReference> references = new LinkedHashSet<>();
+        addMediaReferences(
+                references, "PROFILE", userId, user.getProfilePicUrl(), mediaOwnerIds
         );
-        List<MediaReference> references = new ArrayList<>();
-        for (Map<String, Object> row : rows) {
-            String sourceType = String.valueOf(row.get("source_type"));
-            Object rawSourceId = row.get("source_id");
-            long sourceId = rawSourceId instanceof Number number ? number.longValue() : userId;
-            String rawReferences = String.valueOf(row.get("media_references"));
-            for (String value : rawReferences.split(",")) {
-                String objectKey = value.trim();
-                if (isOwnedObjectKey(objectKey, userId)) {
-                    references.add(new MediaReference(sourceType, sourceId, objectKey));
-                }
+        submissions.forEach(submission -> addMediaReferences(
+                references,
+                "SUBMISSION",
+                submission.getId(),
+                submission.getMediaUrls(),
+                mediaOwnerIds
+        ));
+        createdChallenges.stream()
+                .filter(challenge -> Boolean.TRUE.equals(challenge.getIsPrivate()))
+                .forEach(challenge -> addMediaReferences(
+                        references,
+                        "CHALLENGE",
+                        challenge.getId(),
+                        challenge.getCoverPhotoUrls(),
+                        mediaOwnerIds
+                ));
+
+        references.forEach(reference -> operationalStore.enqueueAccountMediaCleanup(
+                requestId,
+                userId,
+                reference.sourceType(),
+                reference.sourceId(),
+                reference.objectKey()
+        ));
+        return references.size();
+    }
+
+    private void addMediaReferences(
+            Set<MediaReference> references,
+            String sourceType,
+            String sourceId,
+            String rawReferences,
+            Collection<String> mediaOwnerIds
+    ) {
+        if (rawReferences == null || rawReferences.isBlank()) {
+            return;
+        }
+        for (String value : rawReferences.split(",")) {
+            String objectKey = value.trim();
+            if (isOwnedObjectKey(objectKey, mediaOwnerIds)) {
+                references.add(new MediaReference(sourceType, sourceId, objectKey));
             }
         }
-
-        int queued = 0;
-        for (MediaReference reference : references.stream().distinct().toList()) {
-            jdbcTemplate.update(
-                    QUEUE_MEDIA_SQL,
-                    requestId,
-                    userId,
-                    reference.sourceType(),
-                    reference.sourceId(),
-                    reference.objectKey()
-            );
-            queued++;
-        }
-        return queued;
     }
 
-    private String pseudonymizeIdentity(String field, String rawValue) {
-        if (rawValue == null || rawValue.isBlank()) {
-            return null;
-        }
-        String normalized = Normalizer.normalize(rawValue.trim(), Normalizer.Form.NFKC)
-                .toLowerCase(Locale.ROOT);
-        try {
-            Mac mac = Mac.getInstance("HmacSHA256");
-            mac.init(new SecretKeySpec(
-                    identityHashKey.getBytes(StandardCharsets.UTF_8),
-                    "HmacSHA256"
-            ));
-            byte[] digest = mac.doFinal(
-                    (field + ":" + normalized).getBytes(StandardCharsets.UTF_8)
-            );
-            return HexFormat.of().formatHex(digest);
-        } catch (GeneralSecurityException exception) {
-            throw new IllegalStateException("Unable to pseudonymize deleted account identity", exception);
-        }
+    private void queueProviderTokenRevocations(Collection<AuthIdentity> identities) {
+        identities.stream()
+                .filter(identity -> "APPLE".equalsIgnoreCase(identity.getProvider()))
+                .map(AuthIdentity::getEncryptedRefreshToken)
+                .filter(AccountDeletionService::hasText)
+                .forEach(operationalStore::enqueueAppleTokenRevocation);
     }
 
-    private void queueProviderTokenRevocations(Long userId) {
-        jdbcTemplate.update(
-                """
-                INSERT INTO challengesphere.provider_token_revocations (
-                    provider,
-                    encrypted_token,
-                    status,
-                    attempts,
-                    next_attempt_at
-                )
-                SELECT provider, encrypted_refresh_token, 'PENDING', 0, CURRENT_TIMESTAMP
-                FROM challengesphere.auth_identities
-                WHERE user_id = ?
-                  AND provider = 'APPLE'
-                  AND encrypted_refresh_token IS NOT NULL
-                  AND BTRIM(encrypted_refresh_token) <> ''
-                """,
-                userId
-        );
-    }
-
-    private boolean isOwnedObjectKey(String objectKey, Long userId) {
-        if (objectKey == null || objectKey.isBlank()) {
+    private boolean isOwnedObjectKey(String objectKey, Collection<String> mediaOwnerIds) {
+        if (!hasText(objectKey)) {
             return false;
         }
-        return objectKey.startsWith("profiles/user_" + userId + "/")
-                || objectKey.startsWith("submissions/user_" + userId + "/")
-                || objectKey.startsWith("challenges/user_" + userId + "/covers/");
+        return mediaOwnerIds.stream()
+                .filter(AccountDeletionService::hasText)
+                .anyMatch(ownerId -> objectKey.startsWith("profiles/user_" + ownerId + "/")
+                        || objectKey.startsWith("submissions/user_" + ownerId + "/")
+                        || objectKey.startsWith(
+                                "challenges/user_" + ownerId + "/covers/"
+                        ));
     }
 
-    private void deactivatePrivateCreatedChallenges(Long userId) {
-        jdbcTemplate.update(
-                """
-                UPDATE challengesphere.challenges
-                SET active = FALSE
-                WHERE private = TRUE
-                  AND creator_id = ?
-                """,
-                userId
-        );
-    }
-
-    private void redactSafetyRecords(Long userId) {
-        jdbcTemplate.update(
-                """
-                UPDATE challengesphere.user_reports
-                SET details = NULL
-                WHERE reporter_user_id = ? OR reported_user_id = ?
-                """,
-                userId,
-                userId
-        );
-        jdbcTemplate.update(
-                """
-                UPDATE challengesphere.content_reports
-                SET details = NULL
-                WHERE reporter_user_id = ? OR target_owner_user_id = ?
-                """,
-                userId,
-                userId
-        );
-        jdbcTemplate.update(
-                """
-                UPDATE challengesphere.notifications
-                SET message = 'Activity from a deleted account', action_object = NULL
-                WHERE action_object LIKE ?
-                """,
-                "%\"actorUserId\":" + userId + "%"
-        );
-    }
-
-    private void deleteAssociatedRows(Long userId) {
-        for (String sql : USER_DATA_DELETE_SQL) {
-            int placeholders = (int) sql.chars().filter(character -> character == '?').count();
-            if (placeholders == 2) {
-                jdbcTemplate.update(sql, userId, userId);
-            } else {
-                jdbcTemplate.update(sql, userId);
-            }
+    private void deactivateAndAnonymizeCreatedChallenges(Collection<Challenge> challenges) {
+        for (Challenge challenge : challenges) {
+            challengeRepository.mutateExisting(challenge.getId(), latest -> {
+                if (Boolean.TRUE.equals(latest.getIsPrivate())) {
+                    latest.setActive(false);
+                }
+                latest.setCreatorUsername("Deleted user");
+                latest.setCreatorProfilePicUrl(null);
+            });
         }
     }
 
-    private void repairAggregateCounts() {
-        jdbcTemplate.update("""
-                UPDATE challengesphere.submissions submission
-                SET comments_count = (
-                        SELECT COUNT(*) FROM challengesphere.comments comment
-                        WHERE comment.submission_id = submission.id AND comment.active = TRUE
-                    ),
-                    glories_count = (
-                        SELECT COUNT(*) FROM challengesphere.glories glory
-                        WHERE glory.submission_id = submission.id
-                          AND glory.active = TRUE
-                          AND COALESCE(glory.ungloried, FALSE) = FALSE
-                    )
-                WHERE submission.comments_count <> (
-                        SELECT COUNT(*) FROM challengesphere.comments comment
-                        WHERE comment.submission_id = submission.id AND comment.active = TRUE
-                    )
-                   OR submission.glories_count <> (
-                        SELECT COUNT(*) FROM challengesphere.glories glory
-                        WHERE glory.submission_id = submission.id
-                          AND glory.active = TRUE
-                          AND COALESCE(glory.ungloried, FALSE) = FALSE
-                    )
-                """);
-        jdbcTemplate.update("""
-                UPDATE challengesphere.users account
-                SET followers = (
-                        SELECT COUNT(*) FROM challengesphere.follows follow_row
-                        WHERE follow_row.following_id = account.id AND follow_row.active = TRUE
-                    ),
-                    following = (
-                        SELECT COUNT(*) FROM challengesphere.follows follow_row
-                        WHERE follow_row.follower_id = account.id AND follow_row.active = TRUE
-                    )
-                """);
+    private void redactSafetyRecords(
+            String userId,
+            Collection<Submission> ownedSubmissions,
+            Collection<Challenge> createdChallenges
+    ) {
+        for (UserReport report : userReportRepository.findByParticipantUserId(userId)) {
+            if (report.getDetails() != null) {
+                report.setDetails(null);
+                userReportRepository.save(report);
+            }
+        }
+
+        LinkedHashMap<String, Report> contentReports = new LinkedHashMap<>();
+        reportRepository.findByUserId(userId).stream()
+                .filter(AccountDeletionService::isContentReport)
+                .forEach(report -> contentReports.put(report.getId(), report));
+        ownedSubmissions.forEach(submission -> reportRepository
+                .findByTarget("SUBMISSION", submission.getId())
+                .forEach(report -> contentReports.put(report.getId(), report)));
+        commentRepository.findByUserId(userId).forEach(comment -> reportRepository
+                .findByTarget("COMMENT", comment.getId())
+                .forEach(report -> contentReports.put(report.getId(), report)));
+        createdChallenges.forEach(challenge -> reportRepository
+                .findByTarget("CHALLENGE", challenge.getId())
+                .forEach(report -> contentReports.put(report.getId(), report)));
+        for (Report report : contentReports.values()) {
+            if (report.getDescription() != null) {
+                report.setDescription(null);
+                reportRepository.save(report);
+            }
+        }
+
+        for (Notification notification : notificationRepository.findByActorUserId(userId)) {
+            notification.setMessage(DELETED_ACTIVITY_MESSAGE);
+            notification.setActionObject(null);
+            notificationRepository.save(notification);
+        }
+    }
+
+    private CleanupImpact deleteAssociatedData(String userId, List<Submission> ownedSubmissions) {
+        Set<String> ownedSubmissionIds = ids(ownedSubmissions);
+        Set<String> affectedSubmissionIds = new LinkedHashSet<>();
+        Set<String> affectedUserIds = new LinkedHashSet<>();
+
+        List<Comment> userComments = commentRepository.findByUserId(userId);
+        userComments.stream()
+                .map(Comment::getSubmissionId)
+                .filter(Objects::nonNull)
+                .filter(id -> !ownedSubmissionIds.contains(id))
+                .forEach(affectedSubmissionIds::add);
+
+        List<Glory> userGlories = gloryRepository.findByUserId(userId);
+        userGlories.stream()
+                .map(Glory::getSubmissionId)
+                .filter(Objects::nonNull)
+                .filter(id -> !ownedSubmissionIds.contains(id))
+                .forEach(affectedSubmissionIds::add);
+
+        for (Submission submission : ownedSubmissions) {
+            commentRepository.deleteAll(commentRepository.findBySubmissionId(submission.getId()));
+            gloryRepository.deleteAll(gloryRepository.findBySubmissionId(submission.getId()));
+            reportRepository.findBySubmissionId(submission.getId()).stream()
+                    .filter(report -> !isContentReport(report))
+                    .forEach(reportRepository::delete);
+        }
+        deleteDistinct(userComments, Comment::getId, commentRepository::delete);
+        deleteDistinct(userGlories, Glory::getId, gloryRepository::delete);
+        reportRepository.findByUserId(userId).stream()
+                .filter(report -> !isContentReport(report))
+                .forEach(reportRepository::delete);
+
+        List<Follow> follows = new ArrayList<>();
+        follows.addAll(followRepository.findByFollowerId(userId));
+        follows.addAll(followRepository.findByFollowingId(userId));
+        follows.stream()
+                .map(follow -> userId.equals(follow.getFollowerId())
+                        ? follow.getFollowingId()
+                        : follow.getFollowerId())
+                .filter(Objects::nonNull)
+                .forEach(affectedUserIds::add);
+        deleteDistinct(follows, Follow::getId, followRepository::delete);
+
+        List<UserBlock> blocks = new ArrayList<>();
+        blocks.addAll(userBlockRepository.findByBlockerUserId(userId));
+        blocks.addAll(userBlockRepository.findByBlockedUserId(userId));
+        deleteDistinct(blocks, UserBlock::getId, userBlockRepository::delete);
+
+        peerNudgeRepository.deleteAll(peerNudgeRepository.findByParticipantUserId(userId));
+        peerReminderRepository.deleteAll(peerReminderRepository.findByUserId(userId));
+        crewInviteRepository.deleteAll(crewInviteRepository.findByParticipantUserId(userId));
+        for (ChallengeCrewLifecycle lifecycle : crewLifecycleRepository.findByStartedByUserId(userId)) {
+            lifecycle.setStartedByUserId(null);
+            crewLifecycleRepository.save(lifecycle);
+        }
+
+        inviteUsageRepository.deleteAll(inviteUsageRepository.findByUserId(userId));
+        challengeInviteRepository.findByCreatedBy(userId).forEach(invite -> {
+            inviteUsageRepository.deleteAll(inviteUsageRepository.findByInviteId(invite.getId()));
+            challengeInviteRepository.delete(invite);
+        });
+        leaderboardEntryRepository.deleteAll(leaderboardEntryRepository.findByUserId(userId));
+
+        ownedSubmissions.forEach(submissionRepository::delete);
+        userChallengeRepository.deleteAll(userChallengeRepository.findByUserId(userId));
+        notificationRepository.deleteByUserId(userId);
+        pushDeviceTokenRepository.deleteAll(pushDeviceTokenRepository.findByUserId(userId));
+        userPreferencesRepository.findByUserId(userId).ifPresent(userPreferencesRepository::delete);
+        featureRequestRepository.deleteAll(featureRequestRepository.findByUserId(userId));
+        userSubscriptionRepository.findById(userId).ifPresent(userSubscriptionRepository::delete);
+        authIdentityRepository.deleteAll(authIdentityRepository.findByUserId(userId));
+
+        return new CleanupImpact(
+                Set.copyOf(affectedSubmissionIds),
+                Set.copyOf(affectedUserIds)
+        );
+    }
+
+    private void repairAggregateCounts(CleanupImpact impact) {
+        for (String submissionId : impact.submissionIds()) {
+            Submission submission = submissionRepository.findById(submissionId).orElse(null);
+            if (submission == null) {
+                continue;
+            }
+            long commentsCount = commentRepository.countActiveCommentsBySubmissionId(submissionId);
+            long gloriesCount = gloryRepository.countActiveBySubmissionId(submissionId);
+            submissionRepository.mutateExisting(submissionId, latest -> {
+                latest.setCommentsCount(commentsCount);
+                latest.setGloriesCount(gloriesCount);
+            });
+        }
+
+        for (String affectedUserId : impact.userIds()) {
+            User affected = userRepository.findById(affectedUserId).orElse(null);
+            if (affected == null) {
+                continue;
+            }
+            affected.setFollowers(Math.toIntExact(
+                    followRepository.countActiveFollowersByFollowingId(affectedUserId)
+            ));
+            affected.setFollowing(Math.toIntExact(
+                    followRepository.countActiveFollowingByFollowerId(affectedUserId)
+            ));
+            userRepository.save(affected);
+        }
     }
 
     private void anonymizeUser(User user) {
-        Long userId = user.getId();
-        Timestamp now = Timestamp.from(Instant.now());
+        String userId = user.getId();
         user.setEmailId("deleted+" + userId + "+" + UUID.randomUUID() + "@deleted.invalid");
         user.setPhone(null);
         user.setUsername("deleted_user_" + userId);
@@ -441,32 +577,92 @@ public class AccountDeletionService {
         user.setChallengesAccepted(0);
         user.setFollowers(0);
         user.setFollowing(0);
+        user.setSubmissionsCount(0);
         user.setActive(false);
-        user.setDeletedAt(now);
+        user.setDeletedAt(Timestamp.from(Instant.now()));
         userRepository.saveAndFlush(user);
     }
 
-    private void safeInvalidateCaches(Long userId) {
+    private String pseudonymizeIdentity(String field, String rawValue) {
+        if (!hasText(rawValue)) {
+            return null;
+        }
+        String normalized = Normalizer.normalize(rawValue.trim(), Normalizer.Form.NFKC)
+                .toLowerCase(Locale.ROOT);
         try {
-            List<Long> challengeIds = jdbcTemplate.queryForList(
-                    """
-                    SELECT id
-                    FROM challengesphere.challenges
-                    WHERE creator_id = ?
-                    """,
-                    Long.class,
-                    userId
+            Mac mac = Mac.getInstance("HmacSHA256");
+            mac.init(new SecretKeySpec(
+                    identityHashKey.getBytes(StandardCharsets.UTF_8),
+                    "HmacSHA256"
+            ));
+            byte[] digest = mac.doFinal(
+                    (field + ":" + normalized).getBytes(StandardCharsets.UTF_8)
             );
-            challengeIds.forEach(cacheService::clearChallengeCache);
-            cacheService.invalidateAllUserCaches(userId);
-            cacheService.invalidateAllFeeds();
-            cacheService.invalidateRecentAndTrendingChallenges();
-        } catch (Exception e) {
-            logger.warn("Account deletion cache invalidation failed for userId={}: {}",
-                    userId, e.getClass().getSimpleName());
+            return HexFormat.of().formatHex(digest);
+        } catch (GeneralSecurityException exception) {
+            throw new IllegalStateException(
+                    "Unable to pseudonymize deleted account identity", exception
+            );
         }
     }
 
-    private record MediaReference(String sourceType, long sourceId, String objectKey) {
+    private void safeInvalidateCaches(String userId, Collection<Challenge> createdChallenges) {
+        try {
+            createdChallenges.stream()
+                    .map(Challenge::getId)
+                    .filter(Objects::nonNull)
+                    .forEach(cacheService::clearChallengeCache);
+            cacheService.invalidateAllUserCaches(userId);
+            cacheService.invalidateAllFeeds();
+            cacheService.invalidateRecentAndTrendingChallenges();
+        } catch (Exception exception) {
+            logger.warn(
+                    "Account deletion cache invalidation failed for userId={}: {}",
+                    userId,
+                    exception.getClass().getSimpleName()
+            );
+        }
     }
+
+    private AccountDeletionResponse completedResponse(int queuedMedia) {
+        return new AccountDeletionResponse(
+                true,
+                "Account deleted. ChallengeSphere keeps keyed, non-readable fingerprints of your "
+                        + "email and username for up to 90 days for deletion auditing and abuse prevention; "
+                        + "your original values and display name are not retained in that record. "
+                        + "Private challenges you created are taken offline, "
+                        + "while anonymized public challenges and their cover media remain available for their "
+                        + "participants. Profile, submission, and private-challenge media are queued for "
+                        + "controlled cleanup.",
+                queuedMedia
+        );
+    }
+
+    private static Set<String> ids(Collection<Submission> submissions) {
+        LinkedHashSet<String> ids = new LinkedHashSet<>();
+        submissions.stream().map(Submission::getId).filter(Objects::nonNull).forEach(ids::add);
+        return Set.copyOf(ids);
+    }
+
+    private static <T> void deleteDistinct(
+            Collection<T> values,
+            java.util.function.Function<T, String> id,
+            java.util.function.Consumer<T> delete
+    ) {
+        LinkedHashMap<String, T> distinct = new LinkedHashMap<>();
+        values.forEach(value -> distinct.putIfAbsent(id.apply(value), value));
+        distinct.values().forEach(delete);
+    }
+
+    private static boolean isContentReport(Report report) {
+        return hasText(report.getTargetType()) && hasText(report.getTargetId());
+    }
+
+    private static boolean hasText(String value) {
+        return value != null && !value.isBlank();
+    }
+
+    private record MediaReference(String sourceType, String sourceId, String objectKey) { }
+
+    private record CleanupImpact(Set<String> submissionIds, Set<String> userIds) { }
 }

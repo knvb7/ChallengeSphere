@@ -17,6 +17,6 @@ public interface AuthService {
     void logout(String accessToken, String refreshToken);
     User getCurrentUser(String accessToken) throws ChallengeSphereException;
     User getCurrentUser() throws ChallengeSphereException;
-    void changePassword(Long userId, String currentPassword, String newPassword, String confirmPassword) throws ChallengeSphereException;
+    void changePassword(String userId, String currentPassword, String newPassword, String confirmPassword) throws ChallengeSphereException;
     void resetPassword(String token, String newPassword, String confirmPassword) throws ChallengeSphereException;
 }

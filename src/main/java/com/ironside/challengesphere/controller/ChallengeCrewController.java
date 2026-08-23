@@ -31,34 +31,34 @@ public class ChallengeCrewController {
     @GetMapping
     public ResponseEntity<ChallengeCrewStatusResponse> getStatus(
             @AuthenticationPrincipal UserPrincipal principal,
-            @PathVariable Long challengeId
+            @PathVariable String challengeId
     ) throws ChallengeSphereException {
         return ResponseEntity.ok(challengeCrewService.getStatus(
                 challengeId,
-                SecurityAccess.requireUserId(principal)
+                SecurityAccess.requireUserId(principal).toString()
         ));
     }
 
     @PostMapping("/start")
     public ResponseEntity<ChallengeCrewStatusResponse> startTogether(
             @AuthenticationPrincipal UserPrincipal principal,
-            @PathVariable Long challengeId
+            @PathVariable String challengeId
     ) throws ChallengeSphereException {
         return ResponseEntity.ok(challengeCrewService.startTogether(
                 challengeId,
-                SecurityAccess.requireUserId(principal)
+                SecurityAccess.requireUserId(principal).toString()
         ));
     }
 
     @PutMapping("/peer-reminders")
     public ResponseEntity<ChallengeCrewStatusResponse> updatePeerReminders(
             @AuthenticationPrincipal UserPrincipal principal,
-            @PathVariable Long challengeId,
+            @PathVariable String challengeId,
             @Valid @RequestBody UpdatePeerReminderRequest request
     ) throws ChallengeSphereException {
         return ResponseEntity.ok(challengeCrewService.setPeerReminders(
                 challengeId,
-                SecurityAccess.requireUserId(principal),
+                SecurityAccess.requireUserId(principal).toString(),
                 request.getEnabled()
         ));
     }
@@ -66,12 +66,12 @@ public class ChallengeCrewController {
     @PostMapping("/nudges")
     public ResponseEntity<PeerNudgeResponse> sendPeerNudge(
             @AuthenticationPrincipal UserPrincipal principal,
-            @PathVariable Long challengeId,
+            @PathVariable String challengeId,
             @Valid @RequestBody SendPeerNudgeRequest request
     ) throws ChallengeSphereException {
         return ResponseEntity.ok(challengeCrewService.sendPeerNudge(
                 challengeId,
-                SecurityAccess.requireUserId(principal),
+                SecurityAccess.requireUserId(principal).toString(),
                 request.getRecipientUserId()
         ));
     }
@@ -79,22 +79,22 @@ public class ChallengeCrewController {
     @GetMapping("/recap")
     public ResponseEntity<ChallengeCrewRecapResponse> getRecap(
             @AuthenticationPrincipal UserPrincipal principal,
-            @PathVariable Long challengeId
+            @PathVariable String challengeId
     ) throws ChallengeSphereException {
         return ResponseEntity.ok(challengeCrewService.getRecap(
                 challengeId,
-                SecurityAccess.requireUserId(principal)
+                SecurityAccess.requireUserId(principal).toString()
         ));
     }
 
     @PostMapping("/rematch")
     public ResponseEntity<ChallengeRematchResponse> rematch(
             @AuthenticationPrincipal UserPrincipal principal,
-            @PathVariable Long challengeId
+            @PathVariable String challengeId
     ) throws ChallengeSphereException {
         return ResponseEntity.ok(challengeCrewService.rematch(
                 challengeId,
-                SecurityAccess.requireUserId(principal)
+                SecurityAccess.requireUserId(principal).toString()
         ));
     }
 }

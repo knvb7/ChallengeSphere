@@ -26,14 +26,14 @@ public class SubmissionModerationScheduler {
     }
 
     public void moderatePendingSubmissionImages() {
-        List<Long> submissionIds = submissionRepository.findSubmissionIdsAwaitingModeration(
+        List<String> submissionIds = submissionRepository.findSubmissionIdsAwaitingModeration(
                 PageRequest.of(0, batchSize));
         if (submissionIds.isEmpty()) {
             return;
         }
 
         int processed = 0;
-        for (Long submissionId : submissionIds) {
+        for (String submissionId : submissionIds) {
             try {
                 if (moderationJob.moderateIfPending(submissionId)) {
                     processed++;

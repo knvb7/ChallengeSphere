@@ -116,7 +116,7 @@ public class PushNotificationServiceImpl implements PushNotificationService {
     private ChallengeMomentumPolicy momentumPolicy;
 
     private record ReminderDispatch(
-            Long userId,
+            String userId,
             LocalDate localDate,
             List<PushDeviceToken> tokens,
             NotificationQuotaService.Reservation reservation
@@ -124,7 +124,7 @@ public class PushNotificationServiceImpl implements PushNotificationService {
     }
 
     private record ReminderCandidate(
-            Long challengeId,
+            String challengeId,
             String challengeTitle,
             int dayNumber,
             int totalDays,
@@ -176,7 +176,7 @@ public class PushNotificationServiceImpl implements PushNotificationService {
 
     @Override
     @Transactional
-    public PushDeviceToken registerToken(Long userId, RegisterPushTokenRequest request) throws ChallengeSphereException {
+    public PushDeviceToken registerToken(String userId, RegisterPushTokenRequest request) throws ChallengeSphereException {
         if (userId == null) {
             throw new ChallengeSphereException("Authenticated user required", HttpStatus.UNAUTHORIZED, logger);
         }
@@ -204,7 +204,7 @@ public class PushNotificationServiceImpl implements PushNotificationService {
 
     @Override
     @Transactional
-    public void disableToken(Long userId, String expoPushToken) {
+    public void disableToken(String userId, String expoPushToken) {
         if (userId == null || safe(expoPushToken).isBlank()) {
             return;
         }
@@ -213,7 +213,7 @@ public class PushNotificationServiceImpl implements PushNotificationService {
 
     @Override
     @Async("asyncExecutor")
-    public void sendInteractionPush(Long userId, String type, String message, String actionObject) {
+    public void sendInteractionPush(String userId, String type, String message, String actionObject) {
         String normalizedType = safe(type).toUpperCase();
         if (userId == null || !NotificationType.supportsImmediatePush(normalizedType)) {
             return;
@@ -281,20 +281,20 @@ public class PushNotificationServiceImpl implements PushNotificationService {
     }
 
     @Override
-    public int sendDailyUploadReminders(Set<Long> excludedUserIds) {
-        Set<Long> normalizedExcludedUserIds = excludedUserIds == null ? Set.of() : excludedUserIds;
+    public int sendDailyUploadReminders(Set<String> excludedUserIds) {
+        Set<String> normalizedExcludedUserIds = excludedUserIds == null ? Set.of() : excludedUserIds;
         List<PushDeviceToken> tokens = tokenRepository.findEnabledReminderTokens();
         List<PushNotificationSender.PushMessage> messages = new ArrayList<>();
         List<ReminderDispatch> dispatches = new ArrayList<>();
         List<PushDeviceToken> updatedTokens = new ArrayList<>();
 
-        Map<Long, List<PushDeviceToken>> tokensByUser = tokens.stream()
+        Map<String, List<PushDeviceToken>> tokensByUser = tokens.stream()
                 .collect(Collectors.groupingBy(
                         PushDeviceToken::getUserId,
                         LinkedHashMap::new,
                         Collectors.toList()
                 ));
-        Map<Long, List<MotivationReminderRepository.ScheduledMotivationProjection>> pendingByUser =
+        Map<String, List<MotivationReminderRepository.ScheduledMotivationProjection>> pendingByUser =
                 motivationReminderRepository == null || momentumPolicy == null
                         ? Map.of()
                         : motivationReminderRepository.findAllPending(Timestamp.from(clock.instant())).stream()
@@ -305,8 +305,8 @@ public class PushNotificationServiceImpl implements PushNotificationService {
                                 ));
 
         try {
-            for (Map.Entry<Long, List<PushDeviceToken>> entry : tokensByUser.entrySet()) {
-                Long userId = entry.getKey();
+            for (Map.Entry<String, List<PushDeviceToken>> entry : tokensByUser.entrySet()) {
+                String userId = entry.getKey();
                 if (normalizedExcludedUserIds.contains(userId)) {
                     continue;
                 }
@@ -425,7 +425,7 @@ public class PushNotificationServiceImpl implements PushNotificationService {
         return result.acceptedTokens().size();
     }
 
-    private List<ReminderCandidate> findReminderCandidates(Long userId, LocalDate localDate) {
+    private List<ReminderCandidate> findReminderCandidates(String userId, LocalDate localDate) {
         return submissionRepository.findIncompleteDailyChallengesForUser(userId, localDate).stream()
                 .map(pending -> new ReminderCandidate(
                         pending.getChallengeId(),
@@ -640,7 +640,7 @@ public class PushNotificationServiceImpl implements PushNotificationService {
     }
 
     private Optional<NotificationQuotaService.Reservation> reserveNotification(
-            Long recipientUserId,
+            String recipientUserId,
             LocalDate localDate
     ) {
         if (notificationQuotaService == null) {
@@ -650,7 +650,7 @@ public class PushNotificationServiceImpl implements PushNotificationService {
     }
 
     private Optional<NotificationQuotaService.Reservation> reserveNotification(
-            Long recipientUserId,
+            String recipientUserId,
             LocalDate localDate,
             String dedupeKey
     ) {
@@ -660,7 +660,7 @@ public class PushNotificationServiceImpl implements PushNotificationService {
         return notificationQuotaService.reserve(recipientUserId, localDate, dedupeKey);
     }
 
-    private NotificationQuotaService.Reservation testReservation(Long recipientUserId) {
+    private NotificationQuotaService.Reservation testReservation(String recipientUserId) {
         return new NotificationQuotaService.Reservation(
                 recipientUserId,
                 "test-quota",

@@ -8,7 +8,7 @@ import java.util.List;
 public class PresignedUrlsResponse {
     private boolean success;
     private String message;
-    private Long userId;
+    private String userId;
     private List<PresignedUrlInfo> presignedUrls;
 
     @Data
@@ -31,7 +31,7 @@ public class PresignedUrlsResponse {
         }
     }
 
-    public static PresignedUrlsResponse success(Long userId, List<PresignedUrlInfo> presignedUrls) {
+    public static PresignedUrlsResponse success(String userId, List<PresignedUrlInfo> presignedUrls) {
         PresignedUrlsResponse response = new PresignedUrlsResponse();
         response.setSuccess(true);
         response.setMessage("Presigned URLs generated successfully");

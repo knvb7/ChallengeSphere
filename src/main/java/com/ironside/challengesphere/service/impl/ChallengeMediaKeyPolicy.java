@@ -27,13 +27,13 @@ public class ChallengeMediaKeyPolicy {
     private static final Logger logger = LogManager.getLogger(ChallengeMediaKeyPolicy.class);
     private static final int MAX_MEDIA_KEYS = 5;
     private static final Pattern KEY_PATTERN = Pattern.compile(
-            "^challenges/user_(\\d+)/covers/\\d{13}_"
+            "^challenges/user_([0-9A-HJKMNP-TV-Z]{26}|\\d+)/covers/\\d{13}_"
                     + "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
                     + "[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\\.(jpg|png|gif)$");
 
-    public List<String> validateAndNormalize(Long userId, List<String> mediaKeys)
+    public List<String> validateAndNormalize(String userId, List<String> mediaKeys)
             throws ChallengeSphereException {
-        if (userId == null || userId <= 0) {
+        if (userId == null || userId.isBlank()) {
             throw invalid();
         }
         if (mediaKeys == null || mediaKeys.isEmpty()) {
@@ -52,7 +52,7 @@ public class ChallengeMediaKeyPolicy {
             String key = raw.trim();
             Matcher matcher = KEY_PATTERN.matcher(key);
             if (!matcher.matches()
-                    || !Long.toString(userId).equals(matcher.group(1))
+                    || !userId.equals(matcher.group(1))
                     || !seen.add(key)) {
                 throw invalid();
             }
@@ -65,7 +65,7 @@ public class ChallengeMediaKeyPolicy {
      * Filters legacy database values at the read boundary. Invalid, external, or
      * cross-user references are omitted instead of being signed or returned.
      */
-    public List<String> filterOwnedKeysForRead(String rawMediaKeys, Set<Long> allowedOwnerIds) {
+    public List<String> filterOwnedKeysForRead(String rawMediaKeys, Set<String> allowedOwnerIds) {
         if (rawMediaKeys == null
                 || rawMediaKeys.isBlank()
                 || rawMediaKeys.length() > 1_024
@@ -85,24 +85,20 @@ public class ChallengeMediaKeyPolicy {
             if (!matcher.matches() || !seen.add(key)) {
                 continue;
             }
-            try {
-                if (allowedOwnerIds.contains(Long.valueOf(matcher.group(1)))) {
-                    filtered.add(key);
-                }
-            } catch (NumberFormatException ignored) {
-                // The regex bounds the format; an overflowing legacy id is simply invalid.
+            if (allowedOwnerIds.contains(matcher.group(1))) {
+                filtered.add(key);
             }
         }
         return List.copyOf(filtered);
     }
 
     public String createKey(
-            Long userId,
+            String userId,
             MediaTypes mediaType,
             GeneratePresignedUrlsRequest.ContentType contentType,
             long epochMillis,
             UUID uniqueId) throws ChallengeSphereException {
-        if (userId == null || userId <= 0
+        if (userId == null || userId.isBlank()
                 || mediaType != MediaTypes.CHALLENGE_PHOTO
                 || contentType == null
                 || contentType == GeneratePresignedUrlsRequest.ContentType.VIDEO_MP4
@@ -118,7 +114,7 @@ public class ChallengeMediaKeyPolicy {
             case IMAGE_GIF -> ".gif";
             case VIDEO_MP4 -> throw invalid();
         };
-        return "challenges/user_%d/covers/%d_%s%s".formatted(
+        return "challenges/user_%s/covers/%d_%s%s".formatted(
                 userId, epochMillis, uniqueId, extension);
     }
 

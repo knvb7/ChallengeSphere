@@ -4,12 +4,16 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ironside.challengesphere.api.response.ChallengeInviteDetailsResponse;
+import com.ironside.challengesphere.api.response.CursorPageResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.model.Challenge;
 import com.ironside.challengesphere.model.Notification;
 import com.ironside.challengesphere.model.Submission;
 import com.ironside.challengesphere.model.User;
 import com.ironside.challengesphere.model.UserPreferences;
+import com.ironside.challengesphere.persistence.dynamodb.ephemeral.EphemeralStore;
+import com.ironside.challengesphere.persistence.dynamodb.domain.DynamoPage;
+import com.ironside.challengesphere.persistence.dynamodb.foundation.DynamoDbCursorCodec;
 import com.ironside.challengesphere.repository.ChallengeRepository;
 import com.ironside.challengesphere.repository.ChallengeCrewInviteRepository;
 import com.ironside.challengesphere.repository.FollowRepository;
@@ -23,8 +27,6 @@ import com.ironside.challengesphere.util.NotificationType;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.http.HttpStatus;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
@@ -50,6 +52,8 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
+
 @Service
 public class NotificationServiceImpl implements NotificationService {
 
@@ -68,47 +72,8 @@ public class NotificationServiceImpl implements NotificationService {
             TYPE_FOLLOW, TYPE_GLORY, TYPE_COMMENT, TYPE_CHALLENGE_INVITE, TYPE_CHALLENGE_REMOVAL);
     private static final int MAX_CHALLENGE_INVITES_PER_REQUEST = 20;
     private static final int MAX_CHALLENGE_INVITES_PER_UTC_DAY = 50;
+    private static final int MAX_NOTIFICATION_LIMIT = 100;
     private static final long INVITE_DELIVERY_RESERVED = 1L;
-    private static final long INVITE_DELIVERY_QUOTA_EXHAUSTED = -1L;
-    private static final DefaultRedisScript<Long> RESERVE_CHALLENGE_INVITE_SCRIPT;
-    private static final DefaultRedisScript<Long> RELEASE_CHALLENGE_INVITE_SCRIPT;
-
-    static {
-        RESERVE_CHALLENGE_INVITE_SCRIPT = new DefaultRedisScript<>();
-        RESERVE_CHALLENGE_INVITE_SCRIPT.setResultType(Long.class);
-        RESERVE_CHALLENGE_INVITE_SCRIPT.setScriptText("""
-                if redis.call('EXISTS', KEYS[2]) == 1 then
-                    return 0
-                end
-                local current = tonumber(redis.call('GET', KEYS[1]) or '0')
-                local maxInvites = tonumber(ARGV[1])
-                if current >= maxInvites then
-                    return -1
-                end
-                local updated = redis.call('INCR', KEYS[1])
-                local ttl = redis.call('PTTL', KEYS[1])
-                if updated == 1 or ttl < 0 then
-                    redis.call('PEXPIRE', KEYS[1], ARGV[2])
-                end
-                redis.call('SET', KEYS[2], '1', 'PX', ARGV[3])
-                return 1
-                """);
-
-        RELEASE_CHALLENGE_INVITE_SCRIPT = new DefaultRedisScript<>();
-        RELEASE_CHALLENGE_INVITE_SCRIPT.setResultType(Long.class);
-        RELEASE_CHALLENGE_INVITE_SCRIPT.setScriptText("""
-                if redis.call('DEL', KEYS[2]) == 0 then
-                    return 0
-                end
-                local current = tonumber(redis.call('GET', KEYS[1]) or '0')
-                if current <= 1 then
-                    redis.call('DEL', KEYS[1])
-                else
-                    redis.call('DECR', KEYS[1])
-                end
-                return 1
-                """);
-    }
 
     private final NotificationRepository notificationRepository;
     private final UserRepository userRepository;
@@ -123,7 +88,7 @@ public class NotificationServiceImpl implements NotificationService {
     private MediaUrlService mediaUrlService;
 
     @Autowired
-    private StringRedisTemplate redisTemplate;
+    private EphemeralStore ephemeralStore;
 
     @Autowired
     private MotivationMilestoneService motivationMilestoneService;
@@ -134,10 +99,20 @@ public class NotificationServiceImpl implements NotificationService {
     @Autowired(required = false)
     private RedisCacheServiceImpl cacheService;
 
-    private record PushDispatch(Long userId, String type, String message, String actionObject) {
+    @Autowired
+    private DynamoDbCursorCodec cursorCodec;
+
+    private record PushDispatch(String userId, String type, String message, String actionObject) {
     }
 
-    private record ChallengeInviteReservation(long status, String quotaKey, String dedupeKey) {
+    private record ChallengeInviteReservation(
+            long status,
+            String actorUserId,
+            String quotaKey,
+            String dedupeKey,
+            String member,
+            Instant expiresAt
+    ) {
     }
 
     public NotificationServiceImpl(NotificationRepository notificationRepository,
@@ -157,8 +132,56 @@ public class NotificationServiceImpl implements NotificationService {
     }
 
     @Override
+    @Transactional(readOnly = true)
+    public CursorPageResponse<Notification> getNotifications(String userId, int limit, String cursor)
+            throws ChallengeSphereException {
+        if (userId == null || userId.isBlank()) {
+            throw new ChallengeSphereException("User ID is required", HttpStatus.BAD_REQUEST, logger);
+        }
+        int boundedLimit = Math.max(1, Math.min(limit, MAX_NOTIFICATION_LIMIT));
+        String queryBinding = "notifications:v1|user=" + userId + "|limit=" + boundedLimit;
+        Map<String, AttributeValue> exclusiveStartKey = decodeCursor(cursor, queryBinding);
+        DynamoPage<Notification> notifications = notificationRepository.findPageByUserIdOrderBySentAtDesc(
+                userId,
+                boundedLimit,
+                exclusiveStartKey
+        );
+        boolean hasMore = !notifications.lastEvaluatedKey().isEmpty();
+        return CursorPageResponse.of(
+                notifications.items(),
+                encodeCursor(queryBinding, notifications.lastEvaluatedKey()),
+                hasMore
+        );
+    }
+
+    private Map<String, AttributeValue> decodeCursor(String cursor, String queryBinding)
+            throws ChallengeSphereException {
+        if (cursor == null || cursor.isBlank()) {
+            return Map.of();
+        }
+        try {
+            return cursorCodec.decode(cursor, queryBinding).lastEvaluatedKey();
+        } catch (IllegalArgumentException exception) {
+            throw new ChallengeSphereException("Invalid cursor", HttpStatus.BAD_REQUEST, logger);
+        }
+    }
+
+    private String encodeCursor(
+            String queryBinding,
+            Map<String, AttributeValue> lastEvaluatedKey
+    ) {
+        if (lastEvaluatedKey == null || lastEvaluatedKey.isEmpty()) {
+            return null;
+        }
+        return cursorCodec.encode(
+                queryBinding,
+                new DynamoDbCursorCodec.CursorState(lastEvaluatedKey)
+        );
+    }
+
+    @Override
     @Transactional
-    public Notification createNotification(Long userId, String type, String message, String actionObject) {
+    public Notification createNotification(String userId, String type, String message, String actionObject) {
         Notification saved = notificationRepository.save(buildNotification(userId, type, message, actionObject));
         invalidateUnreadCount(userId);
         logger.info("Created notification id={} for userId={} type={}", saved.getId(), userId, type);
@@ -167,7 +190,7 @@ public class NotificationServiceImpl implements NotificationService {
 
     @Override
     @Transactional
-    public Notification notifyChallengeUpdate(Long recipientUserId, String message, String actionObject) {
+    public Notification notifyChallengeUpdate(String recipientUserId, String message, String actionObject) {
         return userRepository.findById(recipientUserId)
                 .map(recipient -> deliver(
                         recipient,
@@ -183,8 +206,8 @@ public class NotificationServiceImpl implements NotificationService {
     @Transactional
     public Notification notifyParticipantRemoved(
             Challenge challenge,
-            Long recipientUserId,
-            Long actorUserId,
+            String recipientUserId,
+            String actorUserId,
             String reason) {
         if (challenge == null || recipientUserId == null || reason == null || reason.isBlank()) {
             return null;
@@ -211,7 +234,7 @@ public class NotificationServiceImpl implements NotificationService {
 
     @Override
     @Transactional
-    public Notification notifyFollow(Long recipientUserId, Long actorUserId) {
+    public Notification notifyFollow(String recipientUserId, String actorUserId) {
         if (Objects.equals(recipientUserId, actorUserId)) {
             return null;
         }
@@ -241,7 +264,7 @@ public class NotificationServiceImpl implements NotificationService {
     @Override
     @Async("asyncExecutor")
     @Transactional
-    public void notifyFollowAsync(Long recipientUserId, Long actorUserId) {
+    public void notifyFollowAsync(String recipientUserId, String actorUserId) {
         try {
             notifyFollow(recipientUserId, actorUserId);
         } catch (Exception exception) {
@@ -253,8 +276,8 @@ public class NotificationServiceImpl implements NotificationService {
     @Override
     @Async("asyncExecutor")
     public void notifyMomentumMilestonesAfterSubmissionAsync(
-            Long userId,
-            Long challengeId,
+            String userId,
+            String challengeId,
             LocalDate currentDate,
             boolean evaluateRank
     ) {
@@ -269,13 +292,13 @@ public class NotificationServiceImpl implements NotificationService {
 
     @Override
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public int notifySubmission(Submission submission, Challenge challenge, Collection<Long> recipientUserIds) {
+    public int notifySubmission(Submission submission, Challenge challenge, Collection<String> recipientUserIds) {
         if (submission == null || challenge == null || recipientUserIds == null || recipientUserIds.isEmpty()) {
             return 0;
         }
 
-        Long authorUserId = submission.getUserId();
-        Set<Long> normalizedRecipients = recipientUserIds.stream()
+        String authorUserId = submission.getUserId();
+        Set<String> normalizedRecipients = recipientUserIds.stream()
                 .filter(Objects::nonNull)
                 .filter(userId -> !Objects.equals(userId, authorUserId))
                 .collect(Collectors.toSet());
@@ -289,7 +312,7 @@ public class NotificationServiceImpl implements NotificationService {
             return 0;
         }
 
-        Map<Long, UserPreferences> prefsByUserId = preferencesRepository.findByUserIdIn(normalizedRecipients).stream()
+        Map<String, UserPreferences> prefsByUserId = preferencesRepository.findByUserIdIn(normalizedRecipients).stream()
                 .collect(Collectors.toMap(UserPreferences::getUserId, prefs -> prefs));
         List<User> recipients = userRepository.findAllById(normalizedRecipients);
         List<Notification> toSave = new ArrayList<>();
@@ -325,7 +348,7 @@ public class NotificationServiceImpl implements NotificationService {
     @Override
     @Async("asyncExecutor")
     @Transactional
-    public void notifyChallengeInvitesAsync(Challenge challenge, Long actorUserId, Collection<Long> requestedRecipientUserIds) {
+    public void notifyChallengeInvitesAsync(Challenge challenge, String actorUserId, Collection<String> requestedRecipientUserIds) {
         List<ChallengeInviteReservation> deliveryReservations = new ArrayList<>();
         boolean notificationsPersisted = false;
         try {
@@ -338,7 +361,7 @@ public class NotificationServiceImpl implements NotificationService {
                 return;
             }
             boolean privateChallenge = Boolean.TRUE.equals(challenge.getIsPrivate());
-            Long ownerUserId = challenge.getCurrentOwnerId() != null
+            String ownerUserId = challenge.getCurrentOwnerId() != null
                     ? challenge.getCurrentOwnerId()
                     : challenge.getCreatorId();
             boolean challengeOwner = Objects.equals(actorUserId, ownerUserId);
@@ -349,9 +372,9 @@ public class NotificationServiceImpl implements NotificationService {
                 return;
             }
 
-            Set<Long> requestedRecipients = requestedRecipientUserIds.stream()
+            Set<String> requestedRecipients = requestedRecipientUserIds.stream()
                     .filter(Objects::nonNull)
-                    .filter(userId -> userId > 0)
+                    .filter(userId -> !userId.isBlank())
                     .filter(userId -> !Objects.equals(userId, actorUserId))
                     .distinct()
                     .limit(MAX_CHALLENGE_INVITES_PER_REQUEST)
@@ -360,27 +383,27 @@ public class NotificationServiceImpl implements NotificationService {
                 return;
             }
 
-            Set<Long> socialGraphUserIds = new HashSet<>();
-            followRepository.findActiveFollowsByFollowerId(actorUserId).stream()
-                    .map(follow -> follow.getFollowingId())
-                    .filter(Objects::nonNull)
-                    .forEach(socialGraphUserIds::add);
-            followRepository.findActiveFollowsByFollowingId(actorUserId).stream()
-                    .map(follow -> follow.getFollowerId())
-                    .filter(Objects::nonNull)
-                    .forEach(socialGraphUserIds::add);
+            Set<String> socialGraphUserIds = new HashSet<>();
+            socialGraphUserIds.addAll(followRepository.findActiveFollowedCandidateIds(
+                    actorUserId,
+                    requestedRecipients
+            ));
+            socialGraphUserIds.addAll(followRepository.findActiveFollowerCandidateIds(
+                    actorUserId,
+                    requestedRecipients
+            ));
             requestedRecipients.retainAll(socialGraphUserIds);
             if (requestedRecipients.isEmpty()) {
                 logger.info("Skipped challenge invite notifications outside actor userId={} social graph", actorUserId);
                 return;
             }
 
-            Map<Long, UserPreferences> prefsByUserId = preferencesRepository.findByUserIdIn(requestedRecipients).stream()
+            Map<String, UserPreferences> prefsByUserId = preferencesRepository.findByUserIdIn(requestedRecipients).stream()
                     .collect(Collectors.toMap(UserPreferences::getUserId, prefs -> prefs));
             List<User> recipients = userRepository.findAllById(requestedRecipients);
             List<Notification> toSave = new ArrayList<>();
             List<PushDispatch> pushes = new ArrayList<>();
-            Set<Long> pushRecipientIds = new HashSet<>();
+            Set<String> pushRecipientIds = new HashSet<>();
 
             String challengeTitle = safe(challenge.getTitle());
             String visibility = privateChallenge ? "private" : "public";
@@ -396,10 +419,6 @@ public class NotificationServiceImpl implements NotificationService {
                 UserPreferences prefs = prefsByUserId.get(recipient.getId());
                 ChallengeInviteReservation reservation = reserveChallengeInviteDelivery(
                         actorUserId, challenge.getId(), recipient.getId());
-                if (reservation.status() == INVITE_DELIVERY_QUOTA_EXHAUSTED) {
-                    logger.warn("Daily challenge invite quota exhausted for actor userId={}", actorUserId);
-                    break;
-                }
                 if (reservation.status() != INVITE_DELIVERY_RESERVED)
                     continue;
                 deliveryReservations.add(reservation);
@@ -446,8 +465,8 @@ public class NotificationServiceImpl implements NotificationService {
     @Override
     @Transactional(readOnly = true)
     public ChallengeInviteDetailsResponse getChallengeInviteDetails(
-            Long notificationId,
-            Long recipientUserId
+            String notificationId,
+            String recipientUserId
     ) throws ChallengeSphereException {
         Notification notification = notificationRepository.findById(notificationId)
                 .orElseThrow(() -> inviteUnavailable());
@@ -457,9 +476,9 @@ public class NotificationServiceImpl implements NotificationService {
         }
 
         Map<String, Object> action = parseActionObject(notification.getActionObject());
-        Long challengeId = notification.getChallengeId() != null
+        String challengeId = notification.getChallengeId() != null
                 ? notification.getChallengeId()
-                : numberAsLong(action.get("challengeId"));
+                : idAsString(action.get("challengeId"));
         Challenge challenge = challengeId == null
                 ? null
                 : challengeRepository.findById(challengeId).orElse(null);
@@ -467,13 +486,13 @@ public class NotificationServiceImpl implements NotificationService {
             throw inviteUnavailable();
         }
 
-        Long inviterUserId = numberAsLong(action.get("actorUserId"));
+        String inviterUserId = idAsString(action.get("actorUserId"));
         if (inviterUserId != null
                 && userBlockRepository.existsActiveBlockBetween(recipientUserId, inviterUserId)) {
             throw inviteUnavailable();
         }
         User inviter = inviterUserId == null ? null : userRepository.findById(inviterUserId).orElse(null);
-        Long creatorUserId = challenge.getCreatorId();
+        String creatorUserId = challenge.getCreatorId();
         if (creatorUserId != null
                 && userBlockRepository.existsActiveBlockBetween(recipientUserId, creatorUserId)) {
             throw inviteUnavailable();
@@ -507,7 +526,7 @@ public class NotificationServiceImpl implements NotificationService {
 
     @Override
     @Transactional
-    public int invalidateChallengeInvitesForChallenge(Long challengeId) {
+    public int invalidateChallengeInvitesForChallenge(String challengeId) {
         if (challengeId == null) {
             return 0;
         }
@@ -518,7 +537,7 @@ public class NotificationServiceImpl implements NotificationService {
 
     @Override
     @Transactional
-    public int invalidateChallengeInviteForRecipient(Long challengeId, Long recipientUserId) {
+    public int invalidateChallengeInviteForRecipient(String challengeId, String recipientUserId) {
         if (challengeId == null || recipientUserId == null) {
             return 0;
         }
@@ -531,14 +550,14 @@ public class NotificationServiceImpl implements NotificationService {
 
     @Override
     @Transactional
-    public int notifyChallengeJoined(Challenge challenge, Long joiningUserId, Collection<Long> recipientUserIds) {
+    public int notifyChallengeJoined(Challenge challenge, String joiningUserId, Collection<String> recipientUserIds) {
         if (challenge == null || joiningUserId == null || recipientUserIds == null || recipientUserIds.isEmpty()) {
             return 0;
         }
 
-        Set<Long> normalizedRecipients = recipientUserIds.stream()
+        Set<String> normalizedRecipients = recipientUserIds.stream()
                 .filter(Objects::nonNull)
-                .filter(userId -> userId > 0)
+                .filter(userId -> !userId.isBlank())
                 .filter(userId -> !Objects.equals(userId, joiningUserId))
                 .collect(Collectors.toSet());
         if (normalizedRecipients.isEmpty()) {
@@ -551,7 +570,7 @@ public class NotificationServiceImpl implements NotificationService {
             return 0;
         }
 
-        Map<Long, UserPreferences> prefsByUserId = preferencesRepository.findByUserIdIn(normalizedRecipients).stream()
+        Map<String, UserPreferences> prefsByUserId = preferencesRepository.findByUserIdIn(normalizedRecipients).stream()
                 .collect(Collectors.toMap(UserPreferences::getUserId, prefs -> prefs));
         List<User> recipients = userRepository.findAllById(normalizedRecipients);
         List<Notification> toSave = new ArrayList<>();
@@ -589,8 +608,8 @@ public class NotificationServiceImpl implements NotificationService {
     @Transactional
     public void notifyChallengeJoinedAsync(
             Challenge challenge,
-            Long joiningUserId,
-            Collection<Long> recipientUserIds
+            String joiningUserId,
+            Collection<String> recipientUserIds
     ) {
         try {
             notifyChallengeJoined(challenge, joiningUserId, recipientUserIds);
@@ -604,7 +623,7 @@ public class NotificationServiceImpl implements NotificationService {
 
     @Override
     @Transactional
-    public Notification notifyGlory(Submission submission, Long actorUserId) {
+    public Notification notifyGlory(Submission submission, String actorUserId) {
         if (submission == null || Objects.equals(submission.getUserId(), actorUserId)) {
             return null;
         }
@@ -614,7 +633,7 @@ public class NotificationServiceImpl implements NotificationService {
     @Override
     @Async("asyncExecutor")
     @Transactional
-    public void notifyGloryAsync(Submission submission, Long actorUserId) {
+    public void notifyGloryAsync(Submission submission, String actorUserId) {
         try {
             notifyGlory(submission, actorUserId);
         } catch (Exception exception) {
@@ -627,7 +646,7 @@ public class NotificationServiceImpl implements NotificationService {
 
     @Override
     @Transactional
-    public Notification notifyComment(Submission submission, Long actorUserId, Long commentId) {
+    public Notification notifyComment(Submission submission, String actorUserId, String commentId) {
         if (submission == null || Objects.equals(submission.getUserId(), actorUserId)) {
             return null;
         }
@@ -637,7 +656,7 @@ public class NotificationServiceImpl implements NotificationService {
     @Override
     @Async("asyncExecutor")
     @Transactional
-    public void notifyCommentAsync(Submission submission, Long actorUserId, Long commentId) {
+    public void notifyCommentAsync(Submission submission, String actorUserId, String commentId) {
         try {
             notifyComment(submission, actorUserId, commentId);
         } catch (Exception e) {
@@ -646,8 +665,8 @@ public class NotificationServiceImpl implements NotificationService {
     }
 
     private Notification notifySubmissionOwner(Submission submission,
-                                               Long actorUserId,
-                                               Long commentId,
+                                               String actorUserId,
+                                               String commentId,
                                                String type,
                                                String actionText) {
         Optional<User> recipient = userRepository.findById(submission.getUserId());
@@ -700,7 +719,7 @@ public class NotificationServiceImpl implements NotificationService {
         return saved;
     }
 
-    private void invalidateUnreadCount(Long userId) {
+    private void invalidateUnreadCount(String userId) {
         if (cacheService != null && userId != null) {
             runAfterCommit(() -> cacheService.delete("notifications:unread:" + userId));
         }
@@ -715,7 +734,7 @@ public class NotificationServiceImpl implements NotificationService {
         runAfterCommit(dispatch);
     }
 
-    private void dispatchPushAfterCommit(Long userId, String type, String message, String actionObject) {
+    private void dispatchPushAfterCommit(String userId, String type, String message, String actionObject) {
         runAfterCommit(() -> pushNotificationService.sendInteractionPush(userId, type, message, actionObject));
     }
 
@@ -732,7 +751,7 @@ public class NotificationServiceImpl implements NotificationService {
         task.run();
     }
 
-    private Notification buildNotification(Long userId, String type, String message, String actionObject) {
+    private Notification buildNotification(String userId, String type, String message, String actionObject) {
         Notification n = new Notification();
         n.setUserId(userId);
         n.setType(type);
@@ -817,33 +836,38 @@ public class NotificationServiceImpl implements NotificationService {
     }
 
     private ChallengeInviteReservation reserveChallengeInviteDelivery(
-            Long actorUserId,
-            Long challengeId,
-            Long recipientUserId
+            String actorUserId,
+            String challengeId,
+            String recipientUserId
     ) {
         if (actorUserId == null || challengeId == null || recipientUserId == null) {
-            return new ChallengeInviteReservation(
-                    INVITE_DELIVERY_QUOTA_EXHAUSTED, "", "");
+            return new ChallengeInviteReservation(0L, "", "", "", "", Instant.EPOCH);
         }
 
         Instant now = Instant.now();
         LocalDate utcDate = now.atZone(ZoneOffset.UTC).toLocalDate();
-        Instant nextUtcDay = utcDate.plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant();
-        long quotaTtlMillis = Math.max(1_000L, Duration.between(now, nextUtcDay).toMillis());
         String quotaKey = "notification-quota:challenge-invite:{" + actorUserId + "}:" + utcDate;
         String dedupeKey = "notification-dedupe:challenge-invite:{" + actorUserId + "}:"
                 + challengeId + ":" + recipientUserId;
-        Long result = redisTemplate.execute(
-                RESERVE_CHALLENGE_INVITE_SCRIPT,
-                List.of(quotaKey, dedupeKey),
-                Integer.toString(MAX_CHALLENGE_INVITES_PER_UTC_DAY),
-                Long.toString(quotaTtlMillis),
-                Long.toString(Duration.ofHours(24).toMillis())
+        String member = challengeId + ':' + recipientUserId;
+        Instant expiresAt = now.plus(Duration.ofHours(24));
+        boolean reserved = ephemeralStore.reserveNotificationQuota(
+                actorUserId,
+                quotaKey,
+                dedupeKey,
+                member,
+                true,
+                MAX_CHALLENGE_INVITES_PER_UTC_DAY,
+                expiresAt,
+                now
         );
         return new ChallengeInviteReservation(
-                result == null ? INVITE_DELIVERY_QUOTA_EXHAUSTED : result,
+                reserved ? INVITE_DELIVERY_RESERVED : 0L,
+                actorUserId,
                 quotaKey,
-                dedupeKey
+                dedupeKey,
+                member,
+                expiresAt
         );
     }
 
@@ -866,9 +890,13 @@ public class NotificationServiceImpl implements NotificationService {
     private void releaseChallengeInviteReservations(List<ChallengeInviteReservation> reservations) {
         for (ChallengeInviteReservation reservation : reservations) {
             try {
-                redisTemplate.execute(
-                        RELEASE_CHALLENGE_INVITE_SCRIPT,
-                        List.of(reservation.quotaKey(), reservation.dedupeKey())
+                ephemeralStore.releaseNotificationQuota(
+                        reservation.actorUserId(),
+                        reservation.quotaKey(),
+                        reservation.dedupeKey(),
+                        reservation.member(),
+                        true,
+                        Instant.now()
                 );
             } catch (RuntimeException exception) {
                 logger.warn("Failed to release challenge invite reservation: {}",
@@ -900,7 +928,7 @@ public class NotificationServiceImpl implements NotificationService {
         }
     }
 
-    private String withNotificationId(String actionObject, Long notificationId) {
+    private String withNotificationId(String actionObject, String notificationId) {
         Map<String, Object> data = parseActionObject(actionObject);
         data.put("notificationId", notificationId);
         return toJson(data);
@@ -920,8 +948,11 @@ public class NotificationServiceImpl implements NotificationService {
         }
     }
 
-    private Long numberAsLong(Object value) {
-        return value instanceof Number number ? number.longValue() : null;
+    private String idAsString(Object value) {
+        if (value == null) {
+            return null;
+        }
+        return blankToNull(value.toString());
     }
 
     private String userName(User user) {
@@ -956,7 +987,7 @@ public class NotificationServiceImpl implements NotificationService {
         return parts.length == 0 ? null : parts[0].trim();
     }
 
-    private String readableProfilePic(Long userId, String value) {
+    private String readableProfilePic(String userId, String value) {
         return value == null || value.isBlank() || mediaUrlService == null
                 ? value
                 : mediaUrlService.toReadableProfilePhoto(userId, value);

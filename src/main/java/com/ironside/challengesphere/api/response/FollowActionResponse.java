@@ -9,12 +9,12 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class FollowActionResponse {
     
-    private Long followerId;
-    private Long followingId;
+    private String followerId;
+    private String followingId;
     private Boolean isFollowing;
     private String message;
     
-    public static FollowActionResponse success(Long followerId, Long followingId, Boolean isFollowing) {
+    public static FollowActionResponse success(String followerId, String followingId, Boolean isFollowing) {
         String message = isFollowing ? "Successfully followed user" : "Successfully unfollowed user";
         return new FollowActionResponse(followerId, followingId, isFollowing, message);
     }

@@ -12,7 +12,7 @@ import java.sql.Timestamp;
 @NoArgsConstructor
 @AllArgsConstructor
 public class ChallengeCrewRecapResponse {
-    private Long challengeId;
+    private String challengeId;
     private String challengeTitle;
     private int participantCount;
     private int contributorCount;

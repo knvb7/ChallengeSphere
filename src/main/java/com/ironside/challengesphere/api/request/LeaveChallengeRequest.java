@@ -1,14 +1,14 @@
 package com.ironside.challengesphere.api.request;
 
-import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.NotBlank;
 import lombok.Data;
 
 import java.util.List;
 
 @Data
 public class LeaveChallengeRequest {
-    @NotNull(message = "Challenge ID is required")
-    private Long challengeId;
+    @NotBlank(message = "Challenge ID is required")
+    private String challengeId;
 
-    private List<Long> userIds;
+    private List<String> userIds;
 }

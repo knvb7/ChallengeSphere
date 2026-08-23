@@ -1,5 +1,7 @@
 package com.ironside.challengesphere.model;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.ironside.challengesphere.persistence.dynamodb.domain.DynamoVersionedAggregate;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Data;
@@ -10,16 +12,15 @@ import java.sql.Timestamp;
 @Table(name = "user_challenges")
 @Data
 @NoArgsConstructor
-public class UserChallenge {
+public class UserChallenge implements DynamoVersionedAggregate {
     @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
+    private String id;
 
     @Column(name = "user_id", nullable = false)
-    private Long userId;
+    private String userId;
 
     @Column(name = "challenge_id", nullable = false)
-    private Long challengeId;
+    private String challengeId;
 
     @Column(name = "joined_at", columnDefinition = "TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP")
     private Timestamp joinedAt;
@@ -49,5 +50,9 @@ public class UserChallenge {
     private Timestamp removedAt;
 
     @Column(name = "removed_by_user_id")
-    private Long removedByUserId;
+    private String removedByUserId;
+
+    @Transient
+    @JsonIgnore
+    private Long dynamoVersion;
 }

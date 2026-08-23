@@ -25,9 +25,9 @@ public interface LeaderboardService {
      * @return UserRankDTO with rank information
      */
     LeaderboardResponse.UserRankDTO getUserRank(
-            Long challengeId,
-            Long userId,
-            Long viewerUserId) throws ChallengeSphereException;
+            String challengeId,
+            String userId,
+            String viewerUserId) throws ChallengeSphereException;
     
     /**
      * Update a user's score in the leaderboard
@@ -43,7 +43,7 @@ public interface LeaderboardService {
      * @param points Points to add
      * @param reason Reason for the score update
      */
-    void incrementScore(Long challengeId, Long userId, double points, String reason);
+    void incrementScore(String challengeId, String userId, double points, String reason);
 
     /**
      * Remove submission points without incrementing submission counters.
@@ -52,7 +52,7 @@ public interface LeaderboardService {
      * @param points Points to remove
      * @param reason Reason for the score update
      */
-    void decrementSubmissionScore(Long challengeId, Long userId, double points, String reason);
+    void decrementSubmissionScore(String challengeId, String userId, double points, String reason);
 
     /**
      * Increment score and glory points when a participant's submission receives glory.
@@ -61,7 +61,7 @@ public interface LeaderboardService {
      * @param points Points to add
      * @param reason Reason for the score update
      */
-    void incrementGloryScore(Long challengeId, Long userId, double points, String reason);
+    void incrementGloryScore(String challengeId, String userId, double points, String reason);
 
     /**
      * Decrement score and glory points when glory is removed from a participant's submission.
@@ -70,32 +70,32 @@ public interface LeaderboardService {
      * @param points Points to remove
      * @param reason Reason for the score update
      */
-    void decrementGloryScore(Long challengeId, Long userId, double points, String reason);
+    void decrementGloryScore(String challengeId, String userId, double points, String reason);
     
     /**
      * Recalculate and rebuild leaderboard for a challenge from database
      * Use this for data consistency checks or after data migrations
      * @param challengeId The challenge ID
      */
-    void rebuildLeaderboard(Long challengeId) throws ChallengeSphereException;
+    void rebuildLeaderboard(String challengeId) throws ChallengeSphereException;
     
     /**
      * Remove a user from the leaderboard
      * @param challengeId The challenge ID
      * @param userId The user ID
      */
-    void removeFromLeaderboard(Long challengeId, Long userId);
+    void removeFromLeaderboard(String challengeId, String userId);
 
     /** Hide a voluntarily departed participant while preserving their score history. */
-    void deactivateParticipation(Long challengeId, Long userId);
+    void deactivateParticipation(String challengeId, String userId);
 
     /** Restore preserved leaderboard history when a departed participant rejoins. */
-    void reactivateParticipation(Long challengeId, Long userId);
+    void reactivateParticipation(String challengeId, String userId);
     
     /**
      * Initialize leaderboard for a user joining a challenge
      * @param challengeId The challenge ID
      * @param userId The user ID
      */
-    void initializeUserScore(Long challengeId, Long userId);
+    void initializeUserScore(String challengeId, String userId);
 }

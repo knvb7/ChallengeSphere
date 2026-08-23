@@ -1,0 +1,901 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  ChallengeSphere production DynamoDB data plane: retained on-demand tables,
+  point-in-time and scheduled backups, least-privilege runtime policies, and
+  baseline operational alarms. This stack intentionally contains no Lambda
+  consumers; stream consumers belong in their deployable application stacks.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Naming and ownership
+        Parameters:
+          - ProjectName
+          - Environment
+          - MainTableName
+          - EphemeralTableName
+          - BackendRuntimeRoleName
+      - Label:
+          default: Backup retention
+        Parameters:
+          - EnableScheduledBackups
+          - BackupRetentionDays
+      - Label:
+          default: Alarm routing and thresholds
+        Parameters:
+          - AlarmNotificationTopicArn
+          - ThrottleEventThreshold
+          - SystemErrorThreshold
+          - ConditionalCheckFailureThreshold
+          - MainReadRequestUnitThreshold
+          - MainWriteRequestUnitThreshold
+          - EphemeralReadRequestUnitThreshold
+          - EphemeralWriteRequestUnitThreshold
+    ParameterLabels:
+      BackendRuntimeRoleName:
+        default: Existing EC2 runtime role to receive DynamoDB access (blank leaves policy unattached)
+      AlarmNotificationTopicArn:
+        default: Existing SNS topic ARN for alarm actions (blank creates alarms without actions)
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: challengesphere
+    AllowedPattern: '^[a-zA-Z][a-zA-Z0-9-]{1,31}$'
+    ConstraintDescription: Use 2-32 letters, numbers, or hyphens, starting with a letter.
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+  MainTableName:
+    Type: String
+    Default: challengesphere-main
+    MinLength: 3
+    MaxLength: 255
+    AllowedPattern: '^[a-zA-Z0-9_.-]+$'
+  EphemeralTableName:
+    Type: String
+    Default: challengesphere-ephemeral
+    MinLength: 3
+    MaxLength: 255
+    AllowedPattern: '^[a-zA-Z0-9_.-]+$'
+  BackendRuntimeRoleName:
+    Type: String
+    Default: ChallengeSphereBackendSSMRole
+    AllowedPattern: '^$|^[\w+=,.@-]{1,64}$'
+    Description: Existing IAM role name. Set to an empty string to create an unattached policy.
+  EnableScheduledBackups:
+    Type: String
+    Default: 'true'
+    AllowedValues:
+      - 'true'
+      - 'false'
+  BackupRetentionDays:
+    Type: Number
+    Default: 35
+    MinValue: 7
+    MaxValue: 3650
+  AlarmNotificationTopicArn:
+    Type: String
+    Default: ''
+    AllowedPattern: '^$|^arn:[^:]+:sns:[^:]+:[0-9]{12}:[A-Za-z0-9_.-]+$'
+  ThrottleEventThreshold:
+    Type: Number
+    Default: 1
+    MinValue: 1
+  SystemErrorThreshold:
+    Type: Number
+    Default: 3
+    MinValue: 1
+  ConditionalCheckFailureThreshold:
+    Type: Number
+    Default: 100
+    MinValue: 1
+  MainReadRequestUnitThreshold:
+    Type: Number
+    Default: 500000
+    MinValue: 1
+    Description: Five-minute total across the main table and all six GSIs.
+  MainWriteRequestUnitThreshold:
+    Type: Number
+    Default: 250000
+    MinValue: 1
+    Description: Five-minute total across the main table and all six GSIs.
+  EphemeralReadRequestUnitThreshold:
+    Type: Number
+    Default: 100000
+    MinValue: 1
+    Description: Five-minute total across the ephemeral table and both GSIs.
+  EphemeralWriteRequestUnitThreshold:
+    Type: Number
+    Default: 50000
+    MinValue: 1
+    Description: Five-minute total across the ephemeral table and both GSIs.
+
+Conditions:
+  AttachRuntimePolicy: !Not [!Equals [!Ref BackendRuntimeRoleName, '']]
+  CreateScheduledBackups: !Equals [!Ref EnableScheduledBackups, 'true']
+  HasAlarmNotificationTopic: !Not [!Equals [!Ref AlarmNotificationTopicArn, '']]
+
+Resources:
+  MainTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Ref MainTableName
+      BillingMode: PAY_PER_REQUEST
+      TableClass: STANDARD
+      DeletionProtectionEnabled: true
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+        - AttributeName: GSI1PK
+          AttributeType: S
+        - AttributeName: GSI1SK
+          AttributeType: S
+        - AttributeName: GSI2PK
+          AttributeType: S
+        - AttributeName: GSI2SK
+          AttributeType: S
+        - AttributeName: GSI3PK
+          AttributeType: S
+        - AttributeName: GSI3SK
+          AttributeType: S
+        - AttributeName: GSI4PK
+          AttributeType: S
+        - AttributeName: GSI4SK
+          AttributeType: S
+        - AttributeName: GSI5PK
+          AttributeType: S
+        - AttributeName: GSI5SK
+          AttributeType: S
+        - AttributeName: GSI6PK
+          AttributeType: S
+        - AttributeName: GSI6SK
+          AttributeType: S
+      GlobalSecondaryIndexes:
+        - IndexName: GSI1
+          KeySchema:
+            - AttributeName: GSI1PK
+              KeyType: HASH
+            - AttributeName: GSI1SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: GSI2
+          KeySchema:
+            - AttributeName: GSI2PK
+              KeyType: HASH
+            - AttributeName: GSI2SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: GSI3
+          KeySchema:
+            - AttributeName: GSI3PK
+              KeyType: HASH
+            - AttributeName: GSI3SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: GSI4
+          KeySchema:
+            - AttributeName: GSI4PK
+              KeyType: HASH
+            - AttributeName: GSI4SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: GSI5
+          KeySchema:
+            - AttributeName: GSI5PK
+              KeyType: HASH
+            - AttributeName: GSI5SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: GSI6
+          KeySchema:
+            - AttributeName: GSI6PK
+              KeyType: HASH
+            - AttributeName: GSI6SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+        RecoveryPeriodInDays: 35
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
+      Tags:
+        - Key: Application
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: DataClassification
+          Value: confidential
+        - Key: ManagedBy
+          Value: cloudformation
+        - Key: Backup
+          Value: daily
+
+  EphemeralTable:
+    Type: AWS::DynamoDB::Table
+    DependsOn: MainTable
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Ref EphemeralTableName
+      BillingMode: PAY_PER_REQUEST
+      TableClass: STANDARD
+      DeletionProtectionEnabled: true
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+        - AttributeName: GSI1PK
+          AttributeType: S
+        - AttributeName: GSI1SK
+          AttributeType: S
+        - AttributeName: GSI2PK
+          AttributeType: S
+        - AttributeName: GSI2SK
+          AttributeType: S
+      GlobalSecondaryIndexes:
+        - IndexName: GSI1
+          KeySchema:
+            - AttributeName: GSI1PK
+              KeyType: HASH
+            - AttributeName: GSI1SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: GSI2
+          KeySchema:
+            - AttributeName: GSI2PK
+              KeyType: HASH
+            - AttributeName: GSI2SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+        RecoveryPeriodInDays: 35
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+      StreamSpecification:
+        StreamViewType: NEW_IMAGE
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
+      Tags:
+        - Key: Application
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: DataClassification
+          Value: confidential
+        - Key: ManagedBy
+          Value: cloudformation
+        - Key: Backup
+          Value: daily
+
+  RuntimeDataPlanePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      ManagedPolicyName: !Sub '${ProjectName}-${Environment}-${AWS::Region}-dynamodb-runtime'
+      Description: Exact ChallengeSphere table/index data-plane access; Scan and administrative APIs are intentionally absent.
+      Roles: !If
+        - AttachRuntimePolicy
+        - - !Ref BackendRuntimeRoleName
+        - !Ref AWS::NoValue
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: ReadWriteExactTables
+            Effect: Allow
+            Action:
+              - dynamodb:BatchGetItem
+              - dynamodb:BatchWriteItem
+              - dynamodb:DeleteItem
+              - dynamodb:DescribeTable
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+              - dynamodb:Query
+              - dynamodb:TransactGetItems
+              - dynamodb:TransactWriteItems
+              - dynamodb:UpdateItem
+            Resource:
+              - !GetAtt MainTable.Arn
+              - !Sub '${MainTable.Arn}/index/*'
+              - !GetAtt EphemeralTable.Arn
+              - !Sub '${EphemeralTable.Arn}/index/*'
+
+  StreamConsumerPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      ManagedPolicyName: !Sub '${ProjectName}-${Environment}-${AWS::Region}-dynamodb-stream-consumer'
+      Description: Attach only to deployed DynamoDB Streams consumers.
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: ReadExactStreams
+            Effect: Allow
+            Action:
+              - dynamodb:DescribeStream
+              - dynamodb:GetRecords
+              - dynamodb:GetShardIterator
+            Resource:
+              - !GetAtt MainTable.StreamArn
+              - !GetAtt EphemeralTable.StreamArn
+          - Sid: DiscoverStreams
+            Effect: Allow
+            Action:
+              - dynamodb:ListStreams
+            Resource: '*'
+
+  BackupVault:
+    Type: AWS::Backup::BackupVault
+    Condition: CreateScheduledBackups
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BackupVaultName: !Sub '${ProjectName}-${Environment}-dynamodb'
+      BackupVaultTags:
+        Application: !Ref ProjectName
+        Environment: !Ref Environment
+        ManagedBy: cloudformation
+
+  BackupServiceRole:
+    Type: AWS::IAM::Role
+    Condition: CreateScheduledBackups
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: backup.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForBackup'
+      Tags:
+        - Key: Application
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  DailyBackupPlan:
+    Type: AWS::Backup::BackupPlan
+    Condition: CreateScheduledBackups
+    Properties:
+      BackupPlan:
+        BackupPlanName: !Sub '${ProjectName}-${Environment}-dynamodb-daily'
+        BackupPlanRule:
+          - RuleName: daily-retained-backup
+            TargetBackupVault: !Ref BackupVault
+            ScheduleExpression: cron(30 1 * * ? *)
+            ScheduleExpressionTimezone: Asia/Kolkata
+            StartWindowMinutes: 60
+            CompletionWindowMinutes: 360
+            Lifecycle:
+              DeleteAfterDays: !Ref BackupRetentionDays
+            RecoveryPointTags:
+              Application: !Ref ProjectName
+              Environment: !Ref Environment
+              ManagedBy: aws-backup
+      BackupPlanTags:
+        Application: !Ref ProjectName
+        Environment: !Ref Environment
+        ManagedBy: cloudformation
+
+  DailyBackupSelection:
+    Type: AWS::Backup::BackupSelection
+    Condition: CreateScheduledBackups
+    Properties:
+      BackupPlanId: !Ref DailyBackupPlan
+      BackupSelection:
+        SelectionName: exact-dynamodb-tables
+        IamRoleArn: !GetAtt BackupServiceRole.Arn
+        Resources:
+          - !GetAtt MainTable.Arn
+          - !GetAtt EphemeralTable.Arn
+
+  MainReadThrottleAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Main table or GSI read throttling requires key-distribution and quota review.
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: !Ref ThrottleEventThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If
+        - HasAlarmNotificationTopic
+        - - !Ref AlarmNotificationTopicArn
+        - !Ref AWS::NoValue
+      OKActions: !If
+        - HasAlarmNotificationTopic
+        - - !Ref AlarmNotificationTopicArn
+        - !Ref AWS::NoValue
+      Metrics:
+        - Id: total
+          Label: Main total read throttle events
+          Expression: m0+m1+m2+m3+m4+m5+m6
+          ReturnData: true
+        - Id: m0
+          ReturnData: false
+          MetricStat:
+            Period: 60
+            Stat: Sum
+            Metric:
+              Namespace: AWS/DynamoDB
+              MetricName: ReadThrottleEvents
+              Dimensions:
+                - Name: TableName
+                  Value: !Ref MainTable
+        - Id: m1
+          ReturnData: false
+          MetricStat: {Period: 60, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: ReadThrottleEvents, Dimensions: [{Name: TableName, Value: !Ref MainTable}, {Name: GlobalSecondaryIndexName, Value: GSI1}]}}
+        - Id: m2
+          ReturnData: false
+          MetricStat: {Period: 60, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: ReadThrottleEvents, Dimensions: [{Name: TableName, Value: !Ref MainTable}, {Name: GlobalSecondaryIndexName, Value: GSI2}]}}
+        - Id: m3
+          ReturnData: false
+          MetricStat: {Period: 60, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: ReadThrottleEvents, Dimensions: [{Name: TableName, Value: !Ref MainTable}, {Name: GlobalSecondaryIndexName, Value: GSI3}]}}
+        - Id: m4
+          ReturnData: false
+          MetricStat: {Period: 60, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: ReadThrottleEvents, Dimensions: [{Name: TableName, Value: !Ref MainTable}, {Name: GlobalSecondaryIndexName, Value: GSI4}]}}
+        - Id: m5
+          ReturnData: false
+          MetricStat: {Period: 60, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: ReadThrottleEvents, Dimensions: [{Name: TableName, Value: !Ref MainTable}, {Name: GlobalSecondaryIndexName, Value: GSI5}]}}
+        - Id: m6
+          ReturnData: false
+          MetricStat: {Period: 60, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: ReadThrottleEvents, Dimensions: [{Name: TableName, Value: !Ref MainTable}, {Name: GlobalSecondaryIndexName, Value: GSI6}]}}
+
+  MainWriteThrottleAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Main table or GSI write throttling requires key-distribution and quota review.
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: !Ref ThrottleEventThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If
+        - HasAlarmNotificationTopic
+        - - !Ref AlarmNotificationTopicArn
+        - !Ref AWS::NoValue
+      OKActions: !If
+        - HasAlarmNotificationTopic
+        - - !Ref AlarmNotificationTopicArn
+        - !Ref AWS::NoValue
+      Metrics:
+        - Id: total
+          Label: Main total write throttle events
+          Expression: m0+m1+m2+m3+m4+m5+m6
+          ReturnData: true
+        - Id: m0
+          ReturnData: false
+          MetricStat: {Period: 60, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: WriteThrottleEvents, Dimensions: [{Name: TableName, Value: !Ref MainTable}]}}
+        - Id: m1
+          ReturnData: false
+          MetricStat: {Period: 60, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: WriteThrottleEvents, Dimensions: [{Name: TableName, Value: !Ref MainTable}, {Name: GlobalSecondaryIndexName, Value: GSI1}]}}
+        - Id: m2
+          ReturnData: false
+          MetricStat: {Period: 60, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: WriteThrottleEvents, Dimensions: [{Name: TableName, Value: !Ref MainTable}, {Name: GlobalSecondaryIndexName, Value: GSI2}]}}
+        - Id: m3
+          ReturnData: false
+          MetricStat: {Period: 60, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: WriteThrottleEvents, Dimensions: [{Name: TableName, Value: !Ref MainTable}, {Name: GlobalSecondaryIndexName, Value: GSI3}]}}
+        - Id: m4
+          ReturnData: false
+          MetricStat: {Period: 60, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: WriteThrottleEvents, Dimensions: [{Name: TableName, Value: !Ref MainTable}, {Name: GlobalSecondaryIndexName, Value: GSI4}]}}
+        - Id: m5
+          ReturnData: false
+          MetricStat: {Period: 60, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: WriteThrottleEvents, Dimensions: [{Name: TableName, Value: !Ref MainTable}, {Name: GlobalSecondaryIndexName, Value: GSI5}]}}
+        - Id: m6
+          ReturnData: false
+          MetricStat: {Period: 60, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: WriteThrottleEvents, Dimensions: [{Name: TableName, Value: !Ref MainTable}, {Name: GlobalSecondaryIndexName, Value: GSI6}]}}
+
+  EphemeralReadThrottleAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Ephemeral table or GSI read throttling.
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: !Ref ThrottleEventThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If
+        - HasAlarmNotificationTopic
+        - - !Ref AlarmNotificationTopicArn
+        - !Ref AWS::NoValue
+      Metrics:
+        - {Id: total, Label: Ephemeral total read throttle events, Expression: 'm0+m1+m2', ReturnData: true}
+        - Id: m0
+          ReturnData: false
+          MetricStat: {Period: 60, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: ReadThrottleEvents, Dimensions: [{Name: TableName, Value: !Ref EphemeralTable}]}}
+        - Id: m1
+          ReturnData: false
+          MetricStat: {Period: 60, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: ReadThrottleEvents, Dimensions: [{Name: TableName, Value: !Ref EphemeralTable}, {Name: GlobalSecondaryIndexName, Value: GSI1}]}}
+        - Id: m2
+          ReturnData: false
+          MetricStat: {Period: 60, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: ReadThrottleEvents, Dimensions: [{Name: TableName, Value: !Ref EphemeralTable}, {Name: GlobalSecondaryIndexName, Value: GSI2}]}}
+
+  EphemeralWriteThrottleAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Ephemeral table or GSI write throttling.
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: !Ref ThrottleEventThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If
+        - HasAlarmNotificationTopic
+        - - !Ref AlarmNotificationTopicArn
+        - !Ref AWS::NoValue
+      Metrics:
+        - {Id: total, Label: Ephemeral total write throttle events, Expression: 'm0+m1+m2', ReturnData: true}
+        - Id: m0
+          ReturnData: false
+          MetricStat: {Period: 60, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: WriteThrottleEvents, Dimensions: [{Name: TableName, Value: !Ref EphemeralTable}]}}
+        - Id: m1
+          ReturnData: false
+          MetricStat: {Period: 60, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: WriteThrottleEvents, Dimensions: [{Name: TableName, Value: !Ref EphemeralTable}, {Name: GlobalSecondaryIndexName, Value: GSI1}]}}
+        - Id: m2
+          ReturnData: false
+          MetricStat: {Period: 60, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: WriteThrottleEvents, Dimensions: [{Name: TableName, Value: !Ref EphemeralTable}, {Name: GlobalSecondaryIndexName, Value: GSI2}]}}
+
+  MainConditionalFailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Sustained conditional failures may indicate uniqueness contention, stale versions, or migration replay errors.
+      Namespace: AWS/DynamoDB
+      MetricName: ConditionalCheckFailedRequests
+      Dimensions:
+        - Name: TableName
+          Value: !Ref MainTable
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: !Ref ConditionalCheckFailureThreshold
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If
+        - HasAlarmNotificationTopic
+        - - !Ref AlarmNotificationTopicArn
+        - !Ref AWS::NoValue
+
+  EphemeralConditionalFailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Sustained ephemeral-table conditional failures may indicate token or idempotency contention.
+      Namespace: AWS/DynamoDB
+      MetricName: ConditionalCheckFailedRequests
+      Dimensions:
+        - Name: TableName
+          Value: !Ref EphemeralTable
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: !Ref ConditionalCheckFailureThreshold
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If
+        - HasAlarmNotificationTopic
+        - - !Ref AlarmNotificationTopicArn
+        - !Ref AWS::NoValue
+
+  MainSystemErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: DynamoDB HTTP 500 responses across supported ChallengeSphere operations on the main table.
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: !Ref SystemErrorThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If
+        - HasAlarmNotificationTopic
+        - - !Ref AlarmNotificationTopicArn
+        - !Ref AWS::NoValue
+      Metrics:
+        - Id: total
+          Label: Main table system errors
+          Expression: m0+m1+m2+m3+m4+m5+m6+m7+m8
+          ReturnData: true
+        - Id: m0
+          ReturnData: false
+          MetricStat: {Period: 60, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: SystemErrors, Dimensions: [{Name: TableName, Value: !Ref MainTable}, {Name: Operation, Value: GetItem}]}}
+        - Id: m1
+          ReturnData: false
+          MetricStat: {Period: 60, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: SystemErrors, Dimensions: [{Name: TableName, Value: !Ref MainTable}, {Name: Operation, Value: BatchGetItem}]}}
+        - Id: m2
+          ReturnData: false
+          MetricStat: {Period: 60, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: SystemErrors, Dimensions: [{Name: TableName, Value: !Ref MainTable}, {Name: Operation, Value: Query}]}}
+        - Id: m3
+          ReturnData: false
+          MetricStat: {Period: 60, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: SystemErrors, Dimensions: [{Name: TableName, Value: !Ref MainTable}, {Name: Operation, Value: PutItem}]}}
+        - Id: m4
+          ReturnData: false
+          MetricStat: {Period: 60, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: SystemErrors, Dimensions: [{Name: TableName, Value: !Ref MainTable}, {Name: Operation, Value: UpdateItem}]}}
+        - Id: m5
+          ReturnData: false
+          MetricStat: {Period: 60, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: SystemErrors, Dimensions: [{Name: TableName, Value: !Ref MainTable}, {Name: Operation, Value: DeleteItem}]}}
+        - Id: m6
+          ReturnData: false
+          MetricStat: {Period: 60, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: SystemErrors, Dimensions: [{Name: TableName, Value: !Ref MainTable}, {Name: Operation, Value: BatchWriteItem}]}}
+        - Id: m7
+          ReturnData: false
+          MetricStat: {Period: 60, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: SystemErrors, Dimensions: [{Name: TableName, Value: !Ref MainTable}, {Name: Operation, Value: TransactGetItems}]}}
+        - Id: m8
+          ReturnData: false
+          MetricStat: {Period: 60, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: SystemErrors, Dimensions: [{Name: TableName, Value: !Ref MainTable}, {Name: Operation, Value: TransactWriteItems}]}}
+
+  EphemeralSystemErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: DynamoDB HTTP 500 responses across supported ChallengeSphere operations on the ephemeral table.
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: !Ref SystemErrorThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If
+        - HasAlarmNotificationTopic
+        - - !Ref AlarmNotificationTopicArn
+        - !Ref AWS::NoValue
+      Metrics:
+        - Id: total
+          Label: Ephemeral table system errors
+          Expression: m0+m1+m2+m3+m4+m5+m6+m7+m8
+          ReturnData: true
+        - Id: m0
+          ReturnData: false
+          MetricStat: {Period: 60, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: SystemErrors, Dimensions: [{Name: TableName, Value: !Ref EphemeralTable}, {Name: Operation, Value: GetItem}]}}
+        - Id: m1
+          ReturnData: false
+          MetricStat: {Period: 60, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: SystemErrors, Dimensions: [{Name: TableName, Value: !Ref EphemeralTable}, {Name: Operation, Value: BatchGetItem}]}}
+        - Id: m2
+          ReturnData: false
+          MetricStat: {Period: 60, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: SystemErrors, Dimensions: [{Name: TableName, Value: !Ref EphemeralTable}, {Name: Operation, Value: Query}]}}
+        - Id: m3
+          ReturnData: false
+          MetricStat: {Period: 60, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: SystemErrors, Dimensions: [{Name: TableName, Value: !Ref EphemeralTable}, {Name: Operation, Value: PutItem}]}}
+        - Id: m4
+          ReturnData: false
+          MetricStat: {Period: 60, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: SystemErrors, Dimensions: [{Name: TableName, Value: !Ref EphemeralTable}, {Name: Operation, Value: UpdateItem}]}}
+        - Id: m5
+          ReturnData: false
+          MetricStat: {Period: 60, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: SystemErrors, Dimensions: [{Name: TableName, Value: !Ref EphemeralTable}, {Name: Operation, Value: DeleteItem}]}}
+        - Id: m6
+          ReturnData: false
+          MetricStat: {Period: 60, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: SystemErrors, Dimensions: [{Name: TableName, Value: !Ref EphemeralTable}, {Name: Operation, Value: BatchWriteItem}]}}
+        - Id: m7
+          ReturnData: false
+          MetricStat: {Period: 60, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: SystemErrors, Dimensions: [{Name: TableName, Value: !Ref EphemeralTable}, {Name: Operation, Value: TransactGetItems}]}}
+        - Id: m8
+          ReturnData: false
+          MetricStat: {Period: 60, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: SystemErrors, Dimensions: [{Name: TableName, Value: !Ref EphemeralTable}, {Name: Operation, Value: TransactWriteItems}]}}
+
+  MainReadUsageAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Main table plus GSI read request units exceeded the configured five-minute cost guardrail.
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: !Ref MainReadRequestUnitThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If
+        - HasAlarmNotificationTopic
+        - - !Ref AlarmNotificationTopicArn
+        - !Ref AWS::NoValue
+      Metrics:
+        - {Id: total, Label: Main total consumed read request units, Expression: 'm0+m1+m2+m3+m4+m5+m6', ReturnData: true}
+        - Id: m0
+          ReturnData: false
+          MetricStat: {Period: 300, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: ConsumedReadCapacityUnits, Dimensions: [{Name: TableName, Value: !Ref MainTable}]}}
+        - Id: m1
+          ReturnData: false
+          MetricStat: {Period: 300, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: ConsumedReadCapacityUnits, Dimensions: [{Name: TableName, Value: !Ref MainTable}, {Name: GlobalSecondaryIndexName, Value: GSI1}]}}
+        - Id: m2
+          ReturnData: false
+          MetricStat: {Period: 300, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: ConsumedReadCapacityUnits, Dimensions: [{Name: TableName, Value: !Ref MainTable}, {Name: GlobalSecondaryIndexName, Value: GSI2}]}}
+        - Id: m3
+          ReturnData: false
+          MetricStat: {Period: 300, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: ConsumedReadCapacityUnits, Dimensions: [{Name: TableName, Value: !Ref MainTable}, {Name: GlobalSecondaryIndexName, Value: GSI3}]}}
+        - Id: m4
+          ReturnData: false
+          MetricStat: {Period: 300, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: ConsumedReadCapacityUnits, Dimensions: [{Name: TableName, Value: !Ref MainTable}, {Name: GlobalSecondaryIndexName, Value: GSI4}]}}
+        - Id: m5
+          ReturnData: false
+          MetricStat: {Period: 300, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: ConsumedReadCapacityUnits, Dimensions: [{Name: TableName, Value: !Ref MainTable}, {Name: GlobalSecondaryIndexName, Value: GSI5}]}}
+        - Id: m6
+          ReturnData: false
+          MetricStat: {Period: 300, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: ConsumedReadCapacityUnits, Dimensions: [{Name: TableName, Value: !Ref MainTable}, {Name: GlobalSecondaryIndexName, Value: GSI6}]}}
+
+  MainWriteUsageAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Main table plus GSI write request units exceeded the configured five-minute cost guardrail.
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: !Ref MainWriteRequestUnitThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If
+        - HasAlarmNotificationTopic
+        - - !Ref AlarmNotificationTopicArn
+        - !Ref AWS::NoValue
+      Metrics:
+        - {Id: total, Label: Main total consumed write request units, Expression: 'm0+m1+m2+m3+m4+m5+m6', ReturnData: true}
+        - Id: m0
+          ReturnData: false
+          MetricStat: {Period: 300, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: ConsumedWriteCapacityUnits, Dimensions: [{Name: TableName, Value: !Ref MainTable}]}}
+        - Id: m1
+          ReturnData: false
+          MetricStat: {Period: 300, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: ConsumedWriteCapacityUnits, Dimensions: [{Name: TableName, Value: !Ref MainTable}, {Name: GlobalSecondaryIndexName, Value: GSI1}]}}
+        - Id: m2
+          ReturnData: false
+          MetricStat: {Period: 300, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: ConsumedWriteCapacityUnits, Dimensions: [{Name: TableName, Value: !Ref MainTable}, {Name: GlobalSecondaryIndexName, Value: GSI2}]}}
+        - Id: m3
+          ReturnData: false
+          MetricStat: {Period: 300, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: ConsumedWriteCapacityUnits, Dimensions: [{Name: TableName, Value: !Ref MainTable}, {Name: GlobalSecondaryIndexName, Value: GSI3}]}}
+        - Id: m4
+          ReturnData: false
+          MetricStat: {Period: 300, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: ConsumedWriteCapacityUnits, Dimensions: [{Name: TableName, Value: !Ref MainTable}, {Name: GlobalSecondaryIndexName, Value: GSI4}]}}
+        - Id: m5
+          ReturnData: false
+          MetricStat: {Period: 300, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: ConsumedWriteCapacityUnits, Dimensions: [{Name: TableName, Value: !Ref MainTable}, {Name: GlobalSecondaryIndexName, Value: GSI5}]}}
+        - Id: m6
+          ReturnData: false
+          MetricStat: {Period: 300, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: ConsumedWriteCapacityUnits, Dimensions: [{Name: TableName, Value: !Ref MainTable}, {Name: GlobalSecondaryIndexName, Value: GSI6}]}}
+
+  EphemeralReadUsageAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Ephemeral table plus GSI read request units exceeded the configured five-minute cost guardrail.
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: !Ref EphemeralReadRequestUnitThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If
+        - HasAlarmNotificationTopic
+        - - !Ref AlarmNotificationTopicArn
+        - !Ref AWS::NoValue
+      Metrics:
+        - {Id: total, Label: Ephemeral total consumed read request units, Expression: 'm0+m1+m2', ReturnData: true}
+        - Id: m0
+          ReturnData: false
+          MetricStat: {Period: 300, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: ConsumedReadCapacityUnits, Dimensions: [{Name: TableName, Value: !Ref EphemeralTable}]}}
+        - Id: m1
+          ReturnData: false
+          MetricStat: {Period: 300, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: ConsumedReadCapacityUnits, Dimensions: [{Name: TableName, Value: !Ref EphemeralTable}, {Name: GlobalSecondaryIndexName, Value: GSI1}]}}
+        - Id: m2
+          ReturnData: false
+          MetricStat: {Period: 300, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: ConsumedReadCapacityUnits, Dimensions: [{Name: TableName, Value: !Ref EphemeralTable}, {Name: GlobalSecondaryIndexName, Value: GSI2}]}}
+
+  EphemeralWriteUsageAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Ephemeral table plus GSI write request units exceeded the configured five-minute cost guardrail.
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: !Ref EphemeralWriteRequestUnitThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If
+        - HasAlarmNotificationTopic
+        - - !Ref AlarmNotificationTopicArn
+        - !Ref AWS::NoValue
+      Metrics:
+        - {Id: total, Label: Ephemeral total consumed write request units, Expression: 'm0+m1+m2', ReturnData: true}
+        - Id: m0
+          ReturnData: false
+          MetricStat: {Period: 300, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: ConsumedWriteCapacityUnits, Dimensions: [{Name: TableName, Value: !Ref EphemeralTable}]}}
+        - Id: m1
+          ReturnData: false
+          MetricStat: {Period: 300, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: ConsumedWriteCapacityUnits, Dimensions: [{Name: TableName, Value: !Ref EphemeralTable}, {Name: GlobalSecondaryIndexName, Value: GSI1}]}}
+        - Id: m2
+          ReturnData: false
+          MetricStat: {Period: 300, Stat: Sum, Metric: {Namespace: AWS/DynamoDB, MetricName: ConsumedWriteCapacityUnits, Dimensions: [{Name: TableName, Value: !Ref EphemeralTable}, {Name: GlobalSecondaryIndexName, Value: GSI2}]}}
+
+  BackupJobFailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: CreateScheduledBackups
+    Properties:
+      AlarmDescription: At least one DynamoDB AWS Backup job failed.
+      Namespace: AWS/Backup
+      MetricName: NumberOfBackupJobsFailed
+      Dimensions:
+        - Name: BackupVaultName
+          Value: !Ref BackupVault
+        - Name: ResourceType
+          Value: DynamoDB
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If
+        - HasAlarmNotificationTopic
+        - - !Ref AlarmNotificationTopicArn
+        - !Ref AWS::NoValue
+
+Outputs:
+  MainTableName:
+    Description: Durable single-table data store name.
+    Value: !Ref MainTable
+  MainTableArn:
+    Description: Durable single-table data store ARN.
+    Value: !GetAtt MainTable.Arn
+  MainTableStreamArn:
+    Description: NEW_AND_OLD_IMAGES stream ARN for materialized-view consumers.
+    Value: !GetAtt MainTable.StreamArn
+  EphemeralTableName:
+    Description: TTL-backed token, quota, idempotency, and job-claim table name.
+    Value: !Ref EphemeralTable
+  EphemeralTableArn:
+    Description: Ephemeral table ARN.
+    Value: !GetAtt EphemeralTable.Arn
+  EphemeralTableStreamArn:
+    Description: NEW_IMAGE ephemeral stream ARN.
+    Value: !GetAtt EphemeralTable.StreamArn
+  RuntimeManagedPolicyArn:
+    Description: Least-privilege table/index data-plane policy ARN. Scan is intentionally denied by omission.
+    Value: !Ref RuntimeDataPlanePolicy
+  RuntimeRoleName:
+    Description: Existing role receiving the policy, or UNATTACHED when BackendRuntimeRoleName is blank.
+    Value: !If [AttachRuntimePolicy, !Ref BackendRuntimeRoleName, UNATTACHED]
+  RuntimeRoleArn:
+    Description: Existing role ARN receiving the policy, or UNATTACHED.
+    Value: !If
+      - AttachRuntimePolicy
+      - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${BackendRuntimeRoleName}'
+      - UNATTACHED
+  StreamConsumerManagedPolicyArn:
+    Description: Unattached least-privilege policy for future real stream consumers.
+    Value: !Ref StreamConsumerPolicy
+  BackupVaultName:
+    Condition: CreateScheduledBackups
+    Description: Retained AWS Backup vault containing daily recovery points.
+    Value: !Ref BackupVault
+  BackupPlanId:
+    Condition: CreateScheduledBackups
+    Description: Daily exact-resource AWS Backup plan ID.
+    Value: !Ref DailyBackupPlan

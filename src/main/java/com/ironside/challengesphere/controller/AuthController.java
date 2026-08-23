@@ -143,7 +143,7 @@ public class AuthController {
             @AuthenticationPrincipal UserPrincipal principal,
             @RequestHeader(value = "Authorization", required = false) String authorization)
             throws ChallengeSphereException {
-        SecurityAccess.requireUserId(principal);
+        SecurityAccess.requireUserId(principal).toString();
         User user = authService.getCurrentUser(extractBearerToken(authorization));
         return ResponseEntity.ok(SelfUserResponse.from(user));
     }

@@ -13,11 +13,10 @@ import java.sql.Timestamp;
 public class UserPreferences {
 
     @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
+    private String id;
 
     @Column(name = "user_id", nullable = false, unique = true)
-    private Long userId;
+    private String userId;
 
     // Notification preferences
     @Column(name = "push_notifications_enabled", nullable = false)

@@ -9,8 +9,6 @@ import java.util.Set;
 import java.util.TreeSet;
 import java.util.stream.Collectors;
 
-import org.springframework.data.domain.PageRequest;
-
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -29,6 +27,9 @@ import com.ironside.challengesphere.model.LeaderboardEntry;
 import com.ironside.challengesphere.model.Submission;
 import com.ironside.challengesphere.model.User;
 import com.ironside.challengesphere.model.UserChallenge;
+import com.ironside.challengesphere.persistence.dynamodb.domain.DynamoPage;
+import com.ironside.challengesphere.persistence.dynamodb.foundation.DynamoDbCursorCodec;
+import com.ironside.challengesphere.persistence.dynamodb.repository.challenge.ChallengeParticipantCountStore;
 import com.ironside.challengesphere.repository.ChallengeRepository;
 import com.ironside.challengesphere.repository.LeaderboardEntryRepository;
 import com.ironside.challengesphere.repository.SubmissionRepository;
@@ -37,6 +38,7 @@ import com.ironside.challengesphere.repository.UserBlockRepository;
 import com.ironside.challengesphere.repository.UserRepository;
 import com.ironside.challengesphere.service.LeaderboardService;
 import com.ironside.challengesphere.util.StreakCalculator;
+import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 
 /**
  * Leaderboard Service Implementation
@@ -53,6 +55,8 @@ import com.ironside.challengesphere.util.StreakCalculator;
 public class LeaderboardServiceImpl implements LeaderboardService {
     
     private static final Logger logger = LogManager.getLogger(LeaderboardServiceImpl.class);
+    private static final String CURSOR_PAGE_STATE = "page";
+    private static final String CURSOR_NEXT_RANK = "nextRank";
     
     // Scoring weights for different activities
     private static final double SUBMISSION_POINTS = 10.0;
@@ -82,18 +86,30 @@ public class LeaderboardServiceImpl implements LeaderboardService {
     @Autowired
     private MediaUrlService mediaUrlService;
 
+    @Autowired
+    private DynamoDbCursorCodec cursorCodec;
+
+    @Autowired
+    private ChallengeParticipantCountStore participantCountStore;
+
     @Override
     @Transactional(readOnly = true)
     public LeaderboardResponse getLeaderboard(GetLeaderboardRequest request) throws ChallengeSphereException {
-        Long challengeId = request.getChallengeId();
+        String challengeId = request.getChallengeId();
         int limit = request.getLimit();
-        Long userId = request.getUserId();
+        String userId = request.getUserId();
+        String viewerUserId = request.getViewerUserId();
+        String leaderboardType = request.getType() == null ? "OVERALL" : request.getType().name();
+        String queryBinding = "leaderboard:v2|challenge=" + challengeId
+                + "|viewer=" + cursorValue(viewerUserId)
+                + "|type=" + leaderboardType
+                + "|rankUser=" + cursorValue(userId)
+                + "|limit=" + limit;
         
         logger.info("Getting leaderboard for challenge: {}, limit: {}, type: {}", 
-            challengeId, limit, request.getType());
+            challengeId, limit, leaderboardType);
         
         try {
-            // Validate challenge exists
             Challenge challenge = challengeRepository.findById(challengeId)
                     .orElseThrow(() -> new ChallengeSphereException(
                             "Challenge not found with id: " + challengeId,
@@ -101,24 +117,20 @@ public class LeaderboardServiceImpl implements LeaderboardService {
                             logger
                     ));
 
-            requireLeaderboardAccess(challenge, request.getViewerUserId());
-            
-            List<LeaderboardEntry> dbEntries =
-                    leaderboardEntryRepository.findTopByChallengeIdForViewer(
-                            challengeId,
-                            request.getViewerUserId(),
-                            PageRequest.of(0, limit));
-
-            if (dbEntries.isEmpty()) {
-                logger.info("No leaderboard entries found in DB for challenge {}", challengeId);
-                return LeaderboardResponse.success(
-                        challengeId,
-                        challenge.getTitle(),
-                        request.getType().name(),
-                        new ArrayList<>(),
-                        0
-                );
-            }
+            requireLeaderboardAccess(challenge, viewerUserId);
+            LeaderboardCursor cursor = decodeCursor(request.getCursor(), queryBinding);
+            DynamoPage<LeaderboardEntry> page = leaderboardEntryRepository.findActivePageForViewer(
+                    challengeId,
+                    viewerUserId,
+                    limit,
+                    cursor.lastEvaluatedKey()
+            );
+            boolean hasMore = page.hasMore();
+            List<LeaderboardEntry> dbEntries = page.items();
+            long activeParticipantCount = participantCountStore.getActiveCount(challengeId);
+            Integer responseParticipantCount = activeParticipantCount > Integer.MAX_VALUE
+                    ? Integer.MAX_VALUE
+                    : Math.toIntExact(activeParticipantCount);
 
             List<LeaderboardEntryDTO> entries = new ArrayList<>();
             for (int i = 0; i < dbEntries.size(); i++) {
@@ -129,7 +141,7 @@ public class LeaderboardServiceImpl implements LeaderboardService {
                         .username(user.getUsername())
                         .displayName(user.getUsername())
                         .profilePictureUrl(readableProfilePic(user.getId(), user.getProfilePicUrl()))
-                        .rank(i + 1L)
+                        .rank(cursor.nextRank() + i)
                         .score(le.getScore())
                         .submissionCount(le.getSubmissionCount())
                         .gloriesCount((long) le.getGloryPoints())
@@ -137,36 +149,37 @@ public class LeaderboardServiceImpl implements LeaderboardService {
                         .build());
                 cacheService.addToLeaderboard(challengeId, user.getId(), le.getScore());
             }
-
-            int totalParticipants = leaderboardEntryRepository
-                    .countParticipantsForViewer(challengeId, request.getViewerUserId())
-                    .intValue();
-            
-            // Build response
+            String nextCursor = encodeCursor(
+                    queryBinding,
+                    page.lastEvaluatedKey(),
+                    cursor.nextRank() + entries.size()
+            );
             LeaderboardResponse response;
-            
-            // If userId is provided, also fetch their rank
             if (userId != null) {
                 UserRankDTO userRank = getUserRankInternal(
                         challengeId,
                         userId,
-                        request.getViewerUserId()
+                        viewerUserId
                 );
                 response = LeaderboardResponse.withUserRank(
                         challengeId,
                         challenge.getTitle(),
-                        request.getType().name(),
+                        leaderboardType,
                         entries,
-                        totalParticipants,
-                        userRank
+                        responseParticipantCount,
+                        userRank,
+                        nextCursor,
+                        hasMore
                 );
             } else {
                 response = LeaderboardResponse.success(
                         challengeId,
                         challenge.getTitle(),
-                        request.getType().name(),
+                        leaderboardType,
                         entries,
-                        totalParticipants
+                        responseParticipantCount,
+                        nextCursor,
+                        hasMore
                 );
             }
             
@@ -187,7 +200,7 @@ public class LeaderboardServiceImpl implements LeaderboardService {
     
     @Override
     @Transactional(readOnly = true)
-    public UserRankDTO getUserRank(Long challengeId, Long userId, Long viewerUserId)
+    public UserRankDTO getUserRank(String challengeId, String userId, String viewerUserId)
             throws ChallengeSphereException {
         Challenge challenge = challengeRepository.findById(challengeId)
                 .orElseThrow(() -> new ChallengeSphereException(
@@ -199,7 +212,7 @@ public class LeaderboardServiceImpl implements LeaderboardService {
         return getUserRankInternal(challengeId, userId, viewerUserId);
     }
 
-    private UserRankDTO getUserRankInternal(Long challengeId, Long userId, Long viewerUserId)
+    private UserRankDTO getUserRankInternal(String challengeId, String userId, String viewerUserId)
             throws ChallengeSphereException {
         logger.debug("Getting user rank for challenge: {}, user: {}", challengeId, userId);
 
@@ -220,26 +233,31 @@ public class LeaderboardServiceImpl implements LeaderboardService {
             if (entry.getStatus() != LeaderboardEntry.LeaderboardStatus.ACTIVE) {
                 return null;
             }
-            Long rank = leaderboardEntryRepository.getUserRankForViewer(
+            LeaderboardEntryRepository.ViewerRankStats rankStats =
+                    leaderboardEntryRepository.getViewerRankStats(
                     challengeId,
                     userId,
                     viewerUserId
             );
-            long totalParticipants = leaderboardEntryRepository
-                    .countParticipantsForViewer(challengeId, viewerUserId);
+            Long rank = rankStats.rank();
+            long totalParticipants = participantCountStore.getActiveCount(challengeId);
             cacheService.addToLeaderboard(challengeId, userId, entry.getScore());
 
-            long resolvedRank = rank != null ? rank : totalParticipants;
-            double percentile = totalParticipants > 1
-                    ? ((double) (totalParticipants - resolvedRank) / (totalParticipants - 1)) * 100
+            Double percentile = rank == null
+                    ? null
+                    : totalParticipants > 1
+                    ? Math.round(
+                            ((double) (totalParticipants - rank)
+                                    / (totalParticipants - 1)) * 10_000.0
+                    ) / 100.0
                     : 100.0;
 
             return UserRankDTO.builder()
                     .userId(userId)
-                    .rank(resolvedRank)
+                    .rank(rank)
                     .score(entry.getScore())
                     .totalParticipants(totalParticipants)
-                    .percentile(Math.round(percentile * 100.0) / 100.0)
+                    .percentile(percentile)
                     .build();
 
         } catch (Exception e) {
@@ -249,7 +267,7 @@ public class LeaderboardServiceImpl implements LeaderboardService {
         }
     }
 
-    private void requireLeaderboardAccess(Challenge challenge, Long viewerUserId)
+    private void requireLeaderboardAccess(Challenge challenge, String viewerUserId)
             throws ChallengeSphereException {
         if (viewerUserId == null) {
             throw new ChallengeSphereException(
@@ -265,7 +283,7 @@ public class LeaderboardServiceImpl implements LeaderboardService {
                     logger
             );
         }
-        Long ownerUserId = challenge.getCurrentOwnerId() != null
+        String ownerUserId = challenge.getCurrentOwnerId() != null
                 ? challenge.getCurrentOwnerId()
                 : challenge.getCreatorId();
         if (!viewerUserId.equals(challenge.getCreatorId())
@@ -302,26 +320,25 @@ public class LeaderboardServiceImpl implements LeaderboardService {
         }
     }
 
-    private List<LeaderboardEntryDTO> getLeaderboardEntriesFromCache(Long challengeId, int limit) {
+    private List<LeaderboardEntryDTO> getLeaderboardEntriesFromCache(String challengeId, int limit) {
         List<RedisCacheServiceImpl.LeaderboardEntry> cachedEntries =
                 cacheService.getTopScoresWithRank(challengeId, limit);
         if (cachedEntries.isEmpty()) {
             return List.of();
         }
 
-        List<Long> userIds = cachedEntries.stream()
+        List<String> userIds = cachedEntries.stream()
                 .map(RedisCacheServiceImpl.LeaderboardEntry::userId)
-                .map(Long::valueOf)
                 .toList();
-        Map<Long, User> userMap = userRepository.findAllById(userIds).stream()
+        Map<String, User> userMap = userRepository.findAllById(userIds).stream()
                 .collect(Collectors.toMap(User::getId, u -> u));
-        Map<Long, LeaderboardEntry> leaderboardEntryMap =
+        Map<String, LeaderboardEntry> leaderboardEntryMap =
                 leaderboardEntryRepository.findByChallengeIdAndUserIds(challengeId, userIds).stream()
                         .collect(Collectors.toMap(entry -> entry.getUser().getId(), entry -> entry));
 
         List<LeaderboardEntryDTO> entries = new ArrayList<>();
         for (RedisCacheServiceImpl.LeaderboardEntry cached : cachedEntries) {
-            Long cachedUserId = Long.valueOf(cached.userId());
+            String cachedUserId = cached.userId();
             User user = userMap.get(cachedUserId);
             LeaderboardEntry leaderboardEntry = leaderboardEntryMap.get(cachedUserId);
             if (user == null) {
@@ -342,40 +359,94 @@ public class LeaderboardServiceImpl implements LeaderboardService {
         return entries;
     }
 
-    private String readableProfilePic(Long userId, String value) {
+    private String readableProfilePic(String userId, String value) {
         return value == null || value.isBlank()
                 ? value
                 : mediaUrlService.toReadableProfilePhoto(userId, value);
+    }
+
+    private LeaderboardCursor decodeCursor(
+            String cursor,
+            String queryBinding
+    ) throws ChallengeSphereException {
+        if (cursor == null || cursor.isBlank()) {
+            return new LeaderboardCursor(Map.of(), 1L);
+        }
+        try {
+            DynamoDbCursorCodec.CursorState state = cursorCodec.decode(cursor, queryBinding);
+            Map<String, AttributeValue> pageState = state.shardState().get(CURSOR_PAGE_STATE);
+            if (pageState == null) {
+                throw new IllegalArgumentException("Cursor rank state is missing");
+            }
+            AttributeValue nextRankValue = pageState.get(CURSOR_NEXT_RANK);
+            if (nextRankValue == null || nextRankValue.n() == null) {
+                throw new IllegalArgumentException("Cursor rank is missing");
+            }
+            long nextRank = Long.parseLong(nextRankValue.n());
+            if (nextRank < 1L) {
+                throw new IllegalArgumentException("Cursor rank is outside the supported range");
+            }
+            return new LeaderboardCursor(state.lastEvaluatedKey(), nextRank);
+        } catch (IllegalArgumentException exception) {
+            throw new ChallengeSphereException("Invalid cursor", HttpStatus.BAD_REQUEST, logger);
+        }
+    }
+
+    private String encodeCursor(
+            String queryBinding,
+            Map<String, AttributeValue> lastEvaluatedKey,
+            long nextRank
+    ) {
+        if (lastEvaluatedKey == null || lastEvaluatedKey.isEmpty()) {
+            return null;
+        }
+        return cursorCodec.encode(
+                queryBinding,
+                new DynamoDbCursorCodec.CursorState(
+                        lastEvaluatedKey,
+                        Map.of(CURSOR_PAGE_STATE, Map.of(
+                                CURSOR_NEXT_RANK,
+                                AttributeValue.fromN(Long.toString(nextRank))
+                        ))
+                )
+        );
+    }
+
+    private record LeaderboardCursor(
+            Map<String, AttributeValue> lastEvaluatedKey,
+            long nextRank
+    ) {
+    }
+
+    private String cursorValue(String value) {
+        return value == null || value.isBlank() ? "-" : value;
     }
     
     @Override
     @Transactional
     public void updateScore(UpdateLeaderboardScoreRequest request) throws ChallengeSphereException {
-        Long challengeId = request.getChallengeId();
-        Long userId = request.getUserId();
+        String challengeId = request.getChallengeId();
+        String userId = request.getUserId();
         Double score = request.getScore();
         
         logger.info("Updating score for challenge={}, userId={}, score={}",
             challengeId, userId, score);
         
         try {
-            // Step 1: Persist to database first (source of truth)
-            LeaderboardEntry entry = getOrCreateLeaderboardEntry(challengeId, userId);
-            
+            LeaderboardEntry entry;
             if (Boolean.TRUE.equals(request.getSetAbsolute())) {
-                // Set absolute score
-                entry.setScore(score);
-                leaderboardEntryRepository.save(entry);
+                entry = leaderboardEntryRepository.setAbsoluteScore(
+                        challengeId, userId, score
+                );
                 logger.info("Set absolute score {} for user {} in challenge {}", score, userId, challengeId);
             } else {
-                // Increment score
-                double newScore = entry.getScore() + score;
-                entry.setScore(newScore);
-                leaderboardEntryRepository.save(entry);
+                entry = leaderboardEntryRepository.applyDeltas(
+                        challengeId, userId, score, 0, 0
+                );
                 logger.info("Incremented score by {} for user {} in challenge {}, new score: {}",
-                    score, userId, challengeId, newScore);
+                    score, userId, challengeId, entry.getScore());
             }
-            syncLeaderboardEntry(challengeId, userId, entry.getScore());
+            syncLeaderboardEntry(challengeId, userId, entry);
         } catch (Exception e) {
             logger.error("Error updating score for challenge {}, user {}: {}", 
                 challengeId, userId, e.getClass().getSimpleName());
@@ -389,21 +460,18 @@ public class LeaderboardServiceImpl implements LeaderboardService {
     
     @Override
     @Transactional
-    public void incrementScore(Long challengeId, Long userId, double points, String reason) {
+    public void incrementScore(String challengeId, String userId, double points, String reason) {
         logger.debug("Incrementing score for challenge={}, userId={}, points={}",
             challengeId, userId, points);
         
         try {
-            // Step 1: Update database first (source of truth)
-            LeaderboardEntry entry = getOrCreateLeaderboardEntry(challengeId, userId);
-            double newScore = entry.getScore() + points;
-            entry.setScore(newScore);
-            entry.incrementSubmissionCount();
-            leaderboardEntryRepository.save(entry);
+            LeaderboardEntry entry = leaderboardEntryRepository.applyDeltas(
+                    challengeId, userId, points, 1, 0
+            );
             
             logger.info("Score updated: challenge={}, userId={}, points={}, newScore={}",
-                challengeId, userId, points, newScore);
-            syncLeaderboardEntry(challengeId, userId, newScore);
+                challengeId, userId, points, entry.getScore());
+            syncLeaderboardEntry(challengeId, userId, entry);
         } catch (Exception e) {
             logger.error("Error incrementing score: challenge={}, user={}, points={}",
                 challengeId, userId, points);
@@ -413,12 +481,14 @@ public class LeaderboardServiceImpl implements LeaderboardService {
 
     @Override
     @Transactional
-    public void decrementSubmissionScore(Long challengeId, Long userId, double points, String reason) {
+    public void decrementSubmissionScore(String challengeId, String userId, double points, String reason) {
         logger.debug("Decrementing submission score for challenge={}, userId={}, points={}",
             challengeId, userId, points);
 
         try {
-            Optional<LeaderboardEntry> entryOptional = leaderboardEntryRepository.findByChallengeIdAndUserId(challengeId, userId);
+            Optional<LeaderboardEntry> entryOptional = leaderboardEntryRepository.applyExistingDeltas(
+                    challengeId, userId, -points, -1, 0
+            );
             if (entryOptional.isEmpty()) {
                 logger.info("No leaderboard entry found while decrementing submission score: challenge={}, user={}",
                     challengeId, userId);
@@ -426,15 +496,9 @@ public class LeaderboardServiceImpl implements LeaderboardService {
             }
 
             LeaderboardEntry entry = entryOptional.get();
-            double currentScore = entry.getScore() == null ? 0.0 : entry.getScore();
-            double newScore = Math.max(0.0, currentScore - points);
-            entry.setScore(newScore);
-            entry.decrementSubmissionCount();
-            leaderboardEntryRepository.save(entry);
-
             logger.info("Submission score decremented: challenge={}, userId={}, points={}, reason={}, newScore={}",
-                challengeId, userId, points, reason, newScore);
-            syncLeaderboardEntry(challengeId, userId, newScore);
+                challengeId, userId, points, reason, entry.getScore());
+            syncLeaderboardEntry(challengeId, userId, entry);
         } catch (Exception e) {
             logger.error("Error decrementing submission score: challenge={}, user={}, points={}",
                 challengeId, userId, points);
@@ -444,32 +508,30 @@ public class LeaderboardServiceImpl implements LeaderboardService {
 
     @Override
     @Transactional
-    public void incrementGloryScore(Long challengeId, Long userId, double points, String reason) {
+    public void incrementGloryScore(String challengeId, String userId, double points, String reason) {
         adjustGloryScore(challengeId, userId, points, 1, reason);
     }
 
     @Override
     @Transactional
-    public void decrementGloryScore(Long challengeId, Long userId, double points, String reason) {
+    public void decrementGloryScore(String challengeId, String userId, double points, String reason) {
         adjustGloryScore(challengeId, userId, -points, -1, reason);
     }
 
-    private void adjustGloryScore(Long challengeId, Long userId, double scoreDelta, int gloryDelta, String reason) {
+    private void adjustGloryScore(String challengeId, String userId, double scoreDelta, int gloryDelta, String reason) {
         logger.debug("Adjusting glory score for challenge={}, userId={}, scoreDelta={}, gloryDelta={}",
             challengeId, userId, scoreDelta, gloryDelta);
 
         try {
-            LeaderboardEntry entry = getOrCreateLeaderboardEntry(challengeId, userId);
-            double currentScore = entry.getScore() == null ? 0.0 : entry.getScore();
-            int currentGlories = entry.getGloryPoints() == null ? 0 : entry.getGloryPoints();
-            int newGlories = Math.max(0, currentGlories + gloryDelta);
-
-            entry.setGloryPoints(newGlories);
-            leaderboardEntryRepository.save(entry);
+            // ChallengeSphere scoring is submission-derived; glory events only
+            // update the displayed glory counter.
+            LeaderboardEntry entry = leaderboardEntryRepository.applyDeltas(
+                    challengeId, userId, 0.0, 0, gloryDelta
+            );
 
             logger.info("Glory count updated without changing points: challenge={}, userId={}, gloryDelta={}, reason={}, points={}",
-                challengeId, userId, gloryDelta, reason, currentScore);
-            syncLeaderboardEntry(challengeId, userId, currentScore);
+                challengeId, userId, gloryDelta, reason, entry.getScore());
+            syncLeaderboardEntry(challengeId, userId, entry);
         } catch (Exception e) {
             logger.error("Error adjusting glory score: challenge={}, user={}, scoreDelta={}, gloryDelta={}",
                 challengeId, userId, scoreDelta, gloryDelta);
@@ -479,7 +541,7 @@ public class LeaderboardServiceImpl implements LeaderboardService {
 
     @Override
     @Transactional
-    public void rebuildLeaderboard(Long challengeId) throws ChallengeSphereException {
+    public void rebuildLeaderboard(String challengeId) throws ChallengeSphereException {
         logger.info("Rebuilding leaderboard for challenge: {}", challengeId);
         
         try {
@@ -508,27 +570,27 @@ public class LeaderboardServiceImpl implements LeaderboardService {
                             logger
                     ));
             
-            List<Long> userIds = participants.stream()
+            List<String> userIds = participants.stream()
                     .map(UserChallenge::getUserId)
                     .collect(Collectors.toList());
             
             // Batch fetch users
-            Map<Long, User> userMap = userRepository.findAllById(userIds).stream()
+            Map<String, User> userMap = userRepository.findAllById(userIds).stream()
                     .collect(Collectors.toMap(User::getId, user -> user));
             
             // Get submitted-day counts per user. A challenge day counts once even if
             // it has multiple active submissions or multiple media files.
-            Map<Long, Long> submissionCounts = getSubmissionCounts(challengeId, userIds);
+            Map<String, Long> submissionCounts = getSubmissionCounts(challengeId, userIds);
 
             // Points come only from submitted media: 10 points for the first image
             // on a challenge day, then 1 point for every additional image that day.
-            Map<Long, Double> submissionScores = getSubmissionScores(challengeId, userIds);
+            Map<String, Double> submissionScores = getSubmissionScores(challengeId, userIds);
             
             // Get glory counts per user
-            Map<Long, Long> gloryCounts = getGloryCounts(challengeId, userIds);
+            Map<String, Long> gloryCounts = getGloryCounts(challengeId, userIds);
             
             // Calculate scores and persist to both DB and Redis
-            for (Long userId : userIds) {
+            for (String userId : userIds) {
                 long submissions = submissionCounts.getOrDefault(userId, 0L);
                 long glories = gloryCounts.getOrDefault(userId, 0L);
                 int streak = calculateStreak(challengeId, userId);
@@ -538,15 +600,14 @@ public class LeaderboardServiceImpl implements LeaderboardService {
                 // Create/update DB entry
                 User user = userMap.get(userId);
                 if (user != null) {
-                    LeaderboardEntry entry = leaderboardEntryRepository
-                            .findByChallengeIdAndUserId(challengeId, userId)
-                            .orElse(new LeaderboardEntry(challenge, user));
-                    
-                    entry.setScore(score);
-                    entry.setSubmissionCount((int) submissions);
-                    entry.setGloryPoints((int) glories);
-                    entry.setStreakDays(streak);
-                    leaderboardEntryRepository.save(entry);
+                    leaderboardEntryRepository.replaceComputedMetrics(
+                            challengeId,
+                            userId,
+                            score,
+                            Math.toIntExact(submissions),
+                            Math.toIntExact(glories),
+                            streak
+                    );
                     cacheService.addToLeaderboard(challengeId, userId, score);
                 }
             }
@@ -571,7 +632,7 @@ public class LeaderboardServiceImpl implements LeaderboardService {
     
     @Override
     @Transactional
-    public void removeFromLeaderboard(Long challengeId, Long userId) {
+    public void removeFromLeaderboard(String challengeId, String userId) {
         logger.info("Removing user {} from leaderboard for challenge {}", userId, challengeId);
         
         try {
@@ -586,20 +647,18 @@ public class LeaderboardServiceImpl implements LeaderboardService {
 
     @Override
     @Transactional
-    public void deactivateParticipation(Long challengeId, Long userId) {
+    public void deactivateParticipation(String challengeId, String userId) {
         leaderboardEntryRepository.markUserLeft(challengeId, userId);
-        leaderboardEntryRepository.updateRanksForChallenge(challengeId);
         cacheService.removeFromLeaderboard(challengeId, userId);
     }
 
     @Override
     @Transactional
-    public void reactivateParticipation(Long challengeId, Long userId) {
+    public void reactivateParticipation(String challengeId, String userId) {
         int updated = leaderboardEntryRepository.reactivateUser(challengeId, userId);
         if (updated <= 0) {
             return;
         }
-        leaderboardEntryRepository.updateRanksForChallenge(challengeId);
         leaderboardEntryRepository.findByChallengeIdAndUserId(challengeId, userId)
                 .filter(entry -> entry.getStatus() == LeaderboardEntry.LeaderboardStatus.ACTIVE)
                 .ifPresent(entry -> cacheService.addToLeaderboard(challengeId, userId, entry.getScore()));
@@ -607,13 +666,11 @@ public class LeaderboardServiceImpl implements LeaderboardService {
     
     @Override
     @Transactional
-    public void initializeUserScore(Long challengeId, Long userId) {
+    public void initializeUserScore(String challengeId, String userId) {
         logger.debug("Initializing leaderboard score for user {} in challenge {}", userId, challengeId);
         
         try {
-            // Create entry in DB with initial score of 0
-            LeaderboardEntry entry = getOrCreateLeaderboardEntry(challengeId, userId);
-            leaderboardEntryRepository.save(entry);
+            leaderboardEntryRepository.ensureEntry(challengeId, userId);
             
             logger.info("Initialized leaderboard score for user {} in challenge {}", userId, challengeId);
         } catch (Exception e) {
@@ -626,10 +683,10 @@ public class LeaderboardServiceImpl implements LeaderboardService {
     /**
      * Get submitted-day counts per user for a challenge.
      */
-    private Map<Long, Long> getSubmissionCounts(Long challengeId, List<Long> userIds) {
+    private Map<String, Long> getSubmissionCounts(String challengeId, List<String> userIds) {
         try {
             List<Submission> submissions = submissionRepository.findByChallengeIdAndUserIdIn(challengeId, userIds);
-            Map<Long, Set<Integer>> submittedDaysByUser = submissions.stream()
+            Map<String, Set<Integer>> submittedDaysByUser = submissions.stream()
                     .filter(Submission::getActive)
                     .filter(submission -> submission.getDayNumber() != null)
                     .collect(Collectors.groupingBy(
@@ -648,7 +705,7 @@ public class LeaderboardServiceImpl implements LeaderboardService {
         }
     }
 
-    private Map<Long, Double> getSubmissionScores(Long challengeId, List<Long> userIds) {
+    private Map<String, Double> getSubmissionScores(String challengeId, List<String> userIds) {
         try {
             return submissionRepository.findByChallengeIdAndUserIdIn(challengeId, userIds).stream()
                     .filter(submission -> Boolean.TRUE.equals(submission.getActive()))
@@ -692,7 +749,7 @@ public class LeaderboardServiceImpl implements LeaderboardService {
     /**
      * Get total glory counts per user for a challenge
      */
-    private Map<Long, Long> getGloryCounts(Long challengeId, List<Long> userIds) {
+    private Map<String, Long> getGloryCounts(String challengeId, List<String> userIds) {
         try {
             List<Submission> submissions = submissionRepository.findByChallengeIdAndUserIdIn(challengeId, userIds);
             return submissions.stream()
@@ -708,7 +765,7 @@ public class LeaderboardServiceImpl implements LeaderboardService {
     }
     
     /** Calculate the current streak with one protected rest day per seven days. */
-    private int calculateStreak(Long challengeId, Long userId) {
+    private int calculateStreak(String challengeId, String userId) {
         try {
             // Get all submissions for this user-challenge, ordered by day
             List<Submission> submissions = submissionRepository.findByChallengeIdAndUserId(challengeId, userId);
@@ -737,27 +794,13 @@ public class LeaderboardServiceImpl implements LeaderboardService {
     
     // ==================== DATABASE + REDIS SYNC HELPERS ====================
     
-    /**
-     * Get or create a leaderboard entry in the database
-     */
-    private LeaderboardEntry getOrCreateLeaderboardEntry(Long challengeId, Long userId) {
-        return leaderboardEntryRepository.findByChallengeIdAndUserId(challengeId, userId)
-                .orElseGet(() -> {
-                    Challenge challenge = challengeRepository.findById(challengeId)
-                            .orElseThrow(() -> new RuntimeException("Challenge not found: " + challengeId));
-                    User user = userRepository.findById(userId)
-                            .orElseThrow(() -> new RuntimeException("User not found: " + userId));
-                    return new LeaderboardEntry(challenge, user);
-                });
-    }
-
-    private void syncLeaderboardEntry(Long challengeId, Long userId, double score) {
-        leaderboardEntryRepository.updateRanksForChallenge(challengeId);
-        boolean active = leaderboardEntryRepository.findByChallengeIdAndUserId(challengeId, userId)
-                .map(entry -> entry.getStatus() == LeaderboardEntry.LeaderboardStatus.ACTIVE)
-                .orElse(false);
-        if (active) {
-            cacheService.addToLeaderboard(challengeId, userId, score);
+    private void syncLeaderboardEntry(
+            String challengeId,
+            String userId,
+            LeaderboardEntry entry
+    ) {
+        if (entry.getStatus() == LeaderboardEntry.LeaderboardStatus.ACTIVE) {
+            cacheService.addToLeaderboard(challengeId, userId, entry.getScore());
         } else {
             cacheService.removeFromLeaderboard(challengeId, userId);
         }
@@ -768,7 +811,7 @@ public class LeaderboardServiceImpl implements LeaderboardService {
      * Call this after server restart or Redis cache miss
      */
     @Transactional(readOnly = true)
-    public void syncLeaderboardToRedis(Long challengeId) {
+    public void syncLeaderboardToRedis(String challengeId) {
         logger.info("Syncing leaderboard from DB for challenge: {}", challengeId);
         
         try {
@@ -784,7 +827,7 @@ public class LeaderboardServiceImpl implements LeaderboardService {
      * Get leaderboard statistics from database
      */
     @Transactional(readOnly = true)
-    public Map<String, Object> getLeaderboardStats(Long challengeId) {
+    public Map<String, Object> getLeaderboardStats(String challengeId) {
         Map<String, Object> stats = new HashMap<>();
         
         try {
@@ -806,7 +849,7 @@ public class LeaderboardServiceImpl implements LeaderboardService {
      * Call this periodically or after batch score updates
      */
     @Transactional
-    public void updateRanks(Long challengeId) {
+    public void updateRanks(String challengeId) {
         logger.info("Updating ranks for challenge: {}", challengeId);
         try {
             leaderboardEntryRepository.updateRanksForChallenge(challengeId);
@@ -820,7 +863,7 @@ public class LeaderboardServiceImpl implements LeaderboardService {
      * Mark all entries as completed when challenge ends
      */
     @Transactional
-    public void markChallengeCompleted(Long challengeId) {
+    public void markChallengeCompleted(String challengeId) {
         logger.info("Marking challenge {} leaderboard as completed", challengeId);
         try {
             // Update final ranks before marking completed

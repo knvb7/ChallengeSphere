@@ -10,7 +10,7 @@ import java.sql.Timestamp;
 public class UserRegistrationResponse {
     private boolean success;
     private String message;
-    private Long userId;
+    private String userId;
     private String username;
     private String emailId;
     private String phone;
@@ -23,7 +23,7 @@ public class UserRegistrationResponse {
         UserRegistrationResponse response = new UserRegistrationResponse();
         response.setSuccess(true);
         response.setMessage("User registered successfully");
-        response.setUserId(user.getId());
+        response.setUserId(user.getId() == null ? null : user.getId().toString());
         response.setUsername(user.getUsername());
         response.setEmailId(user.getEmailId());
         response.setPhone(user.getPhone());

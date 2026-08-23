@@ -13,7 +13,7 @@ import java.util.List;
 @NoArgsConstructor
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public class PublicUserResponse {
-    private Long id;
+    private String id;
     private String username;
     private String name;
     private String displayName;
@@ -55,7 +55,7 @@ public class PublicUserResponse {
     }
 
     protected static void populate(PublicUserResponse response, User user) {
-        response.setId(user.getId());
+        response.setId(user.getId() == null ? null : user.getId().toString());
         response.setUsername(user.getUsername());
         response.setName(user.getName());
         response.setDisplayName(user.getName());

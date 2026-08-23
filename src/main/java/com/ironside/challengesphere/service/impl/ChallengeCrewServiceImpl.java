@@ -71,7 +71,7 @@ public class ChallengeCrewServiceImpl implements ChallengeCrewService {
 
     @Override
     @Transactional
-    public ChallengeCrewStatusResponse getStatus(Long challengeId, Long actorUserId)
+    public ChallengeCrewStatusResponse getStatus(String challengeId, String actorUserId)
             throws ChallengeSphereException {
         Challenge challenge = requireChallenge(challengeId);
         requireCanView(challenge, actorUserId);
@@ -81,37 +81,39 @@ public class ChallengeCrewServiceImpl implements ChallengeCrewService {
 
     @Override
     @Transactional
-    public ChallengeCrewStatusResponse startTogether(Long challengeId, Long actorUserId)
+    public ChallengeCrewStatusResponse startTogether(String challengeId, String actorUserId)
             throws ChallengeSphereException {
         Challenge challenge = requireChallenge(challengeId);
         requirePrivate(challenge);
         requireOwner(challenge, actorUserId);
 
-        ChallengeCrewLifecycle lifecycle = lifecycleRepository.findByChallengeIdForUpdate(challengeId)
-                .orElseGet(() -> findOrCreateLegacyLifecycle(challenge));
-        if (lifecycle.getStartedAt() != null) {
+        try (var lifecycleLease = lifecycleRepository.acquireChallengeLease(challengeId)) {
+            ChallengeCrewLifecycle lifecycle = lifecycleRepository.findById(challengeId)
+                    .orElseGet(() -> findOrCreateLegacyLifecycle(challenge));
+            if (lifecycle.getStartedAt() != null) {
+                return buildStatus(challenge, lifecycle, actorUserId);
+            }
+            if (activeParticipants(challengeId).size() < MINIMUM_START_COUNT) {
+                throw badRequest("At least one active participant is required to start this challenge");
+            }
+
+            Timestamp now = now();
+            lifecycle.setStartedAt(now);
+            lifecycle.setStartedByUserId(actorUserId);
+            lifecycle.setUpdatedAt(now);
+            lifecycleRepository.save(lifecycle);
+
+            challenge.setStartDate(LocalDate.now());
+            challengeRepository.save(challenge);
             return buildStatus(challenge, lifecycle, actorUserId);
         }
-        if (activeParticipants(challengeId).size() < MINIMUM_START_COUNT) {
-            throw badRequest("At least one active participant is required to start this challenge");
-        }
-
-        Timestamp now = now();
-        lifecycle.setStartedAt(now);
-        lifecycle.setStartedByUserId(actorUserId);
-        lifecycle.setUpdatedAt(now);
-        lifecycleRepository.save(lifecycle);
-
-        challenge.setStartDate(LocalDate.now());
-        challengeRepository.save(challenge);
-        return buildStatus(challenge, lifecycle, actorUserId);
     }
 
     @Override
     @Transactional
     public ChallengeCrewStatusResponse setPeerReminders(
-            Long challengeId,
-            Long actorUserId,
+            String challengeId,
+            String actorUserId,
             boolean enabled
     ) throws ChallengeSphereException {
         Challenge challenge = requireChallenge(challengeId);
@@ -138,7 +140,7 @@ public class ChallengeCrewServiceImpl implements ChallengeCrewService {
 
     @Override
     @Transactional
-    public PeerNudgeResponse sendPeerNudge(Long challengeId, Long actorUserId, Long recipientUserId)
+    public PeerNudgeResponse sendPeerNudge(String challengeId, String actorUserId, String recipientUserId)
             throws ChallengeSphereException {
         Challenge challenge = requireChallenge(challengeId);
         requirePrivate(challenge);
@@ -156,36 +158,43 @@ public class ChallengeCrewServiceImpl implements ChallengeCrewService {
             throw badRequest("Peer check-ins are available while the challenge is active");
         }
 
-        ChallengePeerReminderPreference preference = reminderPreferenceRepository
-                .findByChallengeIdAndUserIdForUpdate(challengeId, recipientUserId)
-                .orElseThrow(() -> badRequest("This crew member has not opted in to peer check-ins"));
-        if (!Boolean.TRUE.equals(preference.getEnabled())) {
-            throw badRequest("This crew member has not opted in to peer check-ins");
+        Instant currentInstant;
+        Timestamp sentAt;
+        ChallengePeerNudge nudge;
+        try (var preferenceLease = reminderPreferenceRepository.acquirePreferenceLease(
+                challengeId, recipientUserId
+        )) {
+            ChallengePeerReminderPreference preference = reminderPreferenceRepository
+                    .findByChallengeIdAndUserId(challengeId, recipientUserId)
+                    .orElseThrow(() -> badRequest("This crew member has not opted in to peer check-ins"));
+            if (!Boolean.TRUE.equals(preference.getEnabled())) {
+                throw badRequest("This crew member has not opted in to peer check-ins");
+            }
+
+            currentInstant = Instant.now();
+            Instant nextAllowedInstant = preference.getLastNudgedAt() == null
+                    ? null
+                    : preference.getLastNudgedAt().toInstant().plus(NUDGE_COOLDOWN);
+            if (nextAllowedInstant != null && currentInstant.isBefore(nextAllowedInstant)) {
+                throw new ChallengeSphereException(
+                        "This crew member has already received a check-in in the last 24 hours",
+                        HttpStatus.TOO_MANY_REQUESTS,
+                        logger
+                );
+            }
+
+            sentAt = Timestamp.from(currentInstant);
+            preference.setLastNudgedAt(sentAt);
+            preference.setUpdatedAt(sentAt);
+            reminderPreferenceRepository.save(preference);
+
+            nudge = new ChallengePeerNudge();
+            nudge.setChallengeId(challengeId);
+            nudge.setSenderUserId(actorUserId);
+            nudge.setRecipientUserId(recipientUserId);
+            nudge.setSentAt(sentAt);
+            nudgeRepository.save(nudge);
         }
-
-        Instant currentInstant = Instant.now();
-        Instant nextAllowedInstant = preference.getLastNudgedAt() == null
-                ? null
-                : preference.getLastNudgedAt().toInstant().plus(NUDGE_COOLDOWN);
-        if (nextAllowedInstant != null && currentInstant.isBefore(nextAllowedInstant)) {
-            throw new ChallengeSphereException(
-                    "This crew member has already received a check-in in the last 24 hours",
-                    HttpStatus.TOO_MANY_REQUESTS,
-                    logger
-            );
-        }
-
-        Timestamp sentAt = Timestamp.from(currentInstant);
-        preference.setLastNudgedAt(sentAt);
-        preference.setUpdatedAt(sentAt);
-        reminderPreferenceRepository.save(preference);
-
-        ChallengePeerNudge nudge = new ChallengePeerNudge();
-        nudge.setChallengeId(challengeId);
-        nudge.setSenderUserId(actorUserId);
-        nudge.setRecipientUserId(recipientUserId);
-        nudge.setSentAt(sentAt);
-        nudgeRepository.save(nudge);
 
         User sender = userRepository.findById(actorUserId)
                 .orElseThrow(() -> notFound("Sender user was not found"));
@@ -211,7 +220,7 @@ public class ChallengeCrewServiceImpl implements ChallengeCrewService {
 
     @Override
     @Transactional
-    public ChallengeCrewRecapResponse getRecap(Long challengeId, Long actorUserId)
+    public ChallengeCrewRecapResponse getRecap(String challengeId, String actorUserId)
             throws ChallengeSphereException {
         Challenge challenge = requireChallenge(challengeId);
         requireCanView(challenge, actorUserId);
@@ -222,13 +231,13 @@ public class ChallengeCrewServiceImpl implements ChallengeCrewService {
         }
         markRecapReady(lifecycle);
 
-        Set<Long> participantIds = participants.stream()
+        Set<String> participantIds = participants.stream()
                 .map(UserChallenge::getUserId)
                 .collect(java.util.stream.Collectors.toSet());
         List<Submission> submissions = submissionRepository.findActiveByChallengeId(challengeId).stream()
                 .filter(submission -> participantIds.contains(submission.getUserId()))
                 .toList();
-        Set<Long> contributorIds = submissions.stream()
+        Set<String> contributorIds = submissions.stream()
                 .map(Submission::getUserId)
                 .collect(java.util.stream.Collectors.toSet());
         Set<String> checkIns = new HashSet<>();
@@ -260,67 +269,77 @@ public class ChallengeCrewServiceImpl implements ChallengeCrewService {
 
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public ChallengeRematchResponse rematch(Long challengeId, Long actorUserId)
+    public ChallengeRematchResponse rematch(String challengeId, String actorUserId)
             throws ChallengeSphereException {
         Challenge source = requireChallenge(challengeId);
         requirePrivate(source);
         requireOwner(source, actorUserId);
-        ChallengeCrewLifecycle sourceLifecycle = lifecycleRepository.findByChallengeIdForUpdate(challengeId)
-                .orElseGet(() -> findOrCreateLegacyLifecycle(source));
-        List<UserChallenge> sourceParticipants = activeParticipants(challengeId);
-        if (!isComplete(source, sourceLifecycle, sourceParticipants)) {
-            throw badRequest("Rematch is available after the challenge is complete");
-        }
-        markRecapReady(sourceLifecycle);
-
-        ChallengeCrewLifecycle existing = lifecycleRepository.findByRematchOfChallengeId(challengeId).orElse(null);
-        if (existing != null) {
-            int copiedInvites = inviteRepository.findByChallengeId(existing.getChallengeId()).size();
-            return rematchResponse(challengeId, existing.getChallengeId(), copiedInvites, true);
-        }
-
-        List<Long> invitedUserIds = sourceParticipants.stream()
-                .map(UserChallenge::getUserId)
-                .filter(userId -> !Objects.equals(userId, actorUserId))
-                .distinct()
-                .toList();
-        ChallengeCreateRequest request = copyRequest(source, actorUserId, invitedUserIds);
-        ChallengeCreateResponse created = challengeService.createChallenge(request);
-        Long rematchChallengeId = created.getChallengeId();
-
-        Timestamp createdAt = now();
-        for (Long invitedUserId : invitedUserIds) {
-            if (inviteRepository.findByChallengeIdAndInvitedUserId(rematchChallengeId, invitedUserId).isPresent()) {
-                continue;
+        try (var sourceLifecycleLease = lifecycleRepository.acquireChallengeLease(challengeId)) {
+            ChallengeCrewLifecycle sourceLifecycle = lifecycleRepository.findById(challengeId)
+                    .orElseGet(() -> findOrCreateLegacyLifecycle(source));
+            List<UserChallenge> sourceParticipants = activeParticipants(challengeId);
+            if (!isComplete(source, sourceLifecycle, sourceParticipants)) {
+                throw badRequest("Rematch is available after the challenge is complete");
             }
-            ChallengeCrewInvite invite = new ChallengeCrewInvite();
-            invite.setChallengeId(rematchChallengeId);
-            invite.setInvitedUserId(invitedUserId);
-            invite.setInvitedByUserId(actorUserId);
-            invite.setCreatedAt(createdAt);
-            invite.setUpdatedAt(createdAt);
-            inviteRepository.save(invite);
-        }
+            markRecapReady(sourceLifecycle);
 
-        ChallengeCrewLifecycle rematchLifecycle = lifecycleRepository.findByChallengeIdForUpdate(rematchChallengeId)
-                .orElseGet(() -> {
-                    ChallengeCrewLifecycle createdLifecycle = new ChallengeCrewLifecycle();
-                    createdLifecycle.setChallengeId(rematchChallengeId);
-                    createdLifecycle.setCreatedAt(createdAt);
-                    createdLifecycle.setUpdatedAt(createdAt);
-                    return createdLifecycle;
-                });
-        rematchLifecycle.setRematchOfChallengeId(challengeId);
-        rematchLifecycle.setStartedAt(null);
-        rematchLifecycle.setStartedByUserId(null);
-        rematchLifecycle.setUpdatedAt(createdAt);
-        lifecycleRepository.save(rematchLifecycle);
-        return rematchResponse(challengeId, rematchChallengeId, invitedUserIds.size(), false);
+            ChallengeCrewLifecycle existing = lifecycleRepository
+                    .findByRematchOfChallengeId(challengeId)
+                    .orElse(null);
+            if (existing != null) {
+                int copiedInvites = inviteRepository.findByChallengeId(existing.getChallengeId()).size();
+                return rematchResponse(challengeId, existing.getChallengeId(), copiedInvites, true);
+            }
+
+            List<String> invitedUserIds = sourceParticipants.stream()
+                    .map(UserChallenge::getUserId)
+                    .filter(userId -> !Objects.equals(userId, actorUserId))
+                    .distinct()
+                    .toList();
+            ChallengeCreateRequest request = copyRequest(source, actorUserId, invitedUserIds);
+            ChallengeCreateResponse created = challengeService.createChallenge(request);
+            String rematchChallengeId = created.getChallengeId();
+
+            Timestamp createdAt = now();
+            for (String invitedUserId : invitedUserIds) {
+                if (inviteRepository.findByChallengeIdAndInvitedUserId(
+                        rematchChallengeId, invitedUserId
+                ).isPresent()) {
+                    continue;
+                }
+                ChallengeCrewInvite invite = new ChallengeCrewInvite();
+                invite.setChallengeId(rematchChallengeId);
+                invite.setInvitedUserId(invitedUserId);
+                invite.setInvitedByUserId(actorUserId);
+                invite.setCreatedAt(createdAt);
+                invite.setUpdatedAt(createdAt);
+                inviteRepository.save(invite);
+            }
+
+            try (var rematchLifecycleLease = lifecycleRepository.acquireChallengeLease(
+                    rematchChallengeId
+            )) {
+                ChallengeCrewLifecycle rematchLifecycle = lifecycleRepository.findById(rematchChallengeId)
+                        .orElseGet(() -> {
+                            ChallengeCrewLifecycle createdLifecycle = new ChallengeCrewLifecycle();
+                            createdLifecycle.setChallengeId(rematchChallengeId);
+                            createdLifecycle.setCreatedAt(createdAt);
+                            createdLifecycle.setUpdatedAt(createdAt);
+                            return createdLifecycle;
+                        });
+                rematchLifecycle.setRematchOfChallengeId(challengeId);
+                rematchLifecycle.setStartedAt(null);
+                rematchLifecycle.setStartedByUserId(null);
+                rematchLifecycle.setUpdatedAt(createdAt);
+                lifecycleRepository.save(rematchLifecycle);
+            }
+            return rematchResponse(challengeId, rematchChallengeId, invitedUserIds.size(), false);
+        }
     }
 
     @Override
     @Transactional(readOnly = true)
-    public void requireStarted(Long challengeId) throws ChallengeSphereException {
+    public void requireStarted(String challengeId) throws ChallengeSphereException {
         Challenge challenge = challengeRepository.findById(challengeId)
                 .orElseThrow(() -> notFound("Challenge not found with id: " + challengeId));
         if (!Boolean.TRUE.equals(challenge.getIsPrivate())) {
@@ -341,10 +360,10 @@ public class ChallengeCrewServiceImpl implements ChallengeCrewService {
     private ChallengeCrewStatusResponse buildStatus(
             Challenge challenge,
             ChallengeCrewLifecycle lifecycle,
-            Long actorUserId
+            String actorUserId
     ) {
         List<UserChallenge> participants = activeParticipants(challenge.getId());
-        Set<Long> acceptedUserIds = participants.stream()
+        Set<String> acceptedUserIds = participants.stream()
                 .map(UserChallenge::getUserId)
                 .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
         List<ChallengeCrewInvite> invitations = inviteRepository.findByChallengeId(challenge.getId());
@@ -353,7 +372,7 @@ public class ChallengeCrewServiceImpl implements ChallengeCrewService {
                 .distinct()
                 .filter(userId -> !acceptedUserIds.contains(userId))
                 .count();
-        List<Long> optedInUserIds = reminderPreferenceRepository
+        List<String> optedInUserIds = reminderPreferenceRepository
                 .findByChallengeIdAndEnabledTrue(challenge.getId()).stream()
                 .map(ChallengePeerReminderPreference::getUserId)
                 .filter(acceptedUserIds::contains)
@@ -395,7 +414,7 @@ public class ChallengeCrewServiceImpl implements ChallengeCrewService {
                 .build();
     }
 
-    private ChallengeCreateRequest copyRequest(Challenge source, Long actorUserId, List<Long> invitedUserIds) {
+    private ChallengeCreateRequest copyRequest(Challenge source, String actorUserId, List<String> invitedUserIds) {
         ChallengeCreationContentPolicy.PreviewContent content =
                 ChallengeCreationContentPolicy.parseStoredContent(source.getDescription(), source.getBenefits());
         String rules = content.rules();
@@ -448,8 +467,8 @@ public class ChallengeCrewServiceImpl implements ChallengeCrewService {
     }
 
     private ChallengeRematchResponse rematchResponse(
-            Long sourceChallengeId,
-            Long challengeId,
+            String sourceChallengeId,
+            String challengeId,
             int copiedInviteCount,
             boolean existing
     ) {
@@ -461,7 +480,7 @@ public class ChallengeCrewServiceImpl implements ChallengeCrewService {
                 .build();
     }
 
-    private Challenge requireChallenge(Long challengeId) throws ChallengeSphereException {
+    private Challenge requireChallenge(String challengeId) throws ChallengeSphereException {
         Challenge challenge = challengeRepository.findById(challengeId)
                 .orElseThrow(() -> notFound("Challenge not found with id: " + challengeId));
         if (Boolean.FALSE.equals(challenge.getActive())) {
@@ -470,7 +489,7 @@ public class ChallengeCrewServiceImpl implements ChallengeCrewService {
         return challenge;
     }
 
-    private void requireCanView(Challenge challenge, Long actorUserId) throws ChallengeSphereException {
+    private void requireCanView(Challenge challenge, String actorUserId) throws ChallengeSphereException {
         if (!Boolean.TRUE.equals(challenge.getIsPrivate()) || isOwner(challenge, actorUserId)) {
             return;
         }
@@ -483,18 +502,18 @@ public class ChallengeCrewServiceImpl implements ChallengeCrewService {
         }
     }
 
-    private void requireOwner(Challenge challenge, Long actorUserId) throws ChallengeSphereException {
+    private void requireOwner(Challenge challenge, String actorUserId) throws ChallengeSphereException {
         if (!isOwner(challenge, actorUserId)) {
             throw forbidden("Only the challenge owner can do that");
         }
     }
 
-    private boolean isOwner(Challenge challenge, Long actorUserId) {
+    private boolean isOwner(Challenge challenge, String actorUserId) {
         return Objects.equals(challenge.getCurrentOwnerId(), actorUserId)
                 || (challenge.getCurrentOwnerId() == null && Objects.equals(challenge.getCreatorId(), actorUserId));
     }
 
-    private UserChallenge requireActiveParticipant(Long challengeId, Long userId, String message)
+    private UserChallenge requireActiveParticipant(String challengeId, String userId, String message)
             throws ChallengeSphereException {
         UserChallenge membership = userChallengeRepository.findByUserIdAndChallengeId(userId, challengeId)
                 .orElseThrow(() -> forbidden(message));
@@ -504,7 +523,7 @@ public class ChallengeCrewServiceImpl implements ChallengeCrewService {
         return membership;
     }
 
-    private List<UserChallenge> activeParticipants(Long challengeId) {
+    private List<UserChallenge> activeParticipants(String challengeId) {
         return userChallengeRepository.findActiveByChallengeId(challengeId).stream()
                 .filter(membership -> !Boolean.TRUE.equals(membership.getBanned()))
                 .toList();

@@ -38,7 +38,7 @@ public class SupportServiceImpl implements SupportService {
     private static final int MAX_SUPPORT_TICKETS_PER_DAY = 5;
     private static final long UPLOAD_EXPIRY_SECONDS = 3600L;
     private static final Pattern SUPPORT_SCREENSHOT_KEY = Pattern.compile(
-            "^support/user_(\\d+)/screenshots/\\d{13}_"
+            "^support/user_([0-9A-HJKMNP-TV-Z]{26}|\\d+)/screenshots/\\d{13}_"
                     + "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
                     + "[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\\.(?:jpg|jpeg|png|gif)$"
     );
@@ -74,7 +74,7 @@ public class SupportServiceImpl implements SupportService {
 
     @Override
     public PresignedUrlsResponse generatePresignedUrls(
-            Long userId,
+            String userId,
             GeneratePresignedUrlsRequest request
     ) throws ChallengeSphereException {
         List<GeneratePresignedUrlsRequest.MediaFileInfo> mediaFiles =
@@ -115,7 +115,7 @@ public class SupportServiceImpl implements SupportService {
 
     @Override
     public SupportTicketResponse createTicket(
-            Long userId,
+            String userId,
             CreateSupportTicketRequest request
     ) throws ChallengeSphereException {
         if (userId == null) {
@@ -155,7 +155,7 @@ public class SupportServiceImpl implements SupportService {
     }
 
     private void moderateSupportScreenshots(
-            Long userId,
+            String userId,
             List<String> screenshotKeys
     ) throws ChallengeSphereException {
         if (screenshotKeys == null || screenshotKeys.isEmpty()) {
@@ -193,7 +193,7 @@ public class SupportServiceImpl implements SupportService {
         }
     }
 
-    private void reserveDailySupportTicket(Long userId) throws ChallengeSphereException {
+    private void reserveDailySupportTicket(String userId) throws ChallengeSphereException {
         RateLimitStore.Decision decision;
         try {
             decision = rateLimitStore.consume(
@@ -263,13 +263,13 @@ public class SupportServiceImpl implements SupportService {
         }
     }
 
-    private void validateScreenshotKey(Long userId, String key) throws ChallengeSphereException {
+    private void validateScreenshotKey(String userId, String key) throws ChallengeSphereException {
         Matcher matcher = key == null
                 ? SUPPORT_SCREENSHOT_KEY.matcher("")
                 : SUPPORT_SCREENSHOT_KEY.matcher(key);
         if (userId == null
                 || !matcher.matches()
-                || !Long.toString(userId).equals(matcher.group(1))) {
+                || !userId.equals(matcher.group(1))) {
             throw badRequest("Invalid support screenshot reference");
         }
         try {
@@ -289,7 +289,7 @@ public class SupportServiceImpl implements SupportService {
         }
     }
 
-    private String buildScreenshotKey(Long userId, String fileName) {
+    private String buildScreenshotKey(String userId, String fileName) {
         return supportPrefix(userId)
                 + Instant.now().toEpochMilli()
                 + "_"
@@ -297,7 +297,7 @@ public class SupportServiceImpl implements SupportService {
                 + getFileExtension(fileName);
     }
 
-    private String supportPrefix(Long userId) {
+    private String supportPrefix(String userId) {
         return "support/user_" + userId + "/screenshots/";
     }
 

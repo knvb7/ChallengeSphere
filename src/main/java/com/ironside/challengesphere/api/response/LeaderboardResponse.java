@@ -6,6 +6,7 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 
 import lombok.AllArgsConstructor;
 import lombok.Builder;
+import lombok.EqualsAndHashCode;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
@@ -17,9 +18,10 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 @Builder
 @JsonInclude(JsonInclude.Include.NON_NULL)
-public class LeaderboardResponse {
+@EqualsAndHashCode(callSuper = true)
+public class LeaderboardResponse extends CursorResponse {
     
-    private Long challengeId;
+    private String challengeId;
     private String challengeTitle;
     private String leaderboardType;
     private List<LeaderboardEntryDTO> entries;
@@ -37,7 +39,7 @@ public class LeaderboardResponse {
     @AllArgsConstructor
     @Builder
     public static class LeaderboardEntryDTO {
-        private Long userId;
+        private String userId;
         private String username;
         private String displayName;
         private String profilePictureUrl;
@@ -56,7 +58,7 @@ public class LeaderboardResponse {
     @AllArgsConstructor
     @Builder
     public static class UserRankDTO {
-        private Long userId;
+        private String userId;
         private Long rank;
         private Double score;
         private Long totalParticipants;
@@ -64,9 +66,10 @@ public class LeaderboardResponse {
     }
     
     // Factory methods
-    public static LeaderboardResponse success(Long challengeId, String challengeTitle, 
-            String leaderboardType, List<LeaderboardEntryDTO> entries, Integer totalParticipants) {
-        return LeaderboardResponse.builder()
+    public static LeaderboardResponse success(String challengeId, String challengeTitle,
+            String leaderboardType, List<LeaderboardEntryDTO> entries, Integer totalParticipants,
+            String nextCursor, boolean hasMore) {
+        LeaderboardResponse response = LeaderboardResponse.builder()
                 .challengeId(challengeId)
                 .challengeTitle(challengeTitle)
                 .leaderboardType(leaderboardType)
@@ -76,12 +79,16 @@ public class LeaderboardResponse {
                 .success(true)
                 .message("Leaderboard retrieved successfully")
                 .build();
+        response.setNextCursor(nextCursor);
+        response.setHasMore(hasMore);
+        return response;
     }
     
-    public static LeaderboardResponse withUserRank(Long challengeId, String challengeTitle, 
+    public static LeaderboardResponse withUserRank(String challengeId, String challengeTitle,
             String leaderboardType, List<LeaderboardEntryDTO> entries, 
-            Integer totalParticipants, UserRankDTO userRank) {
-        return LeaderboardResponse.builder()
+            Integer totalParticipants, UserRankDTO userRank,
+            String nextCursor, boolean hasMore) {
+        LeaderboardResponse response = LeaderboardResponse.builder()
                 .challengeId(challengeId)
                 .challengeTitle(challengeTitle)
                 .leaderboardType(leaderboardType)
@@ -92,6 +99,9 @@ public class LeaderboardResponse {
                 .success(true)
                 .message("Leaderboard retrieved successfully")
                 .build();
+        response.setNextCursor(nextCursor);
+        response.setHasMore(hasMore);
+        return response;
     }
     
     public static LeaderboardResponse error(String message) {
@@ -102,7 +112,7 @@ public class LeaderboardResponse {
                 .build();
     }
     
-    public static LeaderboardResponse notFound(Long challengeId) {
+    public static LeaderboardResponse notFound(String challengeId) {
         return LeaderboardResponse.builder()
                 .challengeId(challengeId)
                 .success(false)

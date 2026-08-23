@@ -12,15 +12,15 @@ public final class SecurityAccess {
     private SecurityAccess() {
     }
 
-    public static Long requireUserId(UserPrincipal principal) throws ChallengeSphereException {
+    public static String requireUserId(UserPrincipal principal) throws ChallengeSphereException {
         if (principal == null || principal.getId() == null) {
             throw new ChallengeSphereException("Authentication required", HttpStatus.UNAUTHORIZED, logger);
         }
         return principal.getId();
     }
 
-    public static void requireSelf(UserPrincipal principal, Long targetUserId) throws ChallengeSphereException {
-        Long actorUserId = requireUserId(principal);
+    public static void requireSelf(UserPrincipal principal, String targetUserId) throws ChallengeSphereException {
+        String actorUserId = requireUserId(principal);
         if (!actorUserId.equals(targetUserId)) {
             throw new ChallengeSphereException("You can only act as the authenticated user", HttpStatus.FORBIDDEN, logger);
         }

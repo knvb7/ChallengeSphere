@@ -16,7 +16,7 @@ import java.util.List;
 @Data
 public class GeneratePresignedUrlsRequest {
 
-    private Long userId;
+    private String userId;
 
     @NotEmpty(message = "At least one media file is required")
     @Size(max = 5, message = "A request can include at most 5 media files")

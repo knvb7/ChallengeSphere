@@ -14,9 +14,9 @@ import lombok.NoArgsConstructor;
 @Builder
 public class UpdateLeaderboardScoreRequest {
     
-    private Long challengeId;
+    private String challengeId;
     
-    private Long userId;
+    private String userId;
     
     /**
      * Score to add (can be negative for deductions)

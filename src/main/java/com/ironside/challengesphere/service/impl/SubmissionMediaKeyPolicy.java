@@ -22,17 +22,17 @@ public class SubmissionMediaKeyPolicy {
     private static final Logger logger = LogManager.getLogger(SubmissionMediaKeyPolicy.class);
     private static final int MAX_MEDIA_KEYS = 5;
     private static final Pattern KEY_PATTERN = Pattern.compile(
-            "^submissions/user_(\\d+)/(SUBMISSION_PHOTO)/"
+            "^submissions/user_([0-9A-HJKMNP-TV-Z]{26}|\\d+)/(SUBMISSION_PHOTO)/"
                     + "\\d{13}_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
                     + "[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\\.(jpg|jpeg|png|gif)$");
     private static final Pattern READ_KEY_PATTERN = Pattern.compile(
-            "^submissions/user_(\\d+)/(SUBMISSION_PHOTO|SUBMISSION_VIDEO)/"
+            "^submissions/user_([0-9A-HJKMNP-TV-Z]{26}|\\d+)/(SUBMISSION_PHOTO|SUBMISSION_VIDEO)/"
                     + "\\d{13}_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
                     + "[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\\.(jpg|jpeg|png|gif|mp4)$");
 
-    public List<String> validateAndNormalize(Long userId, List<String> mediaKeys)
+    public List<String> validateAndNormalize(String userId, List<String> mediaKeys)
             throws ChallengeSphereException {
-        if (userId == null || userId <= 0) {
+        if (userId == null || userId.isBlank()) {
             throw invalid();
         }
         if (mediaKeys == null || mediaKeys.isEmpty()) {
@@ -51,7 +51,7 @@ public class SubmissionMediaKeyPolicy {
             String key = raw.trim();
             Matcher matcher = KEY_PATTERN.matcher(key);
             if (!matcher.matches()
-                    || !Long.toString(userId).equals(matcher.group(1))
+                    || !userId.equals(matcher.group(1))
                     || !seen.add(key)) {
                 throw invalid();
             }
@@ -60,11 +60,12 @@ public class SubmissionMediaKeyPolicy {
         return List.copyOf(normalized);
     }
 
-    public List<String> filterOwnedKeysForRead(Long userId, String rawMediaKeys) {
-        if (userId == null
-                || rawMediaKeys == null
+    public List<String> filterOwnedKeysForRead(String rawMediaKeys, Set<String> allowedOwnerIds) {
+        if (rawMediaKeys == null
                 || rawMediaKeys.isBlank()
-                || rawMediaKeys.length() > 1_024) {
+                || rawMediaKeys.length() > 1_024
+                || allowedOwnerIds == null
+                || allowedOwnerIds.isEmpty()) {
             return List.of();
         }
 
@@ -77,7 +78,7 @@ public class SubmissionMediaKeyPolicy {
             String key = raw.trim();
             Matcher matcher = READ_KEY_PATTERN.matcher(key);
             if (!matcher.matches()
-                    || !Long.toString(userId).equals(matcher.group(1))
+                    || !allowedOwnerIds.contains(matcher.group(1))
                     || !readExtensionMatchesType(matcher.group(2), matcher.group(3))
                     || !seen.add(key)) {
                 continue;
@@ -94,12 +95,12 @@ public class SubmissionMediaKeyPolicy {
     }
 
     public String createKey(
-            Long userId,
+            String userId,
             MediaTypes mediaType,
             GeneratePresignedUrlsRequest.ContentType contentType,
             long epochMillis,
             UUID uniqueId) throws ChallengeSphereException {
-        if (userId == null || userId <= 0 || mediaType == null || contentType == null || uniqueId == null
+        if (userId == null || userId.isBlank() || mediaType == null || contentType == null || uniqueId == null
                 || epochMillis < 1_000_000_000_000L
                 || epochMillis > 9_999_999_999_999L
                 || mediaType != MediaTypes.SUBMISSION_PHOTO
@@ -113,7 +114,7 @@ public class SubmissionMediaKeyPolicy {
             case IMAGE_GIF -> ".gif";
             case VIDEO_MP4 -> throw invalid();
         };
-        return "submissions/user_%d/%s/%d_%s%s".formatted(
+        return "submissions/user_%s/%s/%d_%s%s".formatted(
                 userId, mediaType.name(), epochMillis, uniqueId, extension);
     }
 

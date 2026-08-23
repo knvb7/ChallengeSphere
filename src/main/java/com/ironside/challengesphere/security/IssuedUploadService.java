@@ -1,19 +1,15 @@
 package com.ironside.challengesphere.security;
 
 import com.ironside.challengesphere.exception.ChallengeSphereException;
+import com.ironside.challengesphere.persistence.dynamodb.ephemeral.EphemeralStore;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import java.util.HexFormat;
+import java.time.Instant;
 import java.util.List;
 
 /**
@@ -31,58 +27,42 @@ public class IssuedUploadService {
     }
 
     private static final Logger logger = LogManager.getLogger(IssuedUploadService.class);
-    private static final DefaultRedisScript<Long> CONSUME_SCRIPT;
 
-    static {
-        CONSUME_SCRIPT = new DefaultRedisScript<>();
-        CONSUME_SCRIPT.setResultType(Long.class);
-        CONSUME_SCRIPT.setScriptText("""
-                local expectedPurpose = ARGV[1]
-
-                for index = 1, #KEYS do
-                    local expectedValue = expectedPurpose .. '|' .. ARGV[index + 1]
-                    local value = redis.call('GET', KEYS[index])
-                    if value ~= expectedValue then
-                        return 0
-                    end
-                end
-
-                for index = 1, #KEYS do
-                    redis.call('DEL', KEYS[index])
-                end
-                return 1
-                """);
-    }
-
-    private final StringRedisTemplate redisTemplate;
+    private final EphemeralStore ephemeralStore;
     private final Duration ticketTtl;
 
     public IssuedUploadService(
-            StringRedisTemplate redisTemplate,
-            @Value("${app.security.upload.ticket-ttl-minutes:60}") long ticketTtlMinutes) {
+            EphemeralStore ephemeralStore,
+            @Value("${app.security.upload.ticket-ttl-minutes:60}") long ticketTtlMinutes
+    ) {
         if (ticketTtlMinutes < 1 || ticketTtlMinutes > 1_440) {
             throw new IllegalStateException("Upload ticket TTL must be between 1 and 1440 minutes");
         }
-        this.redisTemplate = redisTemplate;
+        this.ephemeralStore = ephemeralStore;
         this.ticketTtl = Duration.ofMinutes(ticketTtlMinutes);
     }
 
-    public void issue(Long userId, String objectKey, Purpose purpose)
+    public void issue(String userId, String objectKey, Purpose purpose)
             throws ChallengeSphereException {
         validate(userId, objectKey, purpose);
-        String value = purpose.name() + "|" + objectKey;
+        Instant now = Instant.now();
         try {
-            Boolean issued = redisTemplate.opsForValue().setIfAbsent(
-                    ticketKey(userId, objectKey), value, ticketTtl);
-            if (!Boolean.TRUE.equals(issued)) {
+            boolean issued = ephemeralStore.putGrant(
+                    userId,
+                    objectKey,
+                    purpose.name(),
+                    now.plus(ticketTtl),
+                    now
+            );
+            if (!issued) {
                 throw new ChallengeSphereException(
                         "Upload key could not be issued",
                         HttpStatus.CONFLICT,
                         logger
                 );
             }
-        } catch (ChallengeSphereException e) {
-            throw e;
+        } catch (ChallengeSphereException exception) {
+            throw exception;
         } catch (RuntimeException unavailable) {
             logger.error("Upload ticket store is unavailable while issuing for userId={}: {}",
                     userId, unavailable.getClass().getSimpleName());
@@ -90,7 +70,7 @@ public class IssuedUploadService {
         }
     }
 
-    public void consume(Long userId, List<String> objectKeys, Purpose purpose)
+    public void consume(String userId, List<String> objectKeys, Purpose purpose)
             throws ChallengeSphereException {
         if (objectKeys == null || objectKeys.isEmpty()) {
             return;
@@ -102,52 +82,34 @@ public class IssuedUploadService {
             validate(userId, objectKey, purpose);
         }
 
-        List<String> ticketKeys = objectKeys.stream()
-                .map(objectKey -> ticketKey(userId, objectKey))
-                .toList();
-        Object[] arguments = new Object[objectKeys.size() + 1];
-        arguments[0] = purpose.name();
-        for (int index = 0; index < objectKeys.size(); index++) {
-            arguments[index + 1] = objectKeys.get(index);
-        }
-
-        Long consumed;
+        boolean consumed;
         try {
-            consumed = redisTemplate.execute(
-                    CONSUME_SCRIPT,
-                    ticketKeys,
-                    arguments
+            consumed = ephemeralStore.consumeGrants(
+                    userId,
+                    objectKeys,
+                    purpose.name(),
+                    Instant.now()
             );
         } catch (RuntimeException unavailable) {
             logger.error("Upload ticket store is unavailable while consuming for userId={}: {}",
                     userId, unavailable.getClass().getSimpleName());
             throw unavailable();
         }
-        if (!Long.valueOf(1L).equals(consumed)) {
+        if (!consumed) {
             throw invalidReference();
         }
     }
 
-    private void validate(Long userId, String objectKey, Purpose purpose)
+    private void validate(String userId, String objectKey, Purpose purpose)
             throws ChallengeSphereException {
         if (userId == null
-                || userId <= 0
+                || userId.isBlank()
                 || purpose == null
                 || objectKey == null
                 || objectKey.isBlank()
                 || objectKey.length() > 256
                 || objectKey.codePoints().anyMatch(Character::isISOControl)) {
             throw invalidReference();
-        }
-    }
-
-    private String ticketKey(Long userId, String objectKey) {
-        try {
-            byte[] digest = MessageDigest.getInstance("SHA-256")
-                    .digest(objectKey.getBytes(StandardCharsets.UTF_8));
-            return "upload-issued:{" + userId + "}:" + HexFormat.of().formatHex(digest);
-        } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException("SHA-256 is unavailable", e);
         }
     }
 

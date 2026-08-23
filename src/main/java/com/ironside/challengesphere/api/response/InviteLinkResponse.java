@@ -13,12 +13,12 @@ import java.time.LocalDate;
 @NoArgsConstructor
 @AllArgsConstructor
 public class InviteLinkResponse {
-    private Long inviteId;
+    private String inviteId;
     private String inviteCode;
     private String inviteUrl;
-    private Long challengeId;
+    private String challengeId;
     private String challengeTitle;
-    private Long recipientUserId;
+    private String recipientUserId;
     private Timestamp expiresAt;
     private Integer maxUses;
     private Integer useCount;
@@ -40,8 +40,8 @@ public class InviteLinkResponse {
     private Integer remainingUses;
     private Boolean privateChallenge;
 
-    public static InviteLinkResponse from(Long inviteId, String inviteCode, String inviteUrl,
-                                           Long challengeId, String challengeTitle,
+    public static InviteLinkResponse from(String inviteId, String inviteCode, String inviteUrl,
+                                           String challengeId, String challengeTitle,
                                            Timestamp expiresAt, Integer maxUses,
                                            Integer useCount, boolean active, Timestamp createdAt) {
         return InviteLinkResponse.builder()

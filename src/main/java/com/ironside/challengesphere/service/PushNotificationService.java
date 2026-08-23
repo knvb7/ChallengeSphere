@@ -8,13 +8,13 @@ import java.util.Set;
 
 public interface PushNotificationService {
 
-    PushDeviceToken registerToken(Long userId, RegisterPushTokenRequest request) throws ChallengeSphereException;
+    PushDeviceToken registerToken(String userId, RegisterPushTokenRequest request) throws ChallengeSphereException;
 
-    void disableToken(Long userId, String expoPushToken);
+    void disableToken(String userId, String expoPushToken);
 
-    void sendInteractionPush(Long userId, String type, String message, String actionObject);
+    void sendInteractionPush(String userId, String type, String message, String actionObject);
 
     int sendDailyUploadReminders();
 
-    int sendDailyUploadReminders(Set<Long> excludedUserIds);
+    int sendDailyUploadReminders(Set<String> excludedUserIds);
 }

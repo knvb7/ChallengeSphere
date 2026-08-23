@@ -7,7 +7,7 @@ import java.time.LocalDate;
 
 @Data
 public class GetPopularChallengesRequest {
-    private Long currentUserId;
+    private String currentUserId;
 
     private Boolean active;
 
@@ -15,9 +15,8 @@ public class GetPopularChallengesRequest {
 
     private LocalDate endDate;
 
-    @Min(value = 1, message = "Page must be at least 1")
-    private int page = 1;
+    private String cursor;
 
-    @Min(value = 1, message = "Page size must be at least 1")
-    private int pageSize = 10;
+    @Min(value = 1, message = "Limit must be at least 1")
+    private int limit = 10;
 }

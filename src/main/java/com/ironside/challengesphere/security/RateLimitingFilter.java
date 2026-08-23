@@ -166,17 +166,17 @@ public class RateLimitingFilter extends OncePerRequestFilter {
             return new Limit("challenge-membership", 30, Duration.ofMinutes(1));
         }
         if (("PUT".equals(method) || "DELETE".equals(method))
-                && path.matches("^/api/v1/challenges/\\d+/favorite$")) {
+                && path.matches("^/api/v1/challenges/[^/]+/favorite$")) {
             return new Limit("challenge-favorite", 30, Duration.ofMinutes(1));
         }
-        if ("POST".equals(method) && path.matches("^/api/v1/challenges/\\d+/invites$")) {
+        if ("POST".equals(method) && path.matches("^/api/v1/challenges/[^/]+/invites$")) {
             return new Limit("challenge-invite", 10, Duration.ofMinutes(1));
         }
         if ("POST".equals(method) && (path.equals("/api/v1/challenges/presigned-urls")
                 || path.equals("/api/v1/submissions/presigned-urls")
                 || path.equals("/api/v1/submissions/upload-fallback")
                 || path.equals("/api/v1/support/presigned-urls")
-                || path.matches("^/api/v1/users/\\d+/profile-picture/presigned-url$"))) {
+                || path.matches("^/api/v1/users/[^/]+/profile-picture/presigned-url$"))) {
             return new Limit("upload-url", 20, Duration.ofMinutes(1));
         }
         if ("POST".equals(method) && path.equals("/api/v1/support/tickets")) {
@@ -189,10 +189,10 @@ public class RateLimitingFilter extends OncePerRequestFilter {
                 || path.equals("/api/v1/users/report"))) {
             return new Limit("safety-report", 10, Duration.ofMinutes(10));
         }
-        if ("PUT".equals(method) && path.matches("^/api/v1/submissions/\\d+$")) {
+        if ("PUT".equals(method) && path.matches("^/api/v1/submissions/[^/]+$")) {
             return new Limit("submission-reupload", 10, Duration.ofMinutes(10));
         }
-        if ("PUT".equals(method) && path.matches("^/api/v1/challenges/\\d+$")) {
+        if ("PUT".equals(method) && path.matches("^/api/v1/challenges/[^/]+$")) {
             return new Limit("challenge-update", 5, Duration.ofMinutes(10));
         }
         if ("POST".equals(method) && path.equals("/api/v1/submissions")) {
@@ -202,7 +202,7 @@ public class RateLimitingFilter extends OncePerRequestFilter {
             return new Limit("challenge-create", 5, Duration.ofMinutes(10));
         }
         if ("PUT".equals(method) && (path.equals("/api/v1/users")
-                || path.matches("^/api/v1/users/\\d+/profile-picture$"))) {
+                || path.matches("^/api/v1/users/[^/]+/profile-picture$"))) {
             return new Limit("profile-update", 5, Duration.ofMinutes(10));
         }
 

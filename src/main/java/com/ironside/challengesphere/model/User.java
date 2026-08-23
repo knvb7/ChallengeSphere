@@ -20,8 +20,11 @@ import java.util.List;
 public class User {
 
     @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
+    private String id;
+
+    /** Source identifier retained only to resolve pre-migration S3 object namespaces. */
+    @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
+    private String legacyId;
 
     @Column(name = "email_id", nullable = false, unique = true, length = 255)
     private String emailId;

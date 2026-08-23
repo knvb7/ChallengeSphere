@@ -2,8 +2,6 @@ package com.ironside.challengesphere.model;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
-import jakarta.persistence.GeneratedValue;
-import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import jakarta.persistence.UniqueConstraint;
@@ -21,14 +19,13 @@ import java.sql.Timestamp;
 @NoArgsConstructor
 public class ChallengePeerReminderPreference {
     @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
+    private String id;
 
     @Column(name = "challenge_id", nullable = false)
-    private Long challengeId;
+    private String challengeId;
 
     @Column(name = "user_id", nullable = false)
-    private Long userId;
+    private String userId;
 
     @Column(name = "enabled", nullable = false)
     private Boolean enabled = false;

@@ -28,7 +28,7 @@ public class ChallengeUpdateRequest {
     private String reminderTime;
     private Boolean active;
     @Size(max = 20, message = "A challenge can invite at most 20 users at once")
-    private List<Long> invitedUserIds;
+    private List<String> invitedUserIds;
 
     @Size(max = 5, message = "A challenge can have at most 5 cover photos")
     private List<String> coverPhotoUrls; // replaces all existing cover photos when provided

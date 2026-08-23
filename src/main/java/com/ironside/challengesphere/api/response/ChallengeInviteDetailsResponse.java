@@ -8,8 +8,8 @@ import java.time.LocalDate;
 @Data
 @Builder
 public class ChallengeInviteDetailsResponse {
-    private Long notificationId;
-    private Long challengeId;
+    private String notificationId;
+    private String challengeId;
     private String challengeTitle;
     private String challengeDescription;
     private String challengeRules;
@@ -20,10 +20,10 @@ public class ChallengeInviteDetailsResponse {
     private LocalDate challengeStartDate;
     private Integer challengeDurationDays;
     private Boolean privateChallenge;
-    private Long inviterUserId;
+    private String inviterUserId;
     private String inviterName;
     private String inviterUsername;
-    private Long creatorUserId;
+    private String creatorUserId;
     private String creatorName;
     private String creatorUsername;
 }

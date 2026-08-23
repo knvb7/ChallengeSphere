@@ -12,14 +12,14 @@ import java.util.List;
 @NoArgsConstructor
 @AllArgsConstructor
 public class LeaveChallengeResponse {
-    private Long challengeId;
+    private String challengeId;
     private String challengeTitle;
-    private List<Long> successfulUserIds;
-    private List<Long> failedUserIds;
+    private List<String> successfulUserIds;
+    private List<String> failedUserIds;
     private String message;
     private boolean success;
 
-    public static LeaveChallengeResponse success(Long challengeId, String challengeTitle, List<Long> successfulUserIds) {
+    public static LeaveChallengeResponse success(String challengeId, String challengeTitle, List<String> successfulUserIds) {
         return LeaveChallengeResponse.builder()
                 .challengeId(challengeId)
                 .challengeTitle(challengeTitle)
@@ -30,8 +30,8 @@ public class LeaveChallengeResponse {
                 .build();
     }
 
-    public static LeaveChallengeResponse partial(Long challengeId, String challengeTitle,
-                                                  List<Long> successfulUserIds, List<Long> failedUserIds) {
+    public static LeaveChallengeResponse partial(String challengeId, String challengeTitle,
+                                                  List<String> successfulUserIds, List<String> failedUserIds) {
         return LeaveChallengeResponse.builder()
                 .challengeId(challengeId)
                 .challengeTitle(challengeTitle)
@@ -42,7 +42,7 @@ public class LeaveChallengeResponse {
                 .build();
     }
 
-    public static LeaveChallengeResponse failure(Long challengeId, String message) {
+    public static LeaveChallengeResponse failure(String challengeId, String message) {
         return LeaveChallengeResponse.builder()
                 .challengeId(challengeId)
                 .successfulUserIds(List.of())

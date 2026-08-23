@@ -12,14 +12,13 @@ import java.sql.Timestamp;
 public class Report {
 
     @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
+    private String id;
 
-    @Column(name = "submission_id", nullable = false)
-    private Long submissionId;
+    @Column(name = "submission_id")
+    private String submissionId;
 
     @Column(name = "user_id", nullable = false)
-    private Long userId;
+    private String userId;
 
     @Column(name = "reason", nullable = false, length = 100)
     private String reason;
@@ -35,4 +34,12 @@ public class Report {
 
     @Column(name = "active", columnDefinition = "BOOLEAN DEFAULT TRUE")
     private Boolean active = true;
+
+    private String targetType;
+    private String targetId;
+    private String targetOwnerUserId;
+    private String targetSnapshot;
+    private String resolution;
+    private String reviewedBy;
+    private Timestamp reviewedAt;
 }

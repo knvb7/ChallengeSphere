@@ -13,17 +13,16 @@ import java.sql.Timestamp;
 public class ChallengeInvite {
 
     @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
+    private String id;
 
     @Column(name = "challenge_id", nullable = false)
-    private Long challengeId;
+    private String challengeId;
 
     @Column(name = "created_by", nullable = false)
-    private Long createdBy;
+    private String createdBy;
 
     @Column(name = "recipient_user_id")
-    private Long recipientUserId;
+    private String recipientUserId;
 
     @Column(name = "invite_code", nullable = false, unique = true, length = 12)
     private String inviteCode;

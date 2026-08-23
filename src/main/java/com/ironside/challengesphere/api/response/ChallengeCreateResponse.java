@@ -11,7 +11,7 @@ import java.util.List;
 @NoArgsConstructor
 public class ChallengeCreateResponse {
 
-    private Long challengeId;
+    private String challengeId;
     private String title;
     private String description;
     private String hashtags;
@@ -21,18 +21,18 @@ public class ChallengeCreateResponse {
     private LocalDate startDate;
     private Boolean active;
     private Timestamp createdAt;
-    private Long creatorId;
-    private Long currentOwnerId;
+    private String creatorId;
+    private String currentOwnerId;
     private Integer numberOfDays;
     private String challengeMode;
     private String proofMode;
     private List<String> coverPhotoUrls;
     private String message;
 
-    public static ChallengeCreateResponse success(Long challengeId, String title, String description,
+    public static ChallengeCreateResponse success(String challengeId, String title, String description,
                                                   String hashtags, String categories, String benefits,
                                                   Boolean isPrivate, LocalDate startDate, Boolean active,
-                                                  Timestamp createdAt, Long creatorId, Long currentOwnerId,
+                                                  Timestamp createdAt, String creatorId, String currentOwnerId,
                                                   Integer numberOfDays, String challengeMode, String proofMode,
                                                   String rawCoverPhotoUrls) {
         ChallengeCreateResponse r = new ChallengeCreateResponse();

@@ -4,6 +4,7 @@ import java.util.List;
 
 import lombok.AllArgsConstructor;
 import lombok.Builder;
+import lombok.EqualsAndHashCode;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
@@ -14,14 +15,10 @@ import lombok.NoArgsConstructor;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class FeedResponse {
+@EqualsAndHashCode(callSuper = true)
+public class FeedResponse extends CursorResponse {
 
     private List<FeedItemResponse> items;
-    private int page;
-    private int pageSize;
-    private long totalItems;
-    private int totalPages;
-    private boolean hasMore;
     private String feedType;
 
     /**
@@ -29,37 +26,27 @@ public class FeedResponse {
      */
     public static FeedResponse create(
             List<FeedItemResponse> items,
-            int page,
-            int pageSize,
-            long totalItems,
+            String nextCursor,
+            boolean hasMore,
             String feedType) {
-        
-        int totalPages = (int) Math.ceil((double) totalItems / pageSize);
-        boolean hasMore = page < totalPages;
-
-        return FeedResponse.builder()
+        FeedResponse response = FeedResponse.builder()
                 .items(items)
-                .page(page)
-                .pageSize(pageSize)
-                .totalItems(totalItems)
-                .totalPages(totalPages)
-                .hasMore(hasMore)
                 .feedType(feedType)
                 .build();
+        response.setNextCursor(nextCursor);
+        response.setHasMore(hasMore);
+        return response;
     }
 
     /**
      * Create an empty feed response
      */
-    public static FeedResponse empty(int page, int pageSize, String feedType) {
-        return FeedResponse.builder()
+    public static FeedResponse empty(String feedType) {
+        FeedResponse response = FeedResponse.builder()
                 .items(List.of())
-                .page(page)
-                .pageSize(pageSize)
-                .totalItems(0)
-                .totalPages(0)
-                .hasMore(false)
                 .feedType(feedType)
                 .build();
+        response.setHasMore(false);
+        return response;
     }
 }

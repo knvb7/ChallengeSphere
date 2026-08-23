@@ -3,368 +3,302 @@ package com.ironside.challengesphere.service.impl;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ironside.challengesphere.api.request.ContentReportRequest;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
+import com.ironside.challengesphere.model.Challenge;
+import com.ironside.challengesphere.model.Comment;
+import com.ironside.challengesphere.model.Report;
+import com.ironside.challengesphere.model.Submission;
 import com.ironside.challengesphere.model.User;
+import com.ironside.challengesphere.model.UserChallenge;
+import com.ironside.challengesphere.repository.ChallengeRepository;
+import com.ironside.challengesphere.repository.CommentRepository;
+import com.ironside.challengesphere.repository.ReportRepository;
+import com.ironside.challengesphere.repository.SubmissionRepository;
+import com.ironside.challengesphere.repository.UserChallengeRepository;
 import com.ironside.challengesphere.repository.UserRepository;
 import com.ironside.challengesphere.security.AuthTokenStore;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 import java.sql.Timestamp;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
+/** DynamoDB-backed safety-report workflow. */
 @Service
 public class ContentReportService {
 
     private static final Logger logger = LogManager.getLogger(ContentReportService.class);
-    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
     private static final Set<String> TARGET_TYPES = Set.of("SUBMISSION", "COMMENT", "CHALLENGE");
     private static final Set<String> REASONS = Set.of(
-            "CHILD_SAFETY",
-            "HARASSMENT",
-            "HATE",
-            "NUDITY",
-            "SELF_HARM",
-            "SPAM",
-            "VIOLENCE",
-            "OTHER"
-    );
-    private static final Set<String> URGENT_REASONS = Set.of(
-            "CHILD_SAFETY",
-            "SELF_HARM",
-            "VIOLENCE"
-    );
+            "CHILD_SAFETY", "HARASSMENT", "HATE", "NUDITY", "SELF_HARM", "SPAM", "VIOLENCE", "OTHER");
+    private static final Set<String> URGENT_REASONS = Set.of("CHILD_SAFETY", "SELF_HARM", "VIOLENCE");
 
-    private final JdbcTemplate jdbcTemplate;
+    private final ReportRepository reportRepository;
+    private final SubmissionRepository submissionRepository;
+    private final CommentRepository commentRepository;
+    private final ChallengeRepository challengeRepository;
+    private final UserChallengeRepository userChallengeRepository;
     private final UserRepository userRepository;
     private final AuthTokenStore authTokenStore;
+    private final ObjectMapper objectMapper;
 
     public ContentReportService(
-            JdbcTemplate jdbcTemplate,
+            ReportRepository reportRepository,
+            SubmissionRepository submissionRepository,
+            CommentRepository commentRepository,
+            ChallengeRepository challengeRepository,
+            UserChallengeRepository userChallengeRepository,
             UserRepository userRepository,
-            AuthTokenStore authTokenStore) {
-        this.jdbcTemplate = jdbcTemplate;
+            AuthTokenStore authTokenStore,
+            ObjectMapper objectMapper
+    ) {
+        this.reportRepository = reportRepository;
+        this.submissionRepository = submissionRepository;
+        this.commentRepository = commentRepository;
+        this.challengeRepository = challengeRepository;
+        this.userChallengeRepository = userChallengeRepository;
         this.userRepository = userRepository;
         this.authTokenStore = authTokenStore;
+        this.objectMapper = objectMapper;
     }
 
-    @Transactional
-    public Map<String, Object> report(Long reporterUserId, ContentReportRequest request)
+    public Map<String, Object> report(String reporterUserId, ContentReportRequest request)
             throws ChallengeSphereException {
         String targetType = normalizeTargetType(request.getTargetType());
         String reason = normalizeReason(request.getReason());
-        Map<String, Object> snapshot = loadVisibleSnapshot(
-                reporterUserId,
-                targetType,
-                request.getTargetId()
-        );
-        Long ownerUserId = number(snapshot.get("ownerUserId"));
-        if (ownerUserId == null) {
-            throw notFound();
-        }
+        Map<String, Object> snapshot = loadVisibleSnapshot(reporterUserId, targetType, request.getTargetId());
+        String ownerUserId = text(snapshot.get("ownerUserId"));
+        if (ownerUserId == null) throw notFound();
         if (reporterUserId.equals(ownerUserId)) {
-            throw new ChallengeSphereException(
-                    "You cannot report your own content",
-                    HttpStatus.BAD_REQUEST,
-                    logger
-            );
+            throw new ChallengeSphereException("You cannot report your own content", HttpStatus.BAD_REQUEST, logger);
         }
 
-        String snapshotJson;
+        Report report = new Report();
+        report.setUserId(reporterUserId);
+        report.setTargetType(targetType);
+        report.setTargetId(request.getTargetId());
+        report.setTargetOwnerUserId(ownerUserId);
+        report.setSubmissionId(text(snapshot.get("submissionId")));
+        if (report.getSubmissionId() == null && "SUBMISSION".equals(targetType)) {
+            report.setSubmissionId(request.getTargetId());
+        }
+        report.setReason(reason);
+        report.setDescription(cleanDetails(request.getDetails()));
+        report.setStatus("OPEN");
+        report.setActive(true);
+        report.setCreatedAt(Timestamp.from(Instant.now()));
         try {
-            snapshotJson = OBJECT_MAPPER.writeValueAsString(snapshot);
+            report.setTargetSnapshot(objectMapper.writeValueAsString(snapshot));
+            reportRepository.save(report);
+        } catch (DataIntegrityViolationException duplicate) {
+            throw new ChallengeSphereException(
+                    "You already have an open report for this content", HttpStatus.CONFLICT, logger);
         } catch (Exception error) {
             throw new ChallengeSphereException(
-                    "Could not preserve the reported content",
-                    HttpStatus.INTERNAL_SERVER_ERROR,
-                    logger
-            );
+                    "Could not preserve the reported content", HttpStatus.INTERNAL_SERVER_ERROR, logger);
         }
 
-        try {
-            Long reportId = jdbcTemplate.queryForObject(
-                    """
-                    INSERT INTO challengesphere.content_reports (
-                        reporter_user_id,
-                        target_type,
-                        target_id,
-                        target_owner_user_id,
-                        reason,
-                        details,
-                        target_snapshot
-                    ) VALUES (?, ?, ?, ?, ?, ?, CAST(? AS JSONB))
-                    RETURNING id
-                    """,
-                    Long.class,
-                    reporterUserId,
-                    targetType,
-                    request.getTargetId(),
-                    ownerUserId,
-                    reason,
-                    cleanDetails(request.getDetails()),
-                    snapshotJson
-            );
-            if (URGENT_REASONS.contains(reason)) {
-                logger.error(
-                        "URGENT_MODERATION_REPORT id={} reason={} targetType={} targetId={}",
-                        reportId,
-                        reason,
-                        targetType,
-                        request.getTargetId()
-                );
-            } else {
-                logger.warn("Content report received id={} reason={} targetType={} targetId={}",
-                        reportId, reason, targetType, request.getTargetId());
-            }
-            return Map.of(
-                    "success", true,
-                    "reportId", reportId,
-                    "status", "OPEN",
-                    "message", "Report received. Our safety team will review it."
-            );
-        } catch (DataIntegrityViolationException error) {
-            throw new ChallengeSphereException(
-                    "You already have an open report for this content",
-                    HttpStatus.CONFLICT,
-                    logger
-            );
+        if (URGENT_REASONS.contains(reason)) {
+            logger.error("URGENT_MODERATION_REPORT id={} reason={} targetType={} targetId={}",
+                    report.getId(), reason, targetType, request.getTargetId());
+        } else {
+            logger.warn("Content report received id={} reason={} targetType={} targetId={}",
+                    report.getId(), reason, targetType, request.getTargetId());
         }
+        return Map.of(
+                "success", true,
+                "reportId", report.getId(),
+                "status", "OPEN",
+                "message", "Report received. Our safety team will review it."
+        );
     }
 
     public List<Map<String, Object>> openReports() {
-        return jdbcTemplate.queryForList(
-                """
-                SELECT id,
-                       reporter_user_id AS "reporterUserId",
-                       target_type AS "targetType",
-                       target_id AS "targetId",
-                       target_owner_user_id AS "targetOwnerUserId",
-                       reason,
-                       CASE
-                         WHEN reason = 'CHILD_SAFETY' THEN 'CRITICAL'
-                         WHEN reason IN ('SELF_HARM', 'VIOLENCE') THEN 'URGENT'
-                         ELSE 'STANDARD'
-                       END AS priority,
-                       details,
-                       target_snapshot AS "targetSnapshot",
-                       created_at AS "createdAt"
-                FROM challengesphere.content_reports
-                WHERE status = 'OPEN'
-                ORDER BY CASE
-                           WHEN reason = 'CHILD_SAFETY' THEN 0
-                           WHEN reason IN ('SELF_HARM', 'VIOLENCE') THEN 1
-                           ELSE 2
-                         END,
-                         created_at ASC
-                LIMIT 200
-                """
-        );
+        return reportRepository.findOpenContentReports().stream().map(this::toAdminView).toList();
     }
 
-    @Transactional
-    public Map<String, Object> resolve(Long reportId, Long reviewerId, String requestedResolution)
+    public Map<String, Object> resolve(String reportId, String reviewerId, String requestedResolution)
             throws ChallengeSphereException {
-        String resolution = requestedResolution == null
-                ? ""
-                : requestedResolution.trim().toUpperCase(Locale.ROOT);
+        String resolution = requestedResolution == null ? "" : requestedResolution.strip().toUpperCase(Locale.ROOT);
         if (!Set.of("DISMISSED", "REMOVED", "BANNED_USER").contains(resolution)) {
             throw new ChallengeSphereException(
-                    "resolution must be DISMISSED, REMOVED, or BANNED_USER",
-                    HttpStatus.BAD_REQUEST,
-                    logger
-            );
+                    "resolution must be DISMISSED, REMOVED, or BANNED_USER", HttpStatus.BAD_REQUEST, logger);
         }
-        Map<String, Object> report = jdbcTemplate.query(
-                """
-                SELECT target_type, target_id, target_owner_user_id, status
-                FROM challengesphere.content_reports
-                WHERE id = ?
-                FOR UPDATE
-                """,
-                resultSet -> resultSet.next()
-                        ? Map.of(
-                        "targetType", resultSet.getString("target_type"),
-                        "targetId", resultSet.getLong("target_id"),
-                        "ownerUserId", resultSet.getLong("target_owner_user_id"),
-                        "status", resultSet.getString("status")
-                )
-                        : null,
-                reportId
-        );
-        if (report == null) {
-            throw new ChallengeSphereException("Report not found", HttpStatus.NOT_FOUND, logger);
-        }
-        if (!"OPEN".equals(report.get("status"))) {
+        Report report = reportRepository.findById(reportId)
+                .orElseThrow(() -> new ChallengeSphereException("Report not found", HttpStatus.NOT_FOUND, logger));
+        if (!"OPEN".equals(normalized(report.getStatus()))) {
             throw new ChallengeSphereException("Report is already resolved", HttpStatus.CONFLICT, logger);
         }
 
-        String targetType = String.valueOf(report.get("targetType"));
-        Long targetId = number(report.get("targetId"));
-        Long ownerUserId = number(report.get("ownerUserId"));
         if ("REMOVED".equals(resolution) || "BANNED_USER".equals(resolution)) {
-            deactivateTarget(targetType, targetId);
+            deactivateTarget(report.getTargetType(), report.getTargetId());
         }
-        if ("BANNED_USER".equals(resolution) && ownerUserId != null) {
-            User user = userRepository.findById(ownerUserId).orElse(null);
+        if ("BANNED_USER".equals(resolution) && report.getTargetOwnerUserId() != null) {
+            User user = userRepository.findById(report.getTargetOwnerUserId()).orElse(null);
             if (user != null) {
                 user.setActive(false);
-                user.setBannedAt(new Timestamp(System.currentTimeMillis()));
+                user.setBannedAt(Timestamp.from(Instant.now()));
                 user.setBanReason("Content report " + reportId);
                 userRepository.save(user);
-                authTokenStore.revokeAllForUser(ownerUserId);
+                authTokenStore.revokeAllForUser(user.getId());
             }
         }
 
-        jdbcTemplate.update(
-                """
-                UPDATE challengesphere.content_reports
-                SET status = 'RESOLVED',
-                    resolution = ?,
-                    reviewed_by = ?,
-                    reviewed_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-                """,
-                resolution,
-                reviewerId,
-                reportId
-        );
+        report.setStatus("RESOLVED");
+        report.setResolution(resolution);
+        report.setReviewedBy(reviewerId);
+        report.setReviewedAt(Timestamp.from(Instant.now()));
+        reportRepository.save(report);
         return Map.of("reportId", reportId, "resolution", resolution);
     }
 
-    private Map<String, Object> loadVisibleSnapshot(Long viewerId, String targetType, Long targetId)
+    private Map<String, Object> loadVisibleSnapshot(String viewerId, String targetType, String targetId)
             throws ChallengeSphereException {
-        List<Map<String, Object>> rows = switch (targetType) {
-            case "SUBMISSION" -> jdbcTemplate.queryForList(
-                    """
-                    SELECT s.user_id AS "ownerUserId",
-                           s.challenge_id AS "challengeId",
-                           s.description,
-                           s.media_urls AS "mediaUrls",
-                           s.created_at AS "createdAt"
-                    FROM challengesphere.submissions s
-                    JOIN challengesphere.challenges c ON c.id = s.challenge_id
-                    WHERE s.id = ? AND s.active = TRUE AND c.active = TRUE
-                      AND (
-                        s.user_id = ?
-                        OR (c.private = FALSE AND s.is_private = FALSE)
-                        OR EXISTS (
-                          SELECT 1 FROM challengesphere.user_challenges uc
-                          WHERE uc.challenge_id = c.id AND uc.user_id = ?
-                            AND uc.active = TRUE AND COALESCE(uc.banned, FALSE) = FALSE
-                        )
-                      )
-                    """,
-                    targetId,
-                    viewerId,
-                    viewerId
-            );
-            case "COMMENT" -> jdbcTemplate.queryForList(
-                    """
-                    SELECT comment.user_id AS "ownerUserId",
-                           comment.submission_id AS "submissionId",
-                           comment.content,
-                           comment.created_at AS "createdAt"
-                    FROM challengesphere.comments comment
-                    JOIN challengesphere.submissions s ON s.id = comment.submission_id
-                    JOIN challengesphere.challenges c ON c.id = s.challenge_id
-                    WHERE comment.id = ? AND comment.active = TRUE AND s.active = TRUE AND c.active = TRUE
-                      AND (
-                        comment.user_id = ?
-                        OR (c.private = FALSE AND s.is_private = FALSE)
-                        OR EXISTS (
-                          SELECT 1 FROM challengesphere.user_challenges uc
-                          WHERE uc.challenge_id = c.id AND uc.user_id = ?
-                            AND uc.active = TRUE AND COALESCE(uc.banned, FALSE) = FALSE
-                        )
-                      )
-                    """,
-                    targetId,
-                    viewerId,
-                    viewerId
-            );
-            case "CHALLENGE" -> jdbcTemplate.queryForList(
-                    """
-                    SELECT c.creator_id AS "ownerUserId",
-                           c.title,
-                           c.description,
-                           c.benefits,
-                           c.cover_photo_urls AS "coverPhotoUrls",
-                           c.created_at AS "createdAt"
-                    FROM challengesphere.challenges c
-                    WHERE c.id = ? AND c.active = TRUE
-                      AND (
-                        c.creator_id = ?
-                        OR c.private = FALSE
-                        OR EXISTS (
-                          SELECT 1 FROM challengesphere.user_challenges uc
-                          WHERE uc.challenge_id = c.id AND uc.user_id = ?
-                            AND uc.active = TRUE AND COALESCE(uc.banned, FALSE) = FALSE
-                        )
-                      )
-                    """,
-                    targetId,
-                    viewerId,
-                    viewerId
-            );
-            default -> List.of();
+        return switch (targetType) {
+            case "SUBMISSION" -> submissionSnapshot(viewerId, targetId);
+            case "COMMENT" -> commentSnapshot(viewerId, targetId);
+            case "CHALLENGE" -> challengeSnapshot(viewerId, targetId);
+            default -> throw notFound();
         };
-        if (rows.isEmpty()) {
-            throw notFound();
-        }
-        return rows.get(0);
     }
 
-    private void deactivateTarget(String targetType, Long targetId) {
-        String table = switch (targetType) {
-            case "SUBMISSION" -> "submissions";
-            case "COMMENT" -> "comments";
-            case "CHALLENGE" -> "challenges";
+    private Map<String, Object> submissionSnapshot(String viewerId, String targetId)
+            throws ChallengeSphereException {
+        Submission submission = submissionRepository.findById(targetId)
+                .filter(value -> Boolean.TRUE.equals(value.getActive())).orElseThrow(this::notFound);
+        Challenge challenge = challengeRepository.findById(submission.getChallengeId())
+                .filter(value -> Boolean.TRUE.equals(value.getActive())).orElseThrow(this::notFound);
+        if (!submission.getUserId().equals(viewerId) && !canView(viewerId, challenge, submission.getIsPrivate())) {
+            throw notFound();
+        }
+        Map<String, Object> snapshot = new LinkedHashMap<>();
+        snapshot.put("ownerUserId", submission.getUserId());
+        snapshot.put("submissionId", submission.getId());
+        snapshot.put("challengeId", submission.getChallengeId());
+        snapshot.put("description", submission.getDescription());
+        snapshot.put("mediaUrls", submission.getMediaUrls());
+        snapshot.put("createdAt", submission.getCreatedAt());
+        return snapshot;
+    }
+
+    private Map<String, Object> commentSnapshot(String viewerId, String targetId)
+            throws ChallengeSphereException {
+        Comment comment = commentRepository.findById(targetId)
+                .filter(value -> Boolean.TRUE.equals(value.getActive())).orElseThrow(this::notFound);
+        Submission submission = submissionRepository.findById(comment.getSubmissionId())
+                .filter(value -> Boolean.TRUE.equals(value.getActive())).orElseThrow(this::notFound);
+        Challenge challenge = challengeRepository.findById(submission.getChallengeId())
+                .filter(value -> Boolean.TRUE.equals(value.getActive())).orElseThrow(this::notFound);
+        if (!comment.getUserId().equals(viewerId) && !canView(viewerId, challenge, submission.getIsPrivate())) {
+            throw notFound();
+        }
+        Map<String, Object> snapshot = new LinkedHashMap<>();
+        snapshot.put("ownerUserId", comment.getUserId());
+        snapshot.put("submissionId", comment.getSubmissionId());
+        snapshot.put("content", comment.getContent());
+        snapshot.put("createdAt", comment.getCreatedAt());
+        return snapshot;
+    }
+
+    private Map<String, Object> challengeSnapshot(String viewerId, String targetId)
+            throws ChallengeSphereException {
+        Challenge challenge = challengeRepository.findById(targetId)
+                .filter(value -> Boolean.TRUE.equals(value.getActive())).orElseThrow(this::notFound);
+        if (!challenge.getCreatorId().equals(viewerId) && !canView(viewerId, challenge, false)) throw notFound();
+        Map<String, Object> snapshot = new LinkedHashMap<>();
+        snapshot.put("ownerUserId", challenge.getCreatorId());
+        snapshot.put("title", challenge.getTitle());
+        snapshot.put("description", challenge.getDescription());
+        snapshot.put("benefits", challenge.getBenefits());
+        snapshot.put("coverPhotoUrls", challenge.getCoverPhotoUrls());
+        snapshot.put("createdAt", challenge.getCreatedAt());
+        return snapshot;
+    }
+
+    private boolean canView(String viewerId, Challenge challenge, Boolean contentPrivate) {
+        if (!Boolean.TRUE.equals(challenge.getIsPrivate()) && !Boolean.TRUE.equals(contentPrivate)) return true;
+        return userChallengeRepository.findByUserIdAndChallengeId(viewerId, challenge.getId())
+                .filter(UserChallenge::getActive)
+                .filter(membership -> !Boolean.TRUE.equals(membership.getBanned()))
+                .isPresent();
+    }
+
+    private void deactivateTarget(String targetType, String targetId) {
+        switch (normalized(targetType)) {
+            case "SUBMISSION" -> submissionRepository.findById(targetId).ifPresent(ignored ->
+                    submissionRepository.mutateExisting(targetId, submission -> submission.setActive(false)));
+            case "COMMENT" ->
+                    commentRepository.softDeleteForModerationWithSubmissionCommentCount(targetId);
+            case "CHALLENGE" -> challengeRepository.findById(targetId).ifPresent(ignored ->
+                    challengeRepository.mutateExisting(targetId, challenge -> challenge.setActive(false)));
             default -> throw new IllegalArgumentException("Unsupported report target");
-        };
-        jdbcTemplate.update("UPDATE challengesphere." + table + " SET active = FALSE WHERE id = ?", targetId);
+        }
+    }
+
+    private Map<String, Object> toAdminView(Report report) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("id", report.getId());
+        result.put("reporterUserId", report.getUserId());
+        result.put("targetType", report.getTargetType());
+        result.put("targetId", report.getTargetId());
+        result.put("targetOwnerUserId", report.getTargetOwnerUserId());
+        result.put("reason", report.getReason());
+        result.put("priority", priority(report.getReason()));
+        result.put("details", report.getDescription());
+        result.put("targetSnapshot", report.getTargetSnapshot());
+        result.put("createdAt", report.getCreatedAt());
+        return Collections.unmodifiableMap(result);
     }
 
     private String normalizeTargetType(String value) throws ChallengeSphereException {
-        String normalized = value == null ? "" : value.trim().toUpperCase(Locale.ROOT);
+        String normalized = normalized(value);
         if (!TARGET_TYPES.contains(normalized)) {
             throw new ChallengeSphereException(
-                    "targetType must be SUBMISSION, COMMENT, or CHALLENGE",
-                    HttpStatus.BAD_REQUEST,
-                    logger
-            );
+                    "targetType must be SUBMISSION, COMMENT, or CHALLENGE", HttpStatus.BAD_REQUEST, logger);
         }
         return normalized;
     }
 
     private String normalizeReason(String value) throws ChallengeSphereException {
-        String normalized = value == null ? "" : value.trim().toUpperCase(Locale.ROOT);
+        String normalized = normalized(value);
         if (!REASONS.contains(normalized)) {
             throw new ChallengeSphereException("Invalid report reason", HttpStatus.BAD_REQUEST, logger);
         }
         return normalized;
     }
 
-    private String cleanDetails(String details) {
-        return StringUtils.hasText(details) ? details.trim() : null;
+    private static String priority(String reason) {
+        return switch (normalized(reason)) {
+            case "CHILD_SAFETY" -> "CRITICAL";
+            case "SELF_HARM", "VIOLENCE" -> "URGENT";
+            default -> "STANDARD";
+        };
     }
 
-    private Long number(Object value) {
-        return value instanceof Number number ? number.longValue() : null;
+    private static String normalized(String value) {
+        return value == null ? "" : value.strip().toUpperCase(Locale.ROOT);
+    }
+
+    private static String cleanDetails(String details) {
+        return StringUtils.hasText(details) ? details.strip() : null;
+    }
+
+    private static String text(Object value) {
+        return value == null ? null : value.toString();
     }
 
     private ChallengeSphereException notFound() {
         return new ChallengeSphereException(
-                "Content not found or not available to this account",
-                HttpStatus.NOT_FOUND,
-                logger
-        );
+                "Content not found or not available to this account", HttpStatus.NOT_FOUND, logger);
     }
 }

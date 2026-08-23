@@ -14,21 +14,24 @@ import lombok.NoArgsConstructor;
 @Builder
 public class GetLeaderboardRequest {
     
-    private Long challengeId;
+    private String challengeId;
 
     /** Authenticated user requesting access to this leaderboard. */
-    private Long viewerUserId;
+    private String viewerUserId;
     
     /**
      * Number of top entries to return (default: 10, max: 100)
      */
     @Builder.Default
     private Integer limit = 10;
+
+    /** Opaque continuation cursor returned by the previous leaderboard page. */
+    private String cursor;
     
     /**
      * Optional: Get rank for a specific user
      */
-    private Long userId;
+    private String userId;
     
     /**
      * Leaderboard type: SUBMISSIONS, GLORIES, STREAK, OVERALL

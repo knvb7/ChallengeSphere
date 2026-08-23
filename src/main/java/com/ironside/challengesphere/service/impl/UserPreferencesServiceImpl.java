@@ -27,7 +27,7 @@ public class UserPreferencesServiceImpl {
      * Get preferences for a user. Creates default preferences if none exist yet.
      */
     @Transactional
-    public UserPreferences getPreferences(Long userId) throws ChallengeSphereException {
+    public UserPreferences getPreferences(String userId) throws ChallengeSphereException {
         validateUserExists(userId);
         return preferencesRepository.findByUserId(userId)
                 .orElseGet(() -> createDefaults(userId));
@@ -38,7 +38,7 @@ public class UserPreferencesServiceImpl {
      * Uses individual @Modifying queries — never touches unrelated columns.
      */
     @Transactional
-    public UserPreferences updatePreferences(Long userId, UpdateUserPreferencesRequest req)
+    public UserPreferences updatePreferences(String userId, UpdateUserPreferencesRequest req)
             throws ChallengeSphereException {
         validateUserExists(userId);
 
@@ -105,7 +105,7 @@ public class UserPreferencesServiceImpl {
      * Reset all preferences back to defaults.
      */
     @Transactional
-    public UserPreferences resetPreferences(Long userId) throws ChallengeSphereException {
+    public UserPreferences resetPreferences(String userId) throws ChallengeSphereException {
         validateUserExists(userId);
         preferencesRepository.findByUserId(userId)
                 .ifPresent(p -> preferencesRepository.deleteById(p.getId()));
@@ -114,7 +114,7 @@ public class UserPreferencesServiceImpl {
 
     // ==================== HELPERS ====================
 
-    private UserPreferences createDefaults(Long userId) {
+    private UserPreferences createDefaults(String userId) {
         UserPreferences prefs = new UserPreferences();
         prefs.setUserId(userId);
         userRepository.findById(userId).ifPresent(user -> {
@@ -128,7 +128,7 @@ public class UserPreferencesServiceImpl {
         return saved;
     }
 
-    private void validateUserExists(Long userId) throws ChallengeSphereException {
+    private void validateUserExists(String userId) throws ChallengeSphereException {
         if (!userRepository.existsById(userId)) {
             throw new ChallengeSphereException(
                     "User not found with id: " + userId, HttpStatus.NOT_FOUND, logger);

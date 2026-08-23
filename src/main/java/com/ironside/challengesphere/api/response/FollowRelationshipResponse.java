@@ -9,13 +9,13 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class FollowRelationshipResponse {
 
-    private Long viewerUserId;
-    private Long targetUserId;
+    private String viewerUserId;
+    private String targetUserId;
     private Boolean isFollowing;
     private Boolean isFollowedBy;
 
-    public static FollowRelationshipResponse of(Long viewerUserId,
-                                                Long targetUserId,
+    public static FollowRelationshipResponse of(String viewerUserId,
+                                                String targetUserId,
                                                 Boolean isFollowing,
                                                 Boolean isFollowedBy) {
         return new FollowRelationshipResponse(viewerUserId, targetUserId, isFollowing, isFollowedBy);

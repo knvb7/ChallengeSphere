@@ -14,11 +14,10 @@ import java.sql.Timestamp;
 public class Notification {
 
     @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
+    private String id;
 
     @Column(name = "user_id", nullable = false)
-    private Long userId;
+    private String userId;
 
     @Column(name = "type", nullable = false, length = 500)
     private String type;
@@ -32,7 +31,7 @@ public class Notification {
     /** Server-side target used to authorize invite previews and invalidate stale invites. */
     @JsonIgnore
     @Column(name = "challenge_id")
-    private Long challengeId;
+    private String challengeId;
 
     @Column(name = "sent_at", nullable = false, columnDefinition = "TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
     private Timestamp sentAt;

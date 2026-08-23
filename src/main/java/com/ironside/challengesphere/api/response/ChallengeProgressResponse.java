@@ -8,7 +8,7 @@ import java.util.List;
 
 @Data
 public class ChallengeProgressResponse {
-    private Long challengeId;
+    private String challengeId;
     private String challengeTitle;
     private Integer totalDays;
     private int daysCompleted;
@@ -22,12 +22,12 @@ public class ChallengeProgressResponse {
     @Data
     public static class DayProgress {
         private int dayNumber;
-        private Long submissionId;
+        private String submissionId;
         private String thumbnailUrl;
         private long gloriesCount;
         private Timestamp submittedAt;
 
-        public static DayProgress submitted(int dayNumber, Long submissionId, String thumbnailUrl,
+        public static DayProgress submitted(int dayNumber, String submissionId, String thumbnailUrl,
                                             long gloriesCount, Timestamp submittedAt) {
             DayProgress dp = new DayProgress();
             dp.dayNumber = dayNumber;

@@ -8,14 +8,13 @@ import java.util.List;
 
 @Data
 public class GetChallengesByHashtagRequest {
-    private Long currentUserId;
+    private String currentUserId;
 
     @NotEmpty(message = "At least one hashtag is required")
     private List<String> hashtags;
 
-    @Min(value = 1, message = "Page must be at least 1")
-    private int page = 1;
+    private String cursor;
 
-    @Min(value = 1, message = "Page size must be at least 1")
-    private int pageSize = 10;
+    @Min(value = 1, message = "Limit must be at least 1")
+    private int limit = 10;
 }

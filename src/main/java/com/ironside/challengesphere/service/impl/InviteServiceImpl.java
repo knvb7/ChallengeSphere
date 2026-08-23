@@ -10,11 +10,13 @@ import com.ironside.challengesphere.api.response.RedeemInviteResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.model.Challenge;
 import com.ironside.challengesphere.model.ChallengeInvite;
-import com.ironside.challengesphere.model.InviteUsage;
 import com.ironside.challengesphere.model.User;
 import com.ironside.challengesphere.model.UserChallenge;
+import com.ironside.challengesphere.persistence.dynamodb.domain.DynamoPage;
+import com.ironside.challengesphere.persistence.dynamodb.foundation.DynamoDbCursorCodec;
 import com.ironside.challengesphere.repository.ChallengeInviteRepository;
 import com.ironside.challengesphere.repository.ChallengeRepository;
+import com.ironside.challengesphere.repository.InviteRedemptionRepository;
 import com.ironside.challengesphere.repository.InviteUsageRepository;
 import com.ironside.challengesphere.repository.UserChallengeRepository;
 import com.ironside.challengesphere.repository.UserBlockRepository;
@@ -34,7 +36,10 @@ import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
+
+import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 
 @Service
 public class InviteServiceImpl implements InviteService {
@@ -45,6 +50,7 @@ public class InviteServiceImpl implements InviteService {
     private static final int MIN_LEGACY_INVITE_CODE_LENGTH = 8;
     private static final String INVITE_UNAVAILABLE_MESSAGE = "Invite is invalid or unavailable";
     private static final int DEFAULT_EXPIRY_HOURS = 720; // 30 days
+    private static final int MAX_LIMIT = 100;
 
     private final SecureRandom secureRandom = new SecureRandom();
 
@@ -56,6 +62,9 @@ public class InviteServiceImpl implements InviteService {
 
     @Autowired
     private InviteUsageRepository inviteUsageRepository;
+
+    @Autowired
+    private InviteRedemptionRepository inviteRedemptionRepository;
 
     @Autowired
     private ChallengeRepository challengeRepository;
@@ -72,11 +81,14 @@ public class InviteServiceImpl implements InviteService {
     @Autowired
     private ChallengeService challengeService;
 
+    @Autowired
+    private DynamoDbCursorCodec cursorCodec;
+
     @Override
     @Transactional
     public InviteLinkResponse generateInviteLink(CreateInviteLinkRequest request) throws ChallengeSphereException {
-        Long challengeId = request.getChallengeId();
-        Long userId = request.getUserId();
+        String challengeId = request.getChallengeId();
+        String userId = request.getUserId();
 
         logger.info("Generating invite link for challenge {} by user {}", challengeId, userId);
 
@@ -133,7 +145,7 @@ public class InviteServiceImpl implements InviteService {
             }
         }
 
-        Long recipientUserId = null;
+        String recipientUserId = null;
         Integer maxUses = request.getMaxUses();
         if (privateChallenge) {
             recipientUserId = request.getRecipientUserId();
@@ -189,11 +201,30 @@ public class InviteServiceImpl implements InviteService {
     @Transactional(rollbackFor = Exception.class)
     public RedeemInviteResponse redeemInvite(RedeemInviteRequest request) throws ChallengeSphereException {
         String inviteCode = request.getInviteCode();
-        Long userId = request.getUserId();
+        String userId = request.getUserId();
 
         logger.info("Redeeming invite for user {}", userId);
 
-        ChallengeInvite invite = findAvailableInvite(inviteCode, true);
+        if (!hasValidInviteCodeFormat(inviteCode)) {
+            throw inviteUnavailable();
+        }
+
+        try (ChallengeInviteRepository.InviteCodeLease ignored =
+                     challengeInviteRepository.acquireInviteCodeLease(inviteCode)) {
+            return redeemInviteWhileLocked(inviteCode, userId);
+        }
+    }
+
+    private RedeemInviteResponse redeemInviteWhileLocked(String inviteCode, String userId)
+            throws ChallengeSphereException {
+        ChallengeInvite invite = findInvite(inviteCode);
+        boolean alreadyReserved = inviteUsageRepository.existsByInviteIdAndUserId(
+                invite.getId(),
+                userId
+        );
+        if (!alreadyReserved) {
+            requireAvailableInvite(invite);
+        }
 
         // Validate user exists
         if (!userRepository.existsById(userId)) {
@@ -223,24 +254,48 @@ public class InviteServiceImpl implements InviteService {
             throw inviteUnavailable();
         }
 
-        // Check if user already used this invite
-        if (inviteUsageRepository.existsByInviteIdAndUserId(invite.getId(), userId)) {
-            throw new ChallengeSphereException(
-                    "You have already used this invite link",
-                    HttpStatus.CONFLICT,
-                    logger
-            );
-        }
-
         // Check if user is already a participant
         UserChallenge existing = userChallengeRepository.findByUserIdAndChallengeId(userId, invite.getChallengeId())
                 .orElse(null);
-        if (existing != null && existing.getActive()) {
+        if (existing != null && Boolean.TRUE.equals(existing.getBanned())) {
+            throw new ChallengeSphereException(
+                    "You were removed from this challenge by its creator.",
+                    HttpStatus.FORBIDDEN,
+                    logger
+            );
+        }
+        if (existing != null && Boolean.TRUE.equals(existing.getActive())) {
+            if (alreadyReserved) {
+                return RedeemInviteResponse.success(
+                        invite.getChallengeId(),
+                        challenge.getTitle(),
+                        userId
+                );
+            }
             throw new ChallengeSphereException(
                     "You are already a participant of this challenge",
                     HttpStatus.CONFLICT,
                     logger
             );
+        }
+
+        if (!alreadyReserved) {
+            try {
+                InviteRedemptionRepository.ReservationResult reservation =
+                        inviteRedemptionRepository.reserve(invite, userId);
+                invite = reservation.invite();
+                if (reservation.newlyReserved()
+                        && !Boolean.TRUE.equals(invite.getActive())) {
+                    logger.info(
+                            "Invite {} auto-deactivated after reaching max uses ({})",
+                            invite.getId(),
+                            invite.getMaxUses()
+                    );
+                }
+            } catch (InviteRedemptionRepository.ReservationUnavailableException
+                     | InviteRedemptionRepository.ReservationConflictException conflict) {
+                throw inviteUnavailable();
+            }
         }
 
         // Join the user to the challenge using existing join flow
@@ -250,31 +305,27 @@ public class InviteServiceImpl implements InviteService {
 
         JoinChallengeResponse joinResponse = challengeService.joinChallengeFromVerifiedInvite(joinRequest);
 
-        if (!joinResponse.isSuccess() || joinResponse.getSuccessfulUserIds().isEmpty()) {
+        if (joinResponse == null
+                || !joinResponse.isSuccess()
+                || joinResponse.getSuccessfulUserIds() == null
+                || !joinResponse.getSuccessfulUserIds().contains(userId)) {
+            UserChallenge joinedMembership = userChallengeRepository
+                    .findByUserIdAndChallengeId(userId, invite.getChallengeId())
+                    .orElse(null);
+            if (joinedMembership != null && Boolean.TRUE.equals(joinedMembership.getActive())) {
+                return RedeemInviteResponse.success(
+                        invite.getChallengeId(),
+                        challenge.getTitle(),
+                        userId
+                );
+            }
             throw new ChallengeSphereException(
-                    "Failed to join the challenge: " + joinResponse.getMessage(),
+                    "Failed to join the challenge: "
+                            + (joinResponse == null ? "No join response" : joinResponse.getMessage()),
                     HttpStatus.INTERNAL_SERVER_ERROR,
                     logger
             );
         }
-
-        // Record invite usage
-        InviteUsage usage = new InviteUsage();
-        usage.setInviteId(invite.getId());
-        usage.setUserId(userId);
-        usage.setJoinedAt(new Timestamp(System.currentTimeMillis()));
-        inviteUsageRepository.save(usage);
-
-        // Increment use count
-        invite.setUseCount(invite.getUseCount() + 1);
-
-        // Auto-deactivate if max uses reached
-        if (invite.getMaxUses() != null && invite.getUseCount() >= invite.getMaxUses()) {
-            invite.setActive(false);
-            logger.info("Invite {} auto-deactivated after reaching max uses ({})", invite.getId(), invite.getMaxUses());
-        }
-
-        challengeInviteRepository.save(invite);
 
         logger.info("User {} successfully joined challenge {} via invite {}", userId, invite.getChallengeId(), invite.getId());
 
@@ -285,7 +336,7 @@ public class InviteServiceImpl implements InviteService {
     public InviteLinkResponse getInviteDetails(String inviteCode) throws ChallengeSphereException {
         logger.debug("Getting invite preview");
 
-        ChallengeInvite invite = findAvailableInvite(inviteCode, false);
+        ChallengeInvite invite = findAvailableInvite(inviteCode);
         Challenge challenge = challengeRepository.findById(invite.getChallengeId())
                 .orElseThrow(this::inviteUnavailable);
 
@@ -345,7 +396,12 @@ public class InviteServiceImpl implements InviteService {
     }
 
     @Override
-    public ChallengeInvitesResponse getInvitesForChallenge(Long challengeId, Long userId) throws ChallengeSphereException {
+    public ChallengeInvitesResponse getInvitesForChallenge(
+            String challengeId,
+            String userId,
+            int limit,
+            String cursor
+    ) throws ChallengeSphereException {
         logger.info("Getting invite inventory for challenge {} by user {}", challengeId, userId);
 
         Challenge challenge = challengeRepository.findById(challengeId)
@@ -364,9 +420,19 @@ public class InviteServiceImpl implements InviteService {
             );
         }
 
-        List<ChallengeInvite> invites = challengeInviteRepository.findByChallengeId(challengeId);
+        int boundedLimit = Math.max(1, Math.min(limit, MAX_LIMIT));
+        String queryBinding = "invites:v2|challenge=" + challengeId
+                + "|viewer=" + userId
+                + "|limit=" + boundedLimit;
+        Map<String, AttributeValue> exclusiveStartKey = decodeCursor(cursor, queryBinding);
+        DynamoPage<ChallengeInvite> invites = challengeInviteRepository.findByChallengeIdPage(
+                challengeId,
+                boundedLimit,
+                exclusiveStartKey
+        );
+        boolean hasMore = invites.hasMore();
 
-        List<InviteLinkResponse> inviteResponses = invites.stream()
+        List<InviteLinkResponse> inviteResponses = invites.items().stream()
                 .map(invite -> {
                     InviteLinkResponse response = InviteLinkResponse.from(
                             invite.getId(),
@@ -385,16 +451,45 @@ public class InviteServiceImpl implements InviteService {
                 })
                 .collect(Collectors.toList());
 
-        return ChallengeInvitesResponse.builder()
+        ChallengeInvitesResponse response = ChallengeInvitesResponse.builder()
                 .challengeId(challengeId)
                 .invites(inviteResponses)
-                .totalCount(inviteResponses.size())
                 .build();
+        response.setNextCursor(encodeCursor(queryBinding, invites.lastEvaluatedKey()));
+        response.setHasMore(hasMore);
+        return response;
+    }
+
+    private Map<String, AttributeValue> decodeCursor(
+            String cursor,
+            String queryBinding
+    ) throws ChallengeSphereException {
+        if (cursor == null || cursor.isBlank()) {
+            return Map.of();
+        }
+        try {
+            return cursorCodec.decode(cursor, queryBinding).lastEvaluatedKey();
+        } catch (IllegalArgumentException exception) {
+            throw new ChallengeSphereException("Invalid cursor", HttpStatus.BAD_REQUEST, logger);
+        }
+    }
+
+    private String encodeCursor(
+            String queryBinding,
+            Map<String, AttributeValue> lastEvaluatedKey
+    ) {
+        if (lastEvaluatedKey == null || lastEvaluatedKey.isEmpty()) {
+            return null;
+        }
+        return cursorCodec.encode(
+                queryBinding,
+                new DynamoDbCursorCodec.CursorState(lastEvaluatedKey)
+        );
     }
 
     @Override
     @Transactional
-    public void deactivateInvite(Long inviteId, Long userId) throws ChallengeSphereException {
+    public void deactivateInvite(String inviteId, String userId) throws ChallengeSphereException {
         logger.info("Deactivating invite {} by user {}", inviteId, userId);
 
         ChallengeInvite invite = challengeInviteRepository.findById(inviteId)
@@ -450,26 +545,29 @@ public class InviteServiceImpl implements InviteService {
         return sb.toString();
     }
 
-    private ChallengeInvite findAvailableInvite(String inviteCode, boolean lockForRedemption)
-            throws ChallengeSphereException {
+    private ChallengeInvite findInvite(String inviteCode) throws ChallengeSphereException {
         if (!hasValidInviteCodeFormat(inviteCode)) {
             throw inviteUnavailable();
         }
 
-        ChallengeInvite invite = (lockForRedemption
-                ? challengeInviteRepository.findByInviteCodeForUpdate(inviteCode)
-                : challengeInviteRepository.findByInviteCode(inviteCode))
+        return challengeInviteRepository.findByInviteCode(inviteCode)
                 .orElseThrow(this::inviteUnavailable);
+    }
 
+    private ChallengeInvite findAvailableInvite(String inviteCode) throws ChallengeSphereException {
+        ChallengeInvite invite = findInvite(inviteCode);
+        requireAvailableInvite(invite);
+        return invite;
+    }
+
+    private void requireAvailableInvite(ChallengeInvite invite) throws ChallengeSphereException {
         if (!Boolean.TRUE.equals(invite.getActive())
                 || (invite.getExpiresAt() != null
                 && !invite.getExpiresAt().after(Timestamp.from(Instant.now())))
                 || (invite.getMaxUses() != null
-                && invite.getUseCount() >= invite.getMaxUses())) {
+                && (invite.getUseCount() == null ? 0 : invite.getUseCount()) >= invite.getMaxUses())) {
             throw inviteUnavailable();
         }
-
-        return invite;
     }
 
     private boolean hasValidInviteCodeFormat(String inviteCode) {
@@ -498,13 +596,13 @@ public class InviteServiceImpl implements InviteService {
         return value.strip();
     }
 
-    private boolean isChallengeOwner(Challenge challenge, Long userId) {
+    private boolean isChallengeOwner(Challenge challenge, String userId) {
         return challenge != null
                 && userId != null
                 && userId.equals(effectiveOwnerId(challenge));
     }
 
-    private Long effectiveOwnerId(Challenge challenge) {
+    private String effectiveOwnerId(Challenge challenge) {
         return challenge == null
                 ? null
                 : (challenge.getCurrentOwnerId() != null
@@ -512,10 +610,10 @@ public class InviteServiceImpl implements InviteService {
                 : challenge.getCreatorId());
     }
 
-    private Long requirePrivateInviteRecipient(
+    private String requirePrivateInviteRecipient(
             Challenge challenge,
-            Long ownerUserId,
-            Long recipientUserId) throws ChallengeSphereException {
+            String ownerUserId,
+            String recipientUserId) throws ChallengeSphereException {
         if (recipientUserId == null) {
             throw new ChallengeSphereException(
                     "A private challenge invite must name exactly one recipient",

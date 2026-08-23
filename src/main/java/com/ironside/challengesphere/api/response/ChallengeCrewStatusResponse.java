@@ -13,7 +13,7 @@ import java.util.List;
 @NoArgsConstructor
 @AllArgsConstructor
 public class ChallengeCrewStatusResponse {
-    private Long challengeId;
+    private String challengeId;
     private String state;
     private boolean privateChallenge;
     private boolean canManageCrew;
@@ -24,10 +24,10 @@ public class ChallengeCrewStatusResponse {
     private int minimumStartCount;
     private int recommendedReadyCount;
     private Timestamp startedAt;
-    private Long startedByUserId;
+    private String startedByUserId;
     private boolean peerRemindersEnabled;
-    private List<Long> reminderOptedInUserIds;
+    private List<String> reminderOptedInUserIds;
     private boolean recapAvailable;
     private boolean rematchAvailable;
-    private Long rematchChallengeId;
+    private String rematchChallengeId;
 }

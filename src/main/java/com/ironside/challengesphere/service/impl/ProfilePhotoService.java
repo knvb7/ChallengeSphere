@@ -22,7 +22,7 @@ public class ProfilePhotoService {
     private static final Logger logger = LogManager.getLogger(ProfilePhotoService.class);
     private static final long UPLOAD_URL_TTL_SECONDS = 3600L;
     private static final Pattern PROFILE_OBJECT_KEY = Pattern.compile(
-            "^profiles/user_(\\d+)/\\d{10,17}_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-"
+            "^profiles/user_([0-9A-HJKMNP-TV-Z]{26}|\\d+)/\\d{10,17}_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-"
                     + "[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\\.(?:jpg|png|gif)$"
     );
 
@@ -49,7 +49,7 @@ public class ProfilePhotoService {
     }
 
     public PresignedUrlsResponse generateUpload(
-            Long userId,
+            String userId,
             GeneratePresignedUrlsRequest.MediaFileInfo file
     ) throws ChallengeSphereException {
         validateProfilePhoto(file);
@@ -65,7 +65,7 @@ public class ProfilePhotoService {
         uploadQuotaService.reserve(userId, List.of(file));
 
         String extension = extensionFor(file.getContentType());
-        String objectName = "profiles/user_%d/%d_%s%s".formatted(
+        String objectName = "profiles/user_%s/%d_%s%s".formatted(
                 userId,
                 System.currentTimeMillis(),
                 UUID.randomUUID(),
@@ -91,13 +91,13 @@ public class ProfilePhotoService {
         return PresignedUrlsResponse.success(userId, List.of(upload));
     }
 
-    public String validateUploadedObjectKey(Long userId, String objectKey)
+    public String validateUploadedObjectKey(String userId, String objectKey)
             throws ChallengeSphereException {
         String normalizedKey = objectKey == null ? "" : objectKey.trim();
         var matcher = PROFILE_OBJECT_KEY.matcher(normalizedKey);
         if (userId == null
                 || !matcher.matches()
-                || !Long.toString(userId).equals(matcher.group(1))) {
+                || !userId.equals(matcher.group(1))) {
             throw new ChallengeSphereException(
                     "Invalid profile photo upload key",
                     HttpStatus.BAD_REQUEST,

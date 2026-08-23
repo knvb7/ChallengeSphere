@@ -6,7 +6,7 @@ import com.ironside.challengesphere.exception.ChallengeSphereException;
 
 public interface FeatureRequestService {
     FeatureRequestResponse createFeatureRequest(
-            Long userId,
+            String userId,
             CreateFeatureRequest request
     ) throws ChallengeSphereException;
 }

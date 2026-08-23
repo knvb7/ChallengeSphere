@@ -38,7 +38,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
         try {
             if (StringUtils.hasText(token) && jwtService.isValidAccessToken(token)) {
-                Long userId = jwtService.extractUserId(token);
+                String userId = jwtService.extractUserId(token);
                 if (userId != null
                         && authTokenStore.exists(token, "access", userId)
                         && SecurityContextHolder.getContext().getAuthentication() == null) {
@@ -60,7 +60,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                 }
             }
         } catch (UsernameNotFoundException ignored) {
-            Long userId = safeExtractUserId(token);
+            String userId = safeExtractUserId(token);
             authTokenStore.revokeAllForUser(userId);
         }
 
@@ -75,7 +75,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         return null;
     }
 
-    private Long safeExtractUserId(String token) {
+    private String safeExtractUserId(String token) {
         try {
             return jwtService.extractUserId(token);
         } catch (Exception ignored) {

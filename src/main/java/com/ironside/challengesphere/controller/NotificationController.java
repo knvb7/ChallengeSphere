@@ -5,7 +5,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ironside.challengesphere.api.request.JoinChallengeRequest;
 import com.ironside.challengesphere.api.request.RegisterPushTokenRequest;
 import com.ironside.challengesphere.api.response.ChallengeInviteDetailsResponse;
+import com.ironside.challengesphere.api.response.CursorPageResponse;
 import com.ironside.challengesphere.api.response.JoinChallengeResponse;
+import com.ironside.challengesphere.api.response.NotificationPageResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.model.Notification;
 import com.ironside.challengesphere.model.PushDeviceToken;
@@ -59,34 +61,36 @@ public class NotificationController {
      * Returns recent notifications for a user (up to 50).
      */
     @GetMapping("/{userId}")
-    public ResponseEntity<Map<String, Object>> getNotifications(
-            @PathVariable Long userId,
+    public ResponseEntity<NotificationPageResponse> getNotifications(
+            @PathVariable String userId,
             @RequestParam(defaultValue = "50") int limit,
+            @RequestParam(required = false) String cursor,
             @AuthenticationPrincipal UserPrincipal principal) throws ChallengeSphereException {
         assertOwnInbox(userId, principal);
         int safeLimit = clampLimit(limit);
         logger.info("Fetching notifications for userId: {}, limit: {}", userId, limit);
-        List<Notification> notifications = notificationRepository.findRecentNotificationsByUserId(userId, safeLimit);
-        long total = notificationRepository.countNotificationsByUserId(userId);
+        CursorPageResponse<Notification> result = notificationService.getNotifications(userId, safeLimit, cursor);
         long unreadCount = unreadCount(userId);
-        return ResponseEntity.ok(Map.of(
-                "notifications", notifications,
-                "total", total,
-                "unreadCount", unreadCount,
-                "serverTimeEpochMs", Instant.now().toEpochMilli()
+        return ResponseEntity.ok(new NotificationPageResponse(
+                result.getItems(),
+                unreadCount,
+                Instant.now().toEpochMilli(),
+                result.getNextCursor(),
+                result.isHasMore()
         ));
     }
 
     @GetMapping("/me")
-    public ResponseEntity<Map<String, Object>> getMyNotifications(
+    public ResponseEntity<NotificationPageResponse> getMyNotifications(
             @RequestParam(defaultValue = "50") int limit,
+            @RequestParam(required = false) String cursor,
             @AuthenticationPrincipal UserPrincipal principal) throws ChallengeSphereException {
-        return getNotifications(requireUserId(principal), limit, principal);
+        return getNotifications(requireUserId(principal), limit, cursor, principal);
     }
 
     @GetMapping("/{userId}/unread-count")
     public ResponseEntity<Map<String, Object>> getUnreadCount(
-            @PathVariable Long userId,
+            @PathVariable String userId,
             @AuthenticationPrincipal UserPrincipal principal) throws ChallengeSphereException {
         assertOwnInbox(userId, principal);
         long unreadCount = unreadCount(userId);
@@ -102,7 +106,7 @@ public class NotificationController {
     @PatchMapping("/{userId}/read")
     @Transactional
     public ResponseEntity<Map<String, Object>> markAllRead(
-            @PathVariable Long userId,
+            @PathVariable String userId,
             @AuthenticationPrincipal UserPrincipal principal) throws ChallengeSphereException {
         assertOwnInbox(userId, principal);
         int updated = notificationRepository.markAllAsReadByUserId(userId);
@@ -113,8 +117,8 @@ public class NotificationController {
     @PatchMapping("/{userId}/{notificationId}/read")
     @Transactional
     public ResponseEntity<Map<String, Object>> markRead(
-            @PathVariable Long userId,
-            @PathVariable Long notificationId,
+            @PathVariable String userId,
+            @PathVariable String notificationId,
             @AuthenticationPrincipal UserPrincipal principal) throws ChallengeSphereException {
         assertOwnInbox(userId, principal);
         int updated = notificationRepository.markAsRead(userId, notificationId);
@@ -129,7 +133,7 @@ public class NotificationController {
     @DeleteMapping("/{userId}")
     @Transactional
     public ResponseEntity<Void> clearNotifications(
-            @PathVariable Long userId,
+            @PathVariable String userId,
             @AuthenticationPrincipal UserPrincipal principal) throws ChallengeSphereException {
         assertOwnInbox(userId, principal);
         logger.info("Clearing notifications for userId: {}", userId);
@@ -145,7 +149,7 @@ public class NotificationController {
     @DeleteMapping("/{userId}/activity")
     @Transactional
     public ResponseEntity<Map<String, Object>> clearActivityNotifications(
-            @PathVariable Long userId,
+            @PathVariable String userId,
             @AuthenticationPrincipal UserPrincipal principal) throws ChallengeSphereException {
         assertOwnInbox(userId, principal);
         logger.info("Clearing activity notifications for userId: {}", userId);
@@ -161,11 +165,11 @@ public class NotificationController {
     @PostMapping("/me/{notificationId}/challenge-invite/accept")
     @Transactional
     public ResponseEntity<JoinChallengeResponse> acceptChallengeInvite(
-            @PathVariable Long notificationId,
+            @PathVariable String notificationId,
             @AuthenticationPrincipal UserPrincipal principal) throws ChallengeSphereException {
-        Long userId = requireUserId(principal);
+        String userId = requireUserId(principal);
         Notification notification = requireOwnChallengeInvite(notificationId, userId);
-        Long challengeId = extractChallengeId(notification);
+        String challengeId = extractChallengeId(notification);
 
         JoinChallengeRequest request = new JoinChallengeRequest();
         request.setChallengeId(challengeId);
@@ -179,18 +183,18 @@ public class NotificationController {
 
     @GetMapping("/me/{notificationId}/challenge-invite")
     public ResponseEntity<ChallengeInviteDetailsResponse> getChallengeInviteDetails(
-            @PathVariable Long notificationId,
+            @PathVariable String notificationId,
             @AuthenticationPrincipal UserPrincipal principal) throws ChallengeSphereException {
-        Long userId = requireUserId(principal);
+        String userId = requireUserId(principal);
         return ResponseEntity.ok(notificationService.getChallengeInviteDetails(notificationId, userId));
     }
 
     @PostMapping("/me/{notificationId}/challenge-invite/ignore")
     @Transactional
     public ResponseEntity<Map<String, Object>> ignoreChallengeInvite(
-            @PathVariable Long notificationId,
+            @PathVariable String notificationId,
             @AuthenticationPrincipal UserPrincipal principal) throws ChallengeSphereException {
-        Long userId = requireUserId(principal);
+        String userId = requireUserId(principal);
         requireOwnChallengeInvite(notificationId, userId);
         notificationRepository.markAsRead(userId, notificationId);
         invalidateUnreadCount(userId);
@@ -204,11 +208,11 @@ public class NotificationController {
     public ResponseEntity<Map<String, Object>> registerPushToken(
             @RequestBody RegisterPushTokenRequest request,
             @AuthenticationPrincipal UserPrincipal principal) throws ChallengeSphereException {
-        Long userId = requireUserId(principal);
+        String userId = requireUserId(principal);
         PushDeviceToken token = pushNotificationService.registerToken(userId, request);
         return ResponseEntity.ok(Map.of(
                 "registered", true,
-                "tokenId", token.getId()
+                "tokenId", token.getId() == null ? null : token.getId().toString()
         ));
     }
 
@@ -217,7 +221,7 @@ public class NotificationController {
     public ResponseEntity<Map<String, Object>> disablePushToken(
             @RequestBody RegisterPushTokenRequest request,
             @AuthenticationPrincipal UserPrincipal principal) throws ChallengeSphereException {
-        Long userId = requireUserId(principal);
+        String userId = requireUserId(principal);
         pushNotificationService.disableToken(userId, request == null ? null : request.getExpoPushToken());
         return ResponseEntity.ok(Map.of("disabled", true));
     }
@@ -226,7 +230,7 @@ public class NotificationController {
         return Math.max(1, Math.min(limit, 100));
     }
 
-    private long unreadCount(Long userId) {
+    private long unreadCount(String userId) {
         String key = "notifications:unread:" + userId;
         Long cached = cacheService == null ? null : cacheService.get(key, Long.class);
         if (cached != null) {
@@ -239,7 +243,7 @@ public class NotificationController {
         return count;
     }
 
-    private void invalidateUnreadCount(Long userId) {
+    private void invalidateUnreadCount(String userId) {
         if (cacheService == null) {
             return;
         }
@@ -256,24 +260,24 @@ public class NotificationController {
         }
     }
 
-    private Long requireUserId(UserPrincipal principal) throws ChallengeSphereException {
+    private String requireUserId(UserPrincipal principal) throws ChallengeSphereException {
         if (principal == null || principal.getId() == null) {
             throw new ChallengeSphereException("Authenticated user required", HttpStatus.UNAUTHORIZED, logger);
         }
-        return principal.getId();
+        return principal.getId().toString();
     }
 
-    private void assertOwnInbox(Long userId, UserPrincipal principal) throws ChallengeSphereException {
-        Long currentUserId = requireUserId(principal);
+    private void assertOwnInbox(String userId, UserPrincipal principal) throws ChallengeSphereException {
+        String currentUserId = requireUserId(principal);
         if (!currentUserId.equals(userId)) {
             throw new ChallengeSphereException("You can only access your own notifications", HttpStatus.FORBIDDEN, logger);
         }
     }
 
-    private Notification requireOwnChallengeInvite(Long notificationId, Long userId) throws ChallengeSphereException {
+    private Notification requireOwnChallengeInvite(String notificationId, String userId) throws ChallengeSphereException {
         Notification notification = notificationRepository.findById(notificationId)
                 .orElseThrow(() -> new ChallengeSphereException("Notification not found", HttpStatus.NOT_FOUND, logger));
-        if (!userId.equals(notification.getUserId())) {
+        if (notification.getUserId() == null || !userId.equals(notification.getUserId().toString())) {
             throw new ChallengeSphereException("You can only access your own notifications", HttpStatus.FORBIDDEN, logger);
         }
         if (notification.getType() == null || !TYPE_CHALLENGE_INVITE.equalsIgnoreCase(notification.getType())) {
@@ -282,17 +286,17 @@ public class NotificationController {
         return notification;
     }
 
-    private Long extractChallengeId(Notification notification) throws ChallengeSphereException {
+    private String extractChallengeId(Notification notification) throws ChallengeSphereException {
         if (notification.getChallengeId() != null) {
-            return notification.getChallengeId();
+            return notification.getChallengeId().toString();
         }
         try {
             JsonNode action = objectMapper.readTree(notification.getActionObject());
             JsonNode challengeId = action.get("challengeId");
-            if (challengeId == null || !challengeId.canConvertToLong()) {
+            if (challengeId == null || challengeId.asText().isBlank()) {
                 throw new ChallengeSphereException("Challenge invite is missing challenge details", HttpStatus.BAD_REQUEST, logger);
             }
-            return challengeId.asLong();
+            return challengeId.asText();
         } catch (ChallengeSphereException e) {
             throw e;
         } catch (Exception e) {

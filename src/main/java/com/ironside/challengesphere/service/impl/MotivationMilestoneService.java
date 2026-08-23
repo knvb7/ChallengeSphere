@@ -145,12 +145,12 @@ public class MotivationMilestoneService {
      *         suppressed deterministically while the milestone push is dispatched after commit.
      */
     @Transactional
-    public Set<Long> evaluateEveningProgressMilestones() {
-        Set<Long> newlyClaimedUserIds = new java.util.LinkedHashSet<>();
+    public Set<String> evaluateEveningProgressMilestones() {
+        Set<String> newlyClaimedUserIds = new java.util.LinkedHashSet<>();
 
         for (MotivationReminderRepository.EveningUserProjection candidate
                 : reminderRepository.findMotivationUsers()) {
-            Long userId = candidate.getUserId();
+            String userId = candidate.getUserId();
             if (userId == null) {
                 continue;
             }
@@ -204,8 +204,8 @@ public class MotivationMilestoneService {
      */
     @Transactional
     public void evaluateAfterSubmission(
-            Long userId,
-            Long challengeId,
+            String userId,
+            String challengeId,
             LocalDate currentDate,
             boolean evaluateRank
     ) {
@@ -303,7 +303,7 @@ public class MotivationMilestoneService {
                 && currentDate.isBefore(challenge.getStartDate().plusDays(challenge.getNumberOfDays()));
     }
 
-    private LeaderboardResponse.UserRankDTO resolvePrivateRank(Long challengeId, Long userId) {
+    private LeaderboardResponse.UserRankDTO resolvePrivateRank(String challengeId, String userId) {
         try {
             LeaderboardResponse.UserRankDTO rank = leaderboardService.getUserRank(
                     challengeId, userId, userId);
@@ -322,7 +322,7 @@ public class MotivationMilestoneService {
     }
 
     private boolean createProgressMilestone(
-            Long userId,
+            String userId,
             Challenge challenge,
             ChallengeMomentumPolicy.Result momentum
     ) {
@@ -341,7 +341,7 @@ public class MotivationMilestoneService {
     }
 
     private void createRankMilestone(
-            Long userId,
+            String userId,
             Challenge challenge,
             LeaderboardResponse.UserRankDTO rank,
             ChallengeMomentumPolicy.Result momentum
@@ -380,8 +380,8 @@ public class MotivationMilestoneService {
     }
 
     private boolean claimAndNotify(
-            Long userId,
-            Long challengeId,
+            String userId,
+            String challengeId,
             String milestoneCode,
             String message,
             Map<String, Object> payload
@@ -426,7 +426,7 @@ public class MotivationMilestoneService {
         return payload;
     }
 
-    private void dispatchPushAfterCommit(Long userId, String message, String actionObject) {
+    private void dispatchPushAfterCommit(String userId, String message, String actionObject) {
         Runnable dispatch = () -> pushNotificationService.sendInteractionPush(
                 userId, TYPE_MOMENTUM_MILESTONE, message, actionObject);
         if (TransactionSynchronizationManager.isSynchronizationActive()) {

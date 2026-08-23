@@ -45,7 +45,7 @@ public class FeatureRequestServiceImpl implements FeatureRequestService {
     @Override
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public FeatureRequestResponse createFeatureRequest(
-            Long userId,
+            String userId,
             CreateFeatureRequest request
     ) throws ChallengeSphereException {
         if (userId == null) {
@@ -92,7 +92,7 @@ public class FeatureRequestServiceImpl implements FeatureRequestService {
         );
     }
 
-    private void reserveDailyRequest(Long userId) throws ChallengeSphereException {
+    private void reserveDailyRequest(String userId) throws ChallengeSphereException {
         RateLimitStore.Decision decision;
         try {
             decision = rateLimitStore.consume(

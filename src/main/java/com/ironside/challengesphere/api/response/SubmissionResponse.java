@@ -10,9 +10,9 @@ import java.util.List;
 public class SubmissionResponse {
     private boolean success;
     private String message;
-    private Long submissionId;
-    private Long userId;
-    private Long challengeId;
+    private String submissionId;
+    private String userId;
+    private String challengeId;
     private Integer dayNumber;
     private String description;
     private List<String> mediaUrls;
@@ -27,9 +27,9 @@ public class SubmissionResponse {
         SubmissionResponse response = new SubmissionResponse();
         response.setSuccess(true);
         response.setMessage("Submission created successfully");
-        response.setSubmissionId(submission.getId());
-        response.setUserId(submission.getUserId());
-        response.setChallengeId(submission.getChallengeId());
+        response.setSubmissionId(stringId(submission.getId()));
+        response.setUserId(stringId(submission.getUserId()));
+        response.setChallengeId(stringId(submission.getChallengeId()));
         response.setDayNumber(submission.getDayNumber());
         response.setDescription(submission.getDescription());
         response.setMediaUrls(mediaUrls);
@@ -52,5 +52,9 @@ public class SubmissionResponse {
         response.setSuccess(false);
         response.setMessage(message);
         return response;
+    }
+
+    private static String stringId(Object value) {
+        return value == null ? null : value.toString();
     }
 }

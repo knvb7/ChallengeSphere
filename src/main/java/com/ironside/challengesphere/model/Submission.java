@@ -17,14 +17,13 @@ public class Submission {
     public static final String MODERATION_FAILED = "FAILED";
 
     @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
+    private String id;
 
     @Column(name = "user_id", nullable = false)
-    private Long userId;
+    private String userId;
 
     @Column(name = "challenge_id", nullable = false)
-    private Long challengeId;
+    private String challengeId;
 
     @Column(name = "day_number", nullable = false)
     private Integer dayNumber;
@@ -73,4 +72,15 @@ public class Submission {
     @Version
     @Column(name = "version", nullable = false)
     private Integer version = 0;
+
+    /** Fixed conditional-write slot used to enforce the per-day submission cap. */
+    private Integer daySlot;
+
+    /** Durable cursor for bounded fan-out into follower timelines. */
+    @Transient
+    private String feedTimelineFanoutCursor;
+
+    /** Set only after every current follower received this submission's timeline entry. */
+    @Transient
+    private Timestamp feedTimelineFanoutCompletedAt;
 }

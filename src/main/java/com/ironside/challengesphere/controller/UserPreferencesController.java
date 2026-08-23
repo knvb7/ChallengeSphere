@@ -28,7 +28,7 @@ public class UserPreferencesController {
      */
     @GetMapping
     public ResponseEntity<UserPreferences> getPreferences(
-            @PathVariable Long userId,
+            @PathVariable String userId,
             @AuthenticationPrincipal UserPrincipal principal) throws ChallengeSphereException {
         assertOwnPreferences(userId, principal);
         logger.info("Get preferences for userId: {}", userId);
@@ -41,7 +41,7 @@ public class UserPreferencesController {
      */
     @PatchMapping
     public ResponseEntity<UserPreferences> updatePreferences(
-            @PathVariable Long userId,
+            @PathVariable String userId,
             @RequestBody UpdateUserPreferencesRequest request,
             @AuthenticationPrincipal UserPrincipal principal) throws ChallengeSphereException {
         assertOwnPreferences(userId, principal);
@@ -55,22 +55,22 @@ public class UserPreferencesController {
      */
     @DeleteMapping("/reset")
     public ResponseEntity<UserPreferences> resetPreferences(
-            @PathVariable Long userId,
+            @PathVariable String userId,
             @AuthenticationPrincipal UserPrincipal principal) throws ChallengeSphereException {
         assertOwnPreferences(userId, principal);
         logger.info("Reset preferences for userId: {}", userId);
         return ResponseEntity.ok(preferencesService.resetPreferences(userId));
     }
 
-    private Long requireUserId(UserPrincipal principal) throws ChallengeSphereException {
+    private String requireUserId(UserPrincipal principal) throws ChallengeSphereException {
         if (principal == null || principal.getId() == null) {
             throw new ChallengeSphereException("Authenticated user required", HttpStatus.UNAUTHORIZED, logger);
         }
-        return principal.getId();
+        return principal.getId().toString();
     }
 
-    private void assertOwnPreferences(Long userId, UserPrincipal principal) throws ChallengeSphereException {
-        Long currentUserId = requireUserId(principal);
+    private void assertOwnPreferences(String userId, UserPrincipal principal) throws ChallengeSphereException {
+        String currentUserId = requireUserId(principal);
         if (!currentUserId.equals(userId)) {
             throw new ChallengeSphereException("You can only access your own preferences", HttpStatus.FORBIDDEN, logger);
         }

@@ -6,16 +6,16 @@ import com.ironside.challengesphere.api.request.GetUserPayload;
 import com.ironside.challengesphere.api.request.UpdateUserRequest;
 import com.ironside.challengesphere.api.request.UserRegistrationRequest;
 import com.ironside.challengesphere.api.response.ToggleUserActivationResponse;
+import com.ironside.challengesphere.api.response.CursorPageResponse;
 import com.ironside.challengesphere.api.response.FollowActionResponse;
 import com.ironside.challengesphere.api.response.FollowRelationshipResponse;
 import com.ironside.challengesphere.api.response.FollowersFollowingResponse;
+import com.ironside.challengesphere.api.response.PublicUserResponse;
 import com.ironside.challengesphere.api.response.UserRegistrationResponse;
 import com.ironside.challengesphere.api.response.UserSearchResponse;
 import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.model.User;
 import org.springframework.stereotype.Service;
-
-import java.util.List;
 
 @Service
 public interface UserService {
@@ -23,19 +23,19 @@ public interface UserService {
 
     User getUser(GetUserPayload getUserPayload) throws ChallengeSphereException;
 
-    UserSearchResponse searchUsers(String query, Long currentUserId, Integer page, Integer pageSize) throws ChallengeSphereException;
+    UserSearchResponse searchUsers(String query, String currentUserId, Integer limit, String cursor) throws ChallengeSphereException;
 
-    UserSearchResponse getSuggestedUsers(Long currentUserId, Integer page, Integer pageSize) throws ChallengeSphereException;
+    UserSearchResponse getSuggestedUsers(String currentUserId, Integer limit, String cursor) throws ChallengeSphereException;
 
     long getTotalUserCount();
 
-    User updateUserDetails(Long userId, UpdateUserRequest updateUserRequest) throws ChallengeSphereException;
+    User updateUserDetails(String userId, UpdateUserRequest updateUserRequest) throws ChallengeSphereException;
 
-    FollowActionResponse follow(Long followerId, Long followingId) throws ChallengeSphereException;
+    FollowActionResponse follow(String followerId, String followingId) throws ChallengeSphereException;
 
-    FollowActionResponse unfollow(Long followerId, Long followingId) throws ChallengeSphereException;
+    FollowActionResponse unfollow(String followerId, String followingId) throws ChallengeSphereException;
 
-    FollowRelationshipResponse getFollowRelationship(Long viewerUserId, Long targetUserId) throws ChallengeSphereException;
+    FollowRelationshipResponse getFollowRelationship(String viewerUserId, String targetUserId) throws ChallengeSphereException;
 
     FollowersFollowingResponse getFollowers(GetFollowersFollowingRequest request) throws ChallengeSphereException;
 
@@ -43,15 +43,19 @@ public interface UserService {
 
     ToggleUserActivationResponse toggleUserActivation(ToggleActivateUserRequest request) throws ChallengeSphereException;
 
-    void blockUser(Long blockerUserId, Long blockedUserId) throws ChallengeSphereException;
+    void blockUser(String blockerUserId, String blockedUserId) throws ChallengeSphereException;
 
-    void unblockUser(Long blockerUserId, Long blockedUserId) throws ChallengeSphereException;
+    void unblockUser(String blockerUserId, String blockedUserId) throws ChallengeSphereException;
 
-    List<User> getBlockedUsers(Long blockerUserId) throws ChallengeSphereException;
+    CursorPageResponse<PublicUserResponse> getBlockedUsers(
+            String blockerUserId,
+            int limit,
+            String cursor
+    ) throws ChallengeSphereException;
 
-    void reportUser(Long reporterUserId, Long reportedUserId, String reason, String details) throws ChallengeSphereException;
+    void reportUser(String reporterUserId, String reportedUserId, String reason, String details) throws ChallengeSphereException;
 
-    boolean isBlockedEitherDirection(Long firstUserId, Long secondUserId);
+    boolean isBlockedEitherDirection(String firstUserId, String secondUserId);
 
-    User getUserDetails(Long userId, String emailId, String username) throws ChallengeSphereException;
+    User getUserDetails(String userId, String emailId, String username) throws ChallengeSphereException;
 }

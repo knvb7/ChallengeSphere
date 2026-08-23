@@ -10,13 +10,13 @@ import lombok.NoArgsConstructor;
 @NoArgsConstructor
 @AllArgsConstructor
 public class RedeemInviteResponse {
-    private Long challengeId;
+    private String challengeId;
     private String challengeTitle;
-    private Long userId;
+    private String userId;
     private String message;
     private boolean success;
 
-    public static RedeemInviteResponse success(Long challengeId, String challengeTitle, Long userId) {
+    public static RedeemInviteResponse success(String challengeId, String challengeTitle, String userId) {
         return RedeemInviteResponse.builder()
                 .challengeId(challengeId)
                 .challengeTitle(challengeTitle)

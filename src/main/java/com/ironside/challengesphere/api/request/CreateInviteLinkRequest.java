@@ -1,23 +1,21 @@
 package com.ironside.challengesphere.api.request;
 
-import jakarta.validation.constraints.NotNull;
-import jakarta.validation.constraints.Positive;
+import jakarta.validation.constraints.NotBlank;
 import lombok.Data;
 
 @Data
 public class CreateInviteLinkRequest {
 
-    @NotNull(message = "Challenge ID is required")
-    private Long challengeId;
+    @NotBlank(message = "Challenge ID is required")
+    private String challengeId;
 
-    private Long userId;
+    private String userId;
 
     /**
      * Optional sole recipient for a direct private-challenge invitation.
      * When omitted, the generated code can be shared with eligible users.
      */
-    @Positive(message = "Recipient user ID must be positive")
-    private Long recipientUserId;
+    private String recipientUserId;
 
     /**
      * Maximum number of times a shareable invite can be used. Null means

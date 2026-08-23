@@ -48,7 +48,7 @@ public class SubmissionController {
     public ResponseEntity<SubmissionResponse> createSubmission(
             @AuthenticationPrincipal UserPrincipal principal,
             @Valid @RequestBody CreateSubmissionRequest request) throws ChallengeSphereException {
-        request.setUserId(SecurityAccess.requireUserId(principal));
+        request.setUserId(SecurityAccess.requireUserId(principal).toString());
         logger.info("Received submission request for user: {}, challenge: {}, day: {}",
                 request.getUserId(), request.getChallengeId(), request.getDayNumber());
 
@@ -63,9 +63,9 @@ public class SubmissionController {
     @PutMapping("/{submissionId}")
     public ResponseEntity<SubmissionResponse> reuploadSubmission(
             @AuthenticationPrincipal UserPrincipal principal,
-            @PathVariable Long submissionId,
+            @PathVariable String submissionId,
             @Valid @RequestBody CreateSubmissionRequest request) throws ChallengeSphereException {
-        request.setUserId(SecurityAccess.requireUserId(principal));
+        request.setUserId(SecurityAccess.requireUserId(principal).toString());
         logger.info("Received reupload request for submission: {}, user: {}", submissionId, request.getUserId());
 
         SubmissionResponse response = submissionService.reuploadSubmission(submissionId, request);
@@ -79,8 +79,8 @@ public class SubmissionController {
     @DeleteMapping("/{submissionId}")
     public ResponseEntity<DeleteSubmissionResponse> deleteSubmission(
             @AuthenticationPrincipal UserPrincipal principal,
-            @PathVariable Long submissionId) throws ChallengeSphereException {
-        Long userId = SecurityAccess.requireUserId(principal);
+            @PathVariable String submissionId) throws ChallengeSphereException {
+        String userId = SecurityAccess.requireUserId(principal).toString();
         logger.info("Received delete request for submission: {}, user: {}", submissionId, userId);
 
         submissionService.deleteSubmission(submissionId, userId);
@@ -95,7 +95,7 @@ public class SubmissionController {
     public ResponseEntity<PresignedUrlsResponse> generatePresignedUrls(
             @AuthenticationPrincipal UserPrincipal principal,
             @Valid @RequestBody GeneratePresignedUrlsRequest request) throws ChallengeSphereException {
-        request.setUserId(SecurityAccess.requireUserId(principal));
+        request.setUserId(SecurityAccess.requireUserId(principal).toString());
         logger.info("Received request to generate presigned URLs for user: {} with {} files",
                 request.getUserId(), request.getMediaFiles().size());
 
@@ -113,7 +113,7 @@ public class SubmissionController {
             @RequestPart("file") MultipartFile file,
             @RequestParam MediaTypes mediaType,
             @RequestParam GeneratePresignedUrlsRequest.ContentType contentType) throws ChallengeSphereException {
-        Long userId = SecurityAccess.requireUserId(principal);
+        String userId = SecurityAccess.requireUserId(principal).toString();
         String fileKey = submissionService.uploadSubmissionMedia(userId, file, mediaType, contentType);
         return ResponseEntity.ok(Map.of("fileKey", fileKey));
     }
@@ -124,15 +124,21 @@ public class SubmissionController {
      */
     @GetMapping("/user/{userId}/challenge/{challengeId}")
     public ResponseEntity<SubmissionsResponse> getSubmissionsByUserAndChallenge(
-            @PathVariable Long userId,
-            @PathVariable Long challengeId,
-            @RequestParam(defaultValue = "1") @Min(1) int page,
-            @RequestParam(defaultValue = "10") @Min(1) @Max(100) int pageSize,
-            @RequestParam(required = false) Long callerId,
+            @PathVariable String userId,
+            @PathVariable String challengeId,
+            @RequestParam(defaultValue = "10") @Min(1) @Max(100) int limit,
+            @RequestParam(required = false) String cursor,
+            @RequestParam(required = false) String callerId,
             @AuthenticationPrincipal UserPrincipal principal) throws ChallengeSphereException {
 
-        logger.info("Getting submissions for user: {}, challenge: {}, page: {}, pageSize: {}", userId, challengeId, page, pageSize);
-        SubmissionsResponse response = submissionService.getSubmissionsByUserAndChallenge(userId, challengeId, page, pageSize, SecurityAccess.requireUserId(principal));
+        logger.info("Getting submissions for user: {}, challenge: {}, limit: {}", userId, challengeId, limit);
+        SubmissionsResponse response = submissionService.getSubmissionsByUserAndChallenge(
+                userId,
+                challengeId,
+                SecurityAccess.requireUserId(principal).toString(),
+                limit,
+                cursor
+        );
         return ResponseEntity.ok(response);
     }
 
@@ -142,20 +148,20 @@ public class SubmissionController {
      */
     @GetMapping("/challenge/{challengeId}")
     public ResponseEntity<SubmissionsResponse> getSubmissionsByChallenge(
-            @PathVariable Long challengeId,
-            @RequestParam(defaultValue = "1") @Min(1) int page,
-            @RequestParam(defaultValue = "10") @Min(1) @Max(100) int pageSize,
-            @RequestParam(required = false) Long callerId,
+            @PathVariable String challengeId,
+            @RequestParam(defaultValue = "10") @Min(1) @Max(100) int limit,
+            @RequestParam(required = false) String cursor,
+            @RequestParam(required = false) String callerId,
             @RequestParam(defaultValue = "newest") String sortBy,
             @RequestParam(required = false) String participantQuery,
             @AuthenticationPrincipal UserPrincipal principal) throws ChallengeSphereException {
 
-        logger.info("Getting submissions for challenge: {}, page: {}, pageSize: {}, sortBy: {}", challengeId, page, pageSize, sortBy);
+        logger.info("Getting submissions for challenge: {}, limit: {}, sortBy: {}", challengeId, limit, sortBy);
         SubmissionsResponse response = submissionService.getSubmissionsByChallenge(
                 challengeId,
-                page,
-                pageSize,
-                SecurityAccess.requireUserId(principal),
+                SecurityAccess.requireUserId(principal).toString(),
+                limit,
+                cursor,
                 sortBy,
                 participantQuery
         );
@@ -168,22 +174,22 @@ public class SubmissionController {
      */
     @GetMapping("/challenge/{challengeId}/global")
     public ResponseEntity<SubmissionsResponse> getRandomChallengeSubmissionsByDay(
-            @PathVariable Long challengeId,
+            @PathVariable String challengeId,
             @RequestParam @Min(1) Integer dayNumber,
-            @RequestParam(defaultValue = "1") @Min(1) int page,
-            @RequestParam(defaultValue = "20") @Min(1) @Max(100) int pageSize,
+            @RequestParam(defaultValue = "20") @Min(1) @Max(100) int limit,
+            @RequestParam(required = false) String cursor,
             @RequestParam(defaultValue = "newest") String sortBy,
             @RequestParam(required = false) String participantQuery,
             @AuthenticationPrincipal UserPrincipal principal) throws ChallengeSphereException {
 
-        Long callerId = SecurityAccess.requireUserId(principal);
-        logger.info("Getting global submissions for challenge: {}, day: {}, page: {}, pageSize: {}, sortBy: {}", challengeId, dayNumber, page, pageSize, sortBy);
+        String callerId = SecurityAccess.requireUserId(principal).toString();
+        logger.info("Getting global submissions for challenge: {}, day: {}, limit: {}, sortBy: {}", challengeId, dayNumber, limit, sortBy);
         SubmissionsResponse response = submissionService.getRandomChallengeSubmissionsByDay(
                 challengeId,
                 dayNumber,
-                page,
-                pageSize,
                 callerId,
+                limit,
+                cursor,
                 sortBy,
                 participantQuery
         );
@@ -196,14 +202,19 @@ public class SubmissionController {
      */
     @GetMapping("/user/{userId}")
     public ResponseEntity<SubmissionsResponse> getSubmissionsByUser(
-            @PathVariable Long userId,
-            @RequestParam(defaultValue = "1") @Min(1) int page,
-            @RequestParam(defaultValue = "10") @Min(1) @Max(100) int pageSize,
-            @RequestParam(required = false) Long callerId,
+            @PathVariable String userId,
+            @RequestParam(defaultValue = "10") @Min(1) @Max(100) int limit,
+            @RequestParam(required = false) String cursor,
+            @RequestParam(required = false) String callerId,
             @AuthenticationPrincipal UserPrincipal principal) throws ChallengeSphereException {
 
-        logger.info("Getting submissions for user: {}, page: {}, pageSize: {}", userId, page, pageSize);
-        SubmissionsResponse response = submissionService.getSubmissionsByUser(userId, page, pageSize, SecurityAccess.requireUserId(principal));
+        logger.info("Getting submissions for user: {}, limit: {}", userId, limit);
+        SubmissionsResponse response = submissionService.getSubmissionsByUser(
+                userId,
+                SecurityAccess.requireUserId(principal).toString(),
+                limit,
+                cursor
+        );
         return ResponseEntity.ok(response);
     }
 
@@ -215,7 +226,7 @@ public class SubmissionController {
     public ResponseEntity<List<ChallengeSubmissionPreviewResponse>> getSubmissionPreviews(
             @AuthenticationPrincipal UserPrincipal principal,
             @Valid @RequestBody SubmissionPreviewsRequest request) throws ChallengeSphereException {
-        Long callerId = SecurityAccess.requireUserId(principal);
+        String callerId = SecurityAccess.requireUserId(principal).toString();
         return ResponseEntity.ok(submissionService.getSubmissionPreviews(
                 request.getChallengeIds(),
                 request.getUserId(),
@@ -231,10 +242,10 @@ public class SubmissionController {
      */
     @GetMapping("/{submissionId}")
     public ResponseEntity<Submission> getSubmissionById(
-            @PathVariable Long submissionId,
-            @RequestParam(required = false) Long callerId,
+            @PathVariable String submissionId,
+            @RequestParam(required = false) String callerId,
             @AuthenticationPrincipal UserPrincipal principal) throws ChallengeSphereException {
-        Long actorUserId = SecurityAccess.requireUserId(principal);
+        String actorUserId = SecurityAccess.requireUserId(principal).toString();
         logger.info("Getting submission by id: {}, callerId: {}", submissionId, actorUserId);
         Submission submission = submissionService.getSubmissionById(submissionId, actorUserId);
         if (submission == null) {

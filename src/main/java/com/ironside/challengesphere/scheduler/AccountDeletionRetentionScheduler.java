@@ -1,8 +1,9 @@
 package com.ironside.challengesphere.scheduler;
 
+import com.ironside.challengesphere.persistence.dynamodb.operations.DynamoOperationalStore;
+import com.ironside.challengesphere.persistence.dynamodb.operations.DynamoOperationalStore.RetentionPurgeBatch;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -10,26 +11,27 @@ import org.springframework.stereotype.Component;
 public class AccountDeletionRetentionScheduler {
 
     private static final Logger logger = LogManager.getLogger(AccountDeletionRetentionScheduler.class);
+    private static final int BATCH_SIZE = 100;
+    private static final int MAX_BATCHES_PER_RUN = 10;
 
-    private final JdbcTemplate jdbcTemplate;
+    private final DynamoOperationalStore operationalStore;
 
-    public AccountDeletionRetentionScheduler(JdbcTemplate jdbcTemplate) {
-        this.jdbcTemplate = jdbcTemplate;
+    public AccountDeletionRetentionScheduler(DynamoOperationalStore operationalStore) {
+        this.operationalStore = operationalStore;
     }
 
     @Scheduled(cron = "${app.account-deletion.identity-cleanup-cron:0 20 3 * * *}", zone = "UTC")
     public void purgeExpiredIdentityHashes() {
         try {
-            int purged = jdbcTemplate.update(
-                    """
-                    UPDATE challengesphere.account_deletion_requests
-                    SET email_identity_hmac = NULL,
-                        username_identity_hmac = NULL,
-                        identity_hash_purged_at = CURRENT_TIMESTAMP
-                    WHERE identity_hash_expires_at <= CURRENT_TIMESTAMP
-                      AND (email_identity_hmac IS NOT NULL OR username_identity_hmac IS NOT NULL)
-                    """
-            );
+            int purged = 0;
+            for (int batch = 0; batch < MAX_BATCHES_PER_RUN; batch++) {
+                RetentionPurgeBatch current = operationalStore
+                        .purgeExpiredAccountDeletionIdentityHashesBatch(BATCH_SIZE);
+                purged += current.purgedItems();
+                if (current.examinedItems() < BATCH_SIZE) {
+                    break;
+                }
+            }
             if (purged > 0) {
                 logger.info("Purged pseudonymous identity fingerprints from {} deletion record(s)", purged);
             }

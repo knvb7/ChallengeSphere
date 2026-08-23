@@ -15,14 +15,13 @@ import java.sql.Timestamp;
 public class ModerationFlag {
 
     @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
+    private String id;
 
     @Column(name = "submission_id", nullable = false)
-    private Long submissionId;
+    private String submissionId;
 
     @Column(name = "user_id", nullable = false)
-    private Long userId;
+    private String userId;
 
     // Provider labels can include a parent/name path and are not a fixed enum.
     @Column(name = "category", nullable = false, columnDefinition = "TEXT")
@@ -45,7 +44,7 @@ public class ModerationFlag {
     private Timestamp reviewedAt;
 
     @Column(name = "reviewed_by")
-    private Long reviewedBy;
+    private String reviewedBy;
 
     // APPROVED, REMOVED, BANNED_USER — null while pending.
     @Column(name = "resolution", length = 32)

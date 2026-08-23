@@ -9,12 +9,12 @@ import com.ironside.challengesphere.exception.ChallengeSphereException;
 public interface SupportService {
 
     PresignedUrlsResponse generatePresignedUrls(
-            Long userId,
+            String userId,
             GeneratePresignedUrlsRequest request
     ) throws ChallengeSphereException;
 
     SupportTicketResponse createTicket(
-            Long userId,
+            String userId,
             CreateSupportTicketRequest request
     ) throws ChallengeSphereException;
 }

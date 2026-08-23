@@ -1,15 +1,12 @@
 package com.ironside.challengesphere.service.impl;
 
+import java.time.Instant;
 import java.util.*;
 import java.util.stream.Collectors;
-import java.util.Objects;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageRequest;
-import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -21,8 +18,10 @@ import com.ironside.challengesphere.exception.ChallengeSphereException;
 import com.ironside.challengesphere.model.Challenge;
 import com.ironside.challengesphere.model.Submission;
 import com.ironside.challengesphere.model.User;
-import com.ironside.challengesphere.model.UserChallenge;
+import com.ironside.challengesphere.persistence.dynamodb.domain.DynamoPage;
+import com.ironside.challengesphere.persistence.dynamodb.foundation.DynamoDbCursorCodec;
 import com.ironside.challengesphere.repository.ChallengeRepository;
+import com.ironside.challengesphere.repository.FeedTimelineRepository;
 import com.ironside.challengesphere.repository.FollowRepository;
 import com.ironside.challengesphere.repository.GloryRepository;
 import com.ironside.challengesphere.repository.SubmissionRepository;
@@ -30,6 +29,7 @@ import com.ironside.challengesphere.repository.UserBlockRepository;
 import com.ironside.challengesphere.repository.UserChallengeRepository;
 import com.ironside.challengesphere.repository.UserRepository;
 import com.ironside.challengesphere.service.FeedService;
+import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 
 /**
  * Implementation of FeedService
@@ -39,10 +39,15 @@ import com.ironside.challengesphere.service.FeedService;
 public class FeedServiceImpl implements FeedService {
 
     private static final Logger logger = LogManager.getLogger(FeedServiceImpl.class);
-    private static final int TIMELINE_REBUILD_SIZE = 500;
+    private static final int MAX_LIMIT = 100;
+    private static final int MAX_TIMELINE_CANDIDATES_PER_REQUEST = 500;
+    private static final String CURSOR_AS_OF = "asOf";
 
     @Autowired
     private SubmissionRepository submissionRepository;
+
+    @Autowired
+    private FeedTimelineRepository feedTimelineRepository;
 
     @Autowired
     private UserRepository userRepository;
@@ -57,9 +62,6 @@ public class FeedServiceImpl implements FeedService {
     private FollowRepository followRepository;
 
     @Autowired
-    private RedisCacheServiceImpl cacheService;
-
-    @Autowired
     private UserBlockRepository userBlockRepository;
 
     @Autowired
@@ -71,25 +73,32 @@ public class FeedServiceImpl implements FeedService {
     @Autowired
     private SubmissionMediaKeyPolicy submissionMediaKeyPolicy;
 
+    @Autowired
+    private DynamoDbCursorCodec cursorCodec;
+
     @Override
     @Transactional(readOnly = true)
     public FeedResponse getFeed(GetFeedRequest request) throws ChallengeSphereException {
-        logger.info("Getting feed for userId: {}, type: {}, page: {}", 
-                request.getUserId(), request.getFeedType(), request.getPage());
+        int limit = normalizeLimit(request.getLimit());
+        logger.info("Getting feed for userId: {}, type: {}, limit: {}",
+                request.getUserId(), request.getFeedType(), limit);
 
         return switch (request.getFeedType()) {
-            case FOLLOWING -> getFollowingFeed(request.getUserId(), request.getPage(), request.getPageSize());
-            case TRENDING -> getTrendingFeed(request.getPage(), request.getPageSize(), request.getUserId());
-            case EXPLORE -> getExploreFeed(request.getPage(), request.getPageSize(), request.getUserId());
+            case FOLLOWING -> getFollowingFeed(request.getUserId(), limit, request.getCursor());
+            case TRENDING -> getTrendingFeed(request.getUserId(), limit, request.getCursor());
+            case EXPLORE -> getExploreFeed(request.getUserId(), limit, request.getCursor());
         };
     }
 
     @Override
     @Transactional(readOnly = true)
-    public FeedResponse getFollowingFeed(Long userId, int page, int pageSize) throws ChallengeSphereException {
-        logger.info("Getting following feed for userId: {}, page: {}, pageSize: {}", userId, page, pageSize);
+    public FeedResponse getFollowingFeed(String userId, int limit, String cursor) throws ChallengeSphereException {
+        int boundedLimit = normalizeLimit(limit);
+        String queryBinding = feedBinding("FOLLOWING", userId, userId, boundedLimit)
+                + "|paging=durable-timeline-lek-v3";
+        logger.info("Getting following feed for userId: {}, limit: {}", userId, boundedLimit);
 
-        if (userId == null) {
+        if (userId == null || userId.isBlank()) {
             throw new ChallengeSphereException("User ID is required for following feed", HttpStatus.BAD_REQUEST, logger);
         }
 
@@ -97,50 +106,45 @@ public class FeedServiceImpl implements FeedService {
             if (!userRepository.existsById(userId)) {
                 throw new ChallengeSphereException("User not found: " + userId, HttpStatus.NOT_FOUND, logger);
             }
-
-            int normalizedPage = Math.max(1, page);
-            int offset = (normalizedPage - 1) * pageSize;
-            if (cacheService.timelineExists(userId)) {
-                List<Long> cachedSubmissionIds = cacheService.getTimelineIds(userId, offset, pageSize);
-                long totalItems = cacheService.getTimelineSize(userId);
-                if (!cachedSubmissionIds.isEmpty()) {
-                    List<Submission> cachedSubmissions = hydrateTimelineSubmissions(cachedSubmissionIds);
-                    List<FeedItemResponse> cachedItems = enrichSubmissions(cachedSubmissions, userId);
-                    return FeedResponse.create(cachedItems, page, pageSize, totalItems, "FOLLOWING");
+            Map<String, AttributeValue> continuation = decodeCursorKey(cursor, queryBinding);
+            List<Submission> visibleSubmissions = new ArrayList<>(boundedLimit);
+            int inspectedCandidates = 0;
+            while (visibleSubmissions.size() < boundedLimit
+                    && inspectedCandidates < MAX_TIMELINE_CANDIDATES_PER_REQUEST) {
+                int queryLimit = Math.min(
+                        boundedLimit - visibleSubmissions.size(),
+                        MAX_TIMELINE_CANDIDATES_PER_REQUEST - inspectedCandidates
+                );
+                FeedTimelineRepository.TimelinePage timelinePage = feedTimelineRepository.findPage(
+                        userId,
+                        queryLimit,
+                        continuation
+                );
+                inspectedCandidates += timelinePage.entries().size();
+                List<String> submissionIds = timelinePage.entries().stream()
+                        .map(FeedTimelineRepository.TimelineEntry::submissionId)
+                        .toList();
+                visibleSubmissions.addAll(
+                        submissionRepository.findVisibleFollowingTimelineSubmissions(
+                                userId,
+                                submissionIds
+                        )
+                );
+                continuation = timelinePage.lastEvaluatedKey();
+                if (!timelinePage.hasMore()) {
+                    break;
                 }
-                return totalItems > 0
-                        ? FeedResponse.create(List.of(), page, pageSize, totalItems, "FOLLOWING")
-                        : FeedResponse.empty(page, pageSize, "FOLLOWING");
             }
 
-            Pageable pageable = PageRequest.of(normalizedPage - 1, pageSize);
-            Page<Submission> submissionsPage = submissionRepository.findFeedForUser(userId, pageable);
-
-            if (submissionsPage.isEmpty()) {
-                logger.debug("No submissions found in following feed for userId: {}", userId);
-                return FeedResponse.empty(page, pageSize, "FOLLOWING");
-            }
-
-            Pageable rebuildPageable = PageRequest.of(0, TIMELINE_REBUILD_SIZE);
-            Page<Submission> timelinePage = submissionRepository.findFeedForUser(userId, rebuildPageable);
-            List<Long> timelineSubmissionIds = timelinePage.getContent().stream()
-                    .map(Submission::getId)
-                    .toList();
-            List<Double> timelineScores = timelinePage.getContent().stream()
-                    .map(submission -> {
-                        if (submission.getCreatedAt() != null) {
-                            return (double) submission.getCreatedAt().getTime();
-                        }
-                        return (double) System.currentTimeMillis();
-                    })
-                    .toList();
-            cacheService.rebuildTimeline(userId, timelineSubmissionIds, timelineScores);
-
-            List<FeedItemResponse> feedItems = enrichSubmissions(submissionsPage.getContent(), userId);
-            logger.info("Returning {} following feed items for userId={}, page={}",
-                    feedItems.size(), userId, page);
-            FeedResponse response = FeedResponse.create(feedItems, page, pageSize, submissionsPage.getTotalElements(), "FOLLOWING");
-            return response;
+            List<FeedItemResponse> feedItems = enrichSubmissions(visibleSubmissions, userId);
+            boolean hasMore = !continuation.isEmpty();
+            logger.info("Returning {} following feed items for userId={}", feedItems.size(), userId);
+            return FeedResponse.create(
+                    feedItems,
+                    encodeCursor(queryBinding, continuation),
+                    hasMore,
+                    "FOLLOWING"
+            );
 
         } catch (ChallengeSphereException e) {
             throw e;
@@ -152,10 +156,13 @@ public class FeedServiceImpl implements FeedService {
 
     @Override
     @Transactional(readOnly = true)
-    public FeedResponse getConnectionsFeed(Long userId, int page, int pageSize) throws ChallengeSphereException {
-        logger.info("Getting connections feed for userId: {}, page: {}, pageSize: {}", userId, page, pageSize);
+    public FeedResponse getConnectionsFeed(String userId, int limit, String cursor) throws ChallengeSphereException {
+        int boundedLimit = normalizeLimit(limit);
+        String queryBinding = feedBinding("CONNECTIONS", userId, userId, boundedLimit)
+                + "|paging=durable-mutual-timeline-lek-v3";
+        logger.info("Getting connections feed for userId: {}, limit: {}", userId, boundedLimit);
 
-        if (userId == null) {
+        if (userId == null || userId.isBlank()) {
             throw new ChallengeSphereException("User ID is required for connections feed", HttpStatus.BAD_REQUEST, logger);
         }
 
@@ -163,24 +170,51 @@ public class FeedServiceImpl implements FeedService {
             if (!userRepository.existsById(userId)) {
                 throw new ChallengeSphereException("User not found: " + userId, HttpStatus.NOT_FOUND, logger);
             }
-
-            int normalizedPage = Math.max(1, page);
-            Pageable pageable = PageRequest.of(normalizedPage - 1, pageSize);
-            Page<Submission> submissionsPage = submissionRepository.findConnectionsFeedForUser(userId, pageable);
-
-            if (submissionsPage.isEmpty()) {
-                logger.debug("No submissions found in connections feed for userId: {}", userId);
-                return FeedResponse.empty(page, pageSize, "CONNECTIONS");
+            Map<String, AttributeValue> continuation = decodeCursorKey(cursor, queryBinding);
+            List<Submission> mutualSubmissions = new ArrayList<>(boundedLimit);
+            int inspectedCandidates = 0;
+            while (mutualSubmissions.size() < boundedLimit
+                    && inspectedCandidates < MAX_TIMELINE_CANDIDATES_PER_REQUEST) {
+                int queryLimit = Math.min(
+                        boundedLimit - mutualSubmissions.size(),
+                        MAX_TIMELINE_CANDIDATES_PER_REQUEST - inspectedCandidates
+                );
+                FeedTimelineRepository.TimelinePage timelinePage = feedTimelineRepository.findPage(
+                        userId,
+                        queryLimit,
+                        continuation
+                );
+                inspectedCandidates += timelinePage.entries().size();
+                List<String> submissionIds = timelinePage.entries().stream()
+                        .map(FeedTimelineRepository.TimelineEntry::submissionId)
+                        .toList();
+                List<Submission> visible = submissionRepository
+                        .findVisibleFollowingTimelineSubmissions(userId, submissionIds);
+                Set<String> candidateAuthors = visible.stream()
+                        .map(Submission::getUserId)
+                        .filter(authorId -> !userId.equals(authorId))
+                        .collect(Collectors.toSet());
+                Set<String> reciprocalFollowers = followRepository.findActiveFollowerCandidateIds(
+                        userId,
+                        candidateAuthors
+                );
+                visible.stream()
+                        .filter(submission -> userId.equals(submission.getUserId())
+                                || reciprocalFollowers.contains(submission.getUserId()))
+                        .forEach(mutualSubmissions::add);
+                continuation = timelinePage.lastEvaluatedKey();
+                if (!timelinePage.hasMore()) {
+                    break;
+                }
             }
 
-            List<FeedItemResponse> feedItems = enrichSubmissions(submissionsPage.getContent(), userId);
-            logger.info("Returning {} connections feed items for userId={}, page={}",
-                    feedItems.size(), userId, page);
+            List<FeedItemResponse> feedItems = enrichSubmissions(mutualSubmissions, userId);
+            boolean hasMore = !continuation.isEmpty();
+            logger.info("Returning {} connections feed items for userId={}", feedItems.size(), userId);
             return FeedResponse.create(
                     feedItems,
-                    page,
-                    pageSize,
-                    submissionsPage.getTotalElements(),
+                    encodeCursor(queryBinding, continuation),
+                    hasMore,
                     "CONNECTIONS"
             );
         } catch (ChallengeSphereException e) {
@@ -193,32 +227,42 @@ public class FeedServiceImpl implements FeedService {
 
     @Override
     @Transactional(readOnly = true)
-    public FeedResponse getTrendingFeed(int page, int pageSize, Long currentUserId) throws ChallengeSphereException {
-        logger.info("Getting trending feed, page: {}, pageSize: {}", page, pageSize);
+    public FeedResponse getTrendingFeed(String currentUserId, int limit, String cursor) throws ChallengeSphereException {
+        int boundedLimit = normalizeLimit(limit);
+        String queryBinding = feedBinding("TRENDING", null, currentUserId, boundedLimit)
+                + "|paging=weekly-shard-merge-v2";
+        logger.info("Getting trending feed, limit: {}", boundedLimit);
 
         try {
             if (currentUserId == null) {
-                return FeedResponse.empty(page, pageSize, "TRENDING");
+                return FeedResponse.empty("TRENDING");
             }
-
-            Pageable pageable = PageRequest.of(page - 1, pageSize);
-            Page<Submission> submissionsPage = submissionRepository.findTrendingSubmissions(currentUserId, pageable);
-
-            if (submissionsPage.isEmpty()) {
-                logger.debug("No trending submissions found");
-                return FeedResponse.empty(page, pageSize, "TRENDING");
-            }
-
-            List<FeedItemResponse> feedItems = enrichSubmissions(submissionsPage.getContent(), currentUserId);
-
-            logger.info("Returning {} trending items, page {}/{}",
-                    feedItems.size(), page, submissionsPage.getTotalPages());
-
-            FeedResponse response = FeedResponse.create(feedItems, page, pageSize,
-                    submissionsPage.getTotalElements(), "TRENDING");
-
-            return response;
-
+            DynamoDbCursorCodec.CursorState cursorState = decodeCursorState(cursor, queryBinding);
+            Instant asOf = cursorAsOf(cursorState);
+            SubmissionRepository.ShardedSubmissionPage submissionsPage =
+                    submissionRepository.findPublicFeedPage(
+                    currentUserId,
+                    SubmissionRepository.PublicFeedOrder.TRENDING,
+                    asOf,
+                    boundedLimit,
+                    cursorState.shardState()
+            );
+            List<FeedItemResponse> feedItems = enrichSubmissions(submissionsPage.items(), currentUserId);
+            boolean hasMore = submissionsPage.hasMore();
+            logger.info("Returning {} trending items", feedItems.size());
+            return FeedResponse.create(
+                    feedItems,
+                    encodeShardCursor(
+                            queryBinding,
+                            Map.of(CURSOR_AS_OF, AttributeValue.fromN(Long.toString(asOf.getEpochSecond()))),
+                            submissionsPage.shardState(),
+                            hasMore
+                    ),
+                    hasMore,
+                    "TRENDING"
+            );
+        } catch (ChallengeSphereException e) {
+            throw e;
         } catch (Exception e) {
             logger.error("Error getting trending feed: {}", e.getClass().getSimpleName());
             throw new ChallengeSphereException("Failed to get trending feed", HttpStatus.INTERNAL_SERVER_ERROR, logger);
@@ -227,32 +271,44 @@ public class FeedServiceImpl implements FeedService {
 
     @Override
     @Transactional(readOnly = true)
-    public FeedResponse getExploreFeed(int page, int pageSize, Long currentUserId) throws ChallengeSphereException {
-        logger.info("Getting explore feed, page: {}, pageSize: {}", page, pageSize);
+    public FeedResponse getExploreFeed(String currentUserId, int limit, String cursor) throws ChallengeSphereException {
+        int boundedLimit = normalizeLimit(limit);
+        String queryBinding = feedBinding("EXPLORE", null, currentUserId, boundedLimit)
+                + "|paging=shard-merge-v2";
+        logger.info("Getting explore feed, limit: {}", boundedLimit);
 
         try {
             if (currentUserId == null) {
-                return FeedResponse.empty(page, pageSize, "EXPLORE");
+                return FeedResponse.empty("EXPLORE");
             }
-
-            Pageable pageable = PageRequest.of(page - 1, pageSize);
-            Page<Submission> submissionsPage = submissionRepository.findPublicSubmissions(currentUserId, pageable);
-
-            if (submissionsPage.isEmpty()) {
-                logger.debug("No public submissions found");
-                return FeedResponse.empty(page, pageSize, "EXPLORE");
+            DynamoDbCursorCodec.CursorState cursorState = decodeCursorState(cursor, queryBinding);
+            if (!cursorState.lastEvaluatedKey().isEmpty()) {
+                throw new ChallengeSphereException("Invalid cursor", HttpStatus.BAD_REQUEST, logger);
             }
-
-            List<FeedItemResponse> feedItems = enrichSubmissions(submissionsPage.getContent(), currentUserId);
-
-            logger.info("Returning {} explore items, page {}/{}",
-                    feedItems.size(), page, submissionsPage.getTotalPages());
-
-            FeedResponse response = FeedResponse.create(feedItems, page, pageSize,
-                    submissionsPage.getTotalElements(), "EXPLORE");
-
-            return response;
-
+            SubmissionRepository.ShardedSubmissionPage submissionsPage =
+                    submissionRepository.findPublicFeedPage(
+                    currentUserId,
+                    SubmissionRepository.PublicFeedOrder.EXPLORE,
+                    Instant.now(),
+                    boundedLimit,
+                    cursorState.shardState()
+            );
+            List<FeedItemResponse> feedItems = enrichSubmissions(submissionsPage.items(), currentUserId);
+            boolean hasMore = submissionsPage.hasMore();
+            logger.info("Returning {} explore items", feedItems.size());
+            return FeedResponse.create(
+                    feedItems,
+                    encodeShardCursor(
+                            queryBinding,
+                            Map.of(),
+                            submissionsPage.shardState(),
+                            hasMore
+                    ),
+                    hasMore,
+                    "EXPLORE"
+            );
+        } catch (ChallengeSphereException e) {
+            throw e;
         } catch (Exception e) {
             logger.error("Error getting explore feed: {}", e.getClass().getSimpleName());
             throw new ChallengeSphereException("Failed to get explore feed", HttpStatus.INTERNAL_SERVER_ERROR, logger);
@@ -261,11 +317,14 @@ public class FeedServiceImpl implements FeedService {
 
     @Override
     @Transactional(readOnly = true)
-    public FeedResponse getChallengeFeed(Long challengeId, int page, int pageSize, Long currentUserId) 
+    public FeedResponse getChallengeFeed(String challengeId, String currentUserId, int limit, String cursor)
             throws ChallengeSphereException {
-        logger.info("Getting challenge feed for challengeId: {}, page: {}", challengeId, page);
+        int boundedLimit = normalizeLimit(limit);
+        String queryBinding = feedBinding("CHALLENGE", challengeId, currentUserId, boundedLimit)
+                + "|paging=lek-v2";
+        logger.info("Getting challenge feed for challengeId: {}, limit: {}", challengeId, boundedLimit);
 
-        if (challengeId == null) {
+        if (challengeId == null || challengeId.isBlank()) {
             throw new ChallengeSphereException("Challenge ID is required", HttpStatus.BAD_REQUEST, logger);
         }
 
@@ -276,29 +335,32 @@ public class FeedServiceImpl implements FeedService {
             }
 
             if (currentUserId == null) {
-                return FeedResponse.empty(page, pageSize, "CHALLENGE");
+                return FeedResponse.empty("CHALLENGE");
             }
+            Map<String, AttributeValue> exclusiveStartKey = decodeCursorKey(cursor, queryBinding);
+            DynamoPage<Submission> submissions = submissionRepository.findVisibleByChallengePage(
+                    challengeId,
+                    null,
+                    currentUserId,
+                    "newest",
+                    null,
+                    boundedLimit,
+                    exclusiveStartKey
+            );
 
-            List<Submission> submissions = submissionRepository.findPublicActiveByChallengeId(challengeId, currentUserId);
-
-            if (submissions.isEmpty()) {
+            if (submissions.items().isEmpty()) {
                 logger.debug("No submissions found for challengeId: {}", challengeId);
-                return FeedResponse.empty(page, pageSize, "CHALLENGE");
+                return FeedResponse.empty("CHALLENGE");
             }
 
-            // Manual pagination
-            int totalItems = submissions.size();
-            int offset = (page - 1) * pageSize;
-            List<Submission> paginatedSubmissions = submissions.stream()
-                    .skip(offset)
-                    .limit(pageSize)
-                    .collect(Collectors.toList());
-
-            List<FeedItemResponse> feedItems = enrichSubmissions(paginatedSubmissions, currentUserId);
-
-            FeedResponse response = FeedResponse.create(feedItems, page, pageSize, totalItems, "CHALLENGE");
-
-            return response;
+            List<FeedItemResponse> feedItems = enrichSubmissions(submissions.items(), currentUserId);
+            boolean hasMore = submissions.hasMore();
+            return FeedResponse.create(
+                    feedItems,
+                    encodeCursor(queryBinding, submissions.lastEvaluatedKey()),
+                    hasMore,
+                    "CHALLENGE"
+            );
 
         } catch (ChallengeSphereException e) {
             throw e;
@@ -310,11 +372,14 @@ public class FeedServiceImpl implements FeedService {
 
     @Override
     @Transactional(readOnly = true)
-    public FeedResponse getUserFeed(Long targetUserId, int page, int pageSize, Long currentUserId) 
+    public FeedResponse getUserFeed(String targetUserId, String currentUserId, int limit, String cursor)
             throws ChallengeSphereException {
-        logger.info("Getting user feed for targetUserId: {}, page: {}", targetUserId, page);
+        int boundedLimit = normalizeLimit(limit);
+        String queryBinding = feedBinding("USER", targetUserId, currentUserId, boundedLimit)
+                + "|paging=lek-v2";
+        logger.info("Getting user feed for targetUserId: {}, limit: {}", targetUserId, boundedLimit);
 
-        if (targetUserId == null) {
+        if (targetUserId == null || targetUserId.isBlank()) {
             throw new ChallengeSphereException("Target user ID is required", HttpStatus.BAD_REQUEST, logger);
         }
 
@@ -341,34 +406,28 @@ public class FeedServiceImpl implements FeedService {
                         logger
                 );
             }
+            Map<String, AttributeValue> exclusiveStartKey = decodeCursorKey(cursor, queryBinding);
+            DynamoPage<Submission> submissions = submissionRepository.findActiveByUserPage(
+                    targetUserId,
+                    currentUserId,
+                    !isOwnProfile,
+                    boundedLimit,
+                    exclusiveStartKey
+            );
 
-            // Get submissions - if viewing own profile, show all; otherwise only public
-            List<Submission> submissions;
-
-            if (isOwnProfile) {
-                submissions = submissionRepository.findActiveByUserId(targetUserId);
-            } else {
-                submissions = submissionRepository.findPublicByUserId(targetUserId);
-            }
-
-            if (submissions.isEmpty()) {
+            if (submissions.items().isEmpty()) {
                 logger.debug("No submissions found for targetUserId: {}", targetUserId);
-                return FeedResponse.empty(page, pageSize, "USER");
+                return FeedResponse.empty("USER");
             }
 
-            // Manual pagination
-            int totalItems = submissions.size();
-            int offset = (page - 1) * pageSize;
-            List<Submission> paginatedSubmissions = submissions.stream()
-                    .skip(offset)
-                    .limit(pageSize)
-                    .collect(Collectors.toList());
-
-            List<FeedItemResponse> feedItems = enrichSubmissions(paginatedSubmissions, currentUserId);
-
-            FeedResponse response = FeedResponse.create(feedItems, page, pageSize, totalItems, "USER");
-
-            return response;
+            List<FeedItemResponse> feedItems = enrichSubmissions(submissions.items(), currentUserId);
+            boolean hasMore = submissions.hasMore();
+            return FeedResponse.create(
+                    feedItems,
+                    encodeCursor(queryBinding, submissions.lastEvaluatedKey()),
+                    hasMore,
+                    "USER"
+            );
 
         } catch (ChallengeSphereException e) {
             throw e;
@@ -378,59 +437,129 @@ public class FeedServiceImpl implements FeedService {
         }
     }
 
-    // ==================== HELPER METHODS ====================
-
-    private List<Submission> hydrateTimelineSubmissions(List<Long> submissionIds) {
-        if (submissionIds == null || submissionIds.isEmpty()) {
-            return List.of();
-        }
-        Map<Long, Submission> submissionsById = submissionRepository.findAllById(submissionIds).stream()
-                .collect(Collectors.toMap(Submission::getId, submission -> submission));
-        return submissionIds.stream()
-                .map(submissionsById::get)
-                .filter(Objects::nonNull)
-                .toList();
+    private int normalizeLimit(int limit) {
+        return Math.max(1, Math.min(limit, MAX_LIMIT));
     }
+
+    private String feedBinding(String feedType, String resourceId, String viewerId, int limit) {
+        return "feed:v1:type=" + feedType
+                + "|resource=" + Objects.toString(resourceId, "")
+                + "|viewer=" + Objects.toString(viewerId, "")
+                + "|limit=" + limit;
+    }
+
+    private Map<String, AttributeValue> decodeCursorKey(String cursor, String queryBinding)
+            throws ChallengeSphereException {
+        return decodeCursorState(cursor, queryBinding).lastEvaluatedKey();
+    }
+
+    private DynamoDbCursorCodec.CursorState decodeCursorState(
+            String cursor,
+            String queryBinding
+    ) throws ChallengeSphereException {
+        if (cursor == null || cursor.isBlank()) {
+            return new DynamoDbCursorCodec.CursorState(Map.of(), Map.of());
+        }
+        try {
+            return cursorCodec.decode(cursor, queryBinding);
+        } catch (IllegalArgumentException exception) {
+            throw new ChallengeSphereException("Invalid cursor", HttpStatus.BAD_REQUEST, logger);
+        }
+    }
+
+    private Instant cursorAsOf(DynamoDbCursorCodec.CursorState state)
+            throws ChallengeSphereException {
+        if (state.lastEvaluatedKey().isEmpty()) {
+            return Instant.now();
+        }
+        if (state.lastEvaluatedKey().size() != 1
+                || !state.lastEvaluatedKey().containsKey(CURSOR_AS_OF)) {
+            throw new ChallengeSphereException("Invalid cursor", HttpStatus.BAD_REQUEST, logger);
+        }
+        try {
+            AttributeValue encoded = state.lastEvaluatedKey().get(CURSOR_AS_OF);
+            Instant asOf = Instant.ofEpochSecond(Long.parseLong(encoded.n()));
+            if (asOf.isAfter(Instant.now().plusSeconds(60))) {
+                throw new IllegalArgumentException("Cursor as-of time is in the future");
+            }
+            return asOf;
+        } catch (RuntimeException invalid) {
+            throw new ChallengeSphereException("Invalid cursor", HttpStatus.BAD_REQUEST, logger);
+        }
+    }
+
+    private String encodeCursor(String queryBinding, Map<String, AttributeValue> lastEvaluatedKey) {
+        if (lastEvaluatedKey == null || lastEvaluatedKey.isEmpty()) return null;
+        return cursorCodec.encode(
+                queryBinding,
+                new DynamoDbCursorCodec.CursorState(lastEvaluatedKey)
+        );
+    }
+
+    private String encodeShardCursor(
+            String queryBinding,
+            Map<String, AttributeValue> metadata,
+            Map<String, Map<String, AttributeValue>> shardState,
+            boolean hasMore
+    ) {
+        if (!hasMore) {
+            return null;
+        }
+        return cursorCodec.encode(
+                queryBinding,
+                new DynamoDbCursorCodec.CursorState(metadata, shardState)
+        );
+    }
+
+    // ==================== HELPER METHODS ====================
 
     /**
      * Enrich submissions with user and challenge information
      * Uses batch queries to avoid N+1 problems
      */
-    private List<FeedItemResponse> enrichSubmissions(List<Submission> submissions, Long currentUserId) {
+    private List<FeedItemResponse> enrichSubmissions(List<Submission> submissions, String currentUserId) {
         if (submissions.isEmpty()) {
             return List.of();
         }
 
         // Collect unique user IDs and challenge IDs
-        Set<Long> userIds = submissions.stream()
+        Set<String> userIds = submissions.stream()
                 .map(Submission::getUserId)
                 .collect(Collectors.toSet());
-        Set<Long> challengeIds = submissions.stream()
+        Set<String> challengeIds = submissions.stream()
                 .map(Submission::getChallengeId)
                 .collect(Collectors.toSet());
-        Set<Long> submissionIds = submissions.stream()
+        Set<String> submissionIds = submissions.stream()
                 .map(Submission::getId)
                 .collect(Collectors.toSet());
 
         // Batch fetch users and challenges
-        Map<Long, User> userMap = userRepository.findAllById(userIds).stream()
+        Map<String, User> userMap = userRepository.findAllById(userIds).stream()
                 .collect(Collectors.toMap(User::getId, u -> u));
-        Map<Long, Challenge> challengeMap = challengeRepository.findAllById(challengeIds).stream()
+        Map<String, Challenge> challengeMap = challengeRepository.findAllById(challengeIds).stream()
                 .collect(Collectors.toMap(Challenge::getId, c -> c));
-        Set<Long> activeChallengeMemberships = currentUserId == null
+        Set<String> activeChallengeMemberships = currentUserId == null
                 ? Set.of()
-                : userChallengeRepository.findActiveByUserId(currentUserId).stream()
-                .map(UserChallenge::getChallengeId)
-                .collect(Collectors.toSet());
+                : userChallengeRepository.findActiveMembershipChallengeIds(
+                        currentUserId,
+                        challengeIds
+                );
+        Set<String> blockedUserIds = currentUserId == null
+                ? Set.of()
+                : userBlockRepository.findActiveBlockedCounterpartIds(
+                        currentUserId,
+                        userIds
+                );
 
         // Batch check if current user has gloried these submissions
-        Map<Long, Boolean> gloryMap = new HashMap<>();
-        Map<Long, Boolean> ungloryMap = new HashMap<>();
+        Map<String, Boolean> gloryMap = new HashMap<>();
+        Map<String, Boolean> ungloryMap = new HashMap<>();
         if (currentUserId != null) {
-            for (Long submissionId : submissionIds) {
-                gloryMap.put(submissionId, gloryRepository.existsBySubmissionIdAndUserId(submissionId, currentUserId));
-                ungloryMap.put(submissionId, gloryRepository.existsUngloriedBySubmissionIdAndUserId(submissionId, currentUserId));
-            }
+            gloryRepository.findReactionStates(submissionIds, currentUserId)
+                    .forEach((submissionId, state) -> {
+                        gloryMap.put(submissionId, state.gloried());
+                        ungloryMap.put(submissionId, state.ungloried());
+                    });
         }
 
         // Build feed items
@@ -459,7 +588,7 @@ public class FeedServiceImpl implements FeedService {
                 continue;
             }
             if (currentUserId != null && !currentUserId.equals(user.getId())
-                    && userBlockRepository.existsActiveBlockBetween(currentUserId, user.getId())) {
+                    && blockedUserIds.contains(user.getId())) {
                 continue;
             }
 
@@ -475,12 +604,33 @@ public class FeedServiceImpl implements FeedService {
                     isUngloried
             );
             List<String> safeMediaKeys = submissionMediaKeyPolicy.filterOwnedKeysForRead(
-                    submission.getUserId(), submission.getMediaUrls());
+                    submission.getMediaUrls(),
+                    submissionMediaOwnerIds(submission.getUserId(), user));
             item.setMediaUrls(mediaUrlService.toReadableMediaUrlList(
                     String.join(",", safeMediaKeys)));
             feedItems.add(item);
         }
 
         return feedItems;
+    }
+
+    private Set<String> submissionMediaOwnerIds(String currentOwnerId, User owner) {
+        if (currentOwnerId == null || currentOwnerId.isBlank()) {
+            return Set.of();
+        }
+        Set<String> allowedOwnerIds = new HashSet<>();
+        allowedOwnerIds.add(currentOwnerId);
+        if (owner != null
+                && currentOwnerId.equals(owner.getId())
+                && isNumericLegacyUserId(owner.getLegacyId())) {
+            allowedOwnerIds.add(owner.getLegacyId());
+        }
+        return Set.copyOf(allowedOwnerIds);
+    }
+
+    private static boolean isNumericLegacyUserId(String userId) {
+        return userId != null
+                && !userId.isBlank()
+                && userId.chars().allMatch(character -> character >= '0' && character <= '9');
     }
 }

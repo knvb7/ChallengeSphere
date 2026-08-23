@@ -48,7 +48,7 @@ public class ModerationEnforcementService {
 
     @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = Exception.class)
     public void removeFlaggedMediaAndWarn(
-            Long userId,
+            String userId,
             ContentModerationService.Result result) throws ChallengeSphereException {
         if (userId == null || result == null || result.findings() == null) {
             throw new ChallengeSphereException(
@@ -83,7 +83,7 @@ public class ModerationEnforcementService {
                 userId);
     }
 
-    private void requireOwnedUserImage(Long userId, String objectKey) throws ChallengeSphereException {
+    private void requireOwnedUserImage(String userId, String objectKey) throws ChallengeSphereException {
         String expectedUser = "user_" + userId + "/";
         boolean ownedNamespace = objectKey.startsWith("submissions/" + expectedUser)
                 || objectKey.startsWith("profiles/" + expectedUser)

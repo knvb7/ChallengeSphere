@@ -4,10 +4,10 @@ import lombok.Data;
 
 @Data
 public class ChallengeFavoriteResponse {
-    private Long challengeId;
+    private String challengeId;
     private boolean favorite;
 
-    public static ChallengeFavoriteResponse of(Long challengeId, boolean favorite) {
+    public static ChallengeFavoriteResponse of(String challengeId, boolean favorite) {
         ChallengeFavoriteResponse response = new ChallengeFavoriteResponse();
         response.setChallengeId(challengeId);
         response.setFavorite(favorite);

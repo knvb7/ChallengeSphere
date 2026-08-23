@@ -3,6 +3,7 @@ package com.ironside.challengesphere.service.impl;
 import java.sql.Timestamp;
 import java.time.Duration;
 import java.time.LocalDate;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashSet;
@@ -11,6 +12,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.PriorityQueue;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -42,6 +44,7 @@ import com.ironside.challengesphere.api.response.ChallengeParticipantsResponse;
 import com.ironside.challengesphere.api.response.ChallengeProgressResponse;
 import com.ironside.challengesphere.api.response.ChallengeMomentumResponse;
 import com.ironside.challengesphere.api.response.ChallengesByHashtagResponse;
+import com.ironside.challengesphere.api.response.CursorPageResponse;
 import com.ironside.challengesphere.api.response.LeaderboardResponse;
 import com.ironside.challengesphere.api.response.JoinChallengeResponse;
 import com.ironside.challengesphere.api.response.LeaveChallengeResponse;
@@ -57,6 +60,11 @@ import com.ironside.challengesphere.model.ChallengeCrewLifecycle;
 import com.ironside.challengesphere.model.Submission;
 import com.ironside.challengesphere.model.User;
 import com.ironside.challengesphere.model.UserChallenge;
+import com.ironside.challengesphere.persistence.dynamodb.domain.DynamoPage;
+import com.ironside.challengesphere.persistence.dynamodb.foundation.DynamoDbCursorCodec;
+import com.ironside.challengesphere.persistence.dynamodb.foundation.DynamoDbKeys;
+import com.ironside.challengesphere.persistence.dynamodb.repository.challenge.ChallengeRepositoryKeys;
+import com.ironside.challengesphere.persistence.dynamodb.repository.challenge.ParticipationQuotaStore.ParticipationQuotaExceededException;
 import com.ironside.challengesphere.repository.ChallengeRepository;
 import com.ironside.challengesphere.repository.ChallengeInviteRepository;
 import com.ironside.challengesphere.repository.ChallengeCrewLifecycleRepository;
@@ -73,6 +81,7 @@ import com.ironside.challengesphere.service.LeaderboardService;
 import com.ironside.challengesphere.service.NotificationService;
 import com.ironside.challengesphere.util.GetSignedUrlForS3;
 import com.ironside.challengesphere.util.StreakCalculator;
+import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 
 @Service
 public class ChallengeServiceImpl implements ChallengeService {
@@ -80,6 +89,14 @@ public class ChallengeServiceImpl implements ChallengeService {
     private static final int MAX_CHALLENGE_COVER_PHOTOS = 5;
     private static final int MAX_CHALLENGE_DURATION_DAYS = 365;
     private static final int MAX_DELETE_MEMBER_COUNT = 3;
+    private static final int MAX_TAG_FILTER_VALUES = 20;
+    private static final int MAX_LIMIT = 100;
+    private static final int MAX_FILTER_PAGE_READS = 10;
+    private static final int MAX_FILTER_CANDIDATES = 500;
+    private static final String CURSOR_DONE = "__done";
+    private static final String USER_STREAM_CREATED = "created";
+    private static final String USER_STREAM_OWNED = "owned";
+    private static final String USER_STREAM_JOINED = "joined";
     private static final long MAX_DELETE_AGE_MILLIS = Duration.ofDays(3).toMillis();
 
     @Autowired
@@ -139,11 +156,14 @@ public class ChallengeServiceImpl implements ChallengeService {
     @Autowired
     private IssuedUploadService issuedUploadService;
 
+    @Autowired
+    private DynamoDbCursorCodec cursorCodec;
+
     @Value("${aws.s3.bucket.name}")
     private String bucketName;
 
     @Override
-    public Optional<Challenge> getChallengeById(Long challengeId) throws ChallengeSphereException {
+    public Optional<Challenge> getChallengeById(String challengeId) throws ChallengeSphereException {
         logger.info("Fetching challenge by id: {}", challengeId);
 
         try {
@@ -171,72 +191,92 @@ public class ChallengeServiceImpl implements ChallengeService {
 
     @Override
     public UserChallengesResponse getUserChallenges(GetUserChallengesRequest request) throws ChallengeSphereException {
-        Long userId = request.getUserId();
-        Long currentUserId = request.getCurrentUserId();
-        int page = request.getPage();
-        int pageSize = request.getPageSize();
+        String userId = request.getUserId();
+        String currentUserId = request.getCurrentUserId();
+        int limit = normalizeLimit(request.getLimit(), 10);
         Boolean activeFilter = request.getActive();
+        String queryBinding = cursorBinding(
+                "challenge:user:v2",
+                userId,
+                currentUserId,
+                activeFilter,
+                limit
+        );
 
-        logger.info("Getting challenges for userId: {}, page: {}, pageSize: {}, activeFilter: {}",
-                userId, page, pageSize, activeFilter);
+        logger.info("Getting challenges for userId: {}, limit: {}, activeFilter: {}",
+                userId, limit, activeFilter);
 
         try {
             ensureFollowAccess(userId, currentUserId, "challenges");
             boolean selfView = userId != null && userId.equals(currentUserId);
-
-            List<Challenge> createdChallenges = challengeRepository.findByCreatorId(userId);
-            List<Challenge> ownedChallenges = challengeRepository.findByCurrentOwnerId(userId);
-            List<Long> joinedChallengeIds = userChallengeRepository.findActiveByUserId(userId).stream()
-                    .map(UserChallenge::getChallengeId)
-                    .distinct()
-                    .toList();
-            List<Challenge> joinedChallenges = joinedChallengeIds.isEmpty()
-                    ? List.of()
-                    : challengeRepository.findAllById(joinedChallengeIds);
-
-            Map<Long, Challenge> allUserChallengesById = new LinkedHashMap<>();
-            createdChallenges.forEach(challenge -> allUserChallengesById.put(challenge.getId(), challenge));
-            ownedChallenges.forEach(challenge -> allUserChallengesById.putIfAbsent(challenge.getId(), challenge));
-            joinedChallenges.forEach(challenge -> allUserChallengesById.putIfAbsent(challenge.getId(), challenge));
-            List<Challenge> allUserChallenges = new ArrayList<>(allUserChallengesById.values());
-
-            if (!selfView) {
-                allUserChallenges = allUserChallenges.stream()
-                        .filter(challenge -> canViewChallenge(challenge, currentUserId))
+            boolean requestedActive = activeFilter == null || activeFilter;
+            Map<String, Map<String, AttributeValue>> continuation = decodeUserCollectionContinuation(
+                    request.getCursor(), queryBinding, userId
+            );
+            if (!selfView && !requestedActive) {
+                return UserChallengesResponse.create(userId, List.of(), null, false);
+            }
+            List<Challenge> challenges = new ArrayList<>(limit);
+            int candidatesExamined = 0;
+            int pageReads = 0;
+            boolean hasMore = true;
+            search:
+            while (challenges.size() < limit
+                    && candidatesExamined < MAX_FILTER_CANDIDATES
+                    && pageReads++ < MAX_FILTER_PAGE_READS
+                    && hasMore) {
+                UserChallengeCollectionPage page = findUserChallengeCollectionPage(
+                        userId,
+                        candidateWindow(
+                                limit - challenges.size(),
+                                MAX_FILTER_CANDIDATES - candidatesExamined
+                        ),
+                        continuation
+                );
+                List<Challenge> candidates = page.candidates().stream()
+                        .map(UserChallengeCollectionCandidate::challenge)
                         .toList();
+                Set<String> visibleIds = selfView
+                        ? candidates.stream()
+                                .map(Challenge::getId)
+                                .collect(Collectors.toUnmodifiableSet())
+                        : visibleActiveChallengeIds(candidates, currentUserId);
+                int previouslyExamined = 0;
+                for (UserChallengeCollectionCandidate candidate : page.candidates()) {
+                    candidatesExamined += candidate.rowsExaminedThrough() - previouslyExamined;
+                    previouslyExamined = candidate.rowsExaminedThrough();
+                    Challenge challenge = candidate.challenge();
+                    continuation = candidate.continuation();
+                    hasMore = candidate.hasMore();
+                    if (java.util.Objects.equals(challenge.getActive(), requestedActive)
+                            && (selfView || visibleIds.contains(challenge.getId()))) {
+                        challenges.add(challenge);
+                        if (challenges.size() == limit) {
+                            break search;
+                        }
+                    }
+                    if (candidatesExamined == MAX_FILTER_CANDIDATES) {
+                        break search;
+                    }
+                }
+                if (page.candidates().isEmpty()) {
+                    candidatesExamined += page.rowsExamined();
+                    continuation = page.continuation();
+                    hasMore = page.hasMore();
+                } else if (previouslyExamined < page.rowsExamined()) {
+                    candidatesExamined += page.rowsExamined() - previouslyExamined;
+                    continuation = page.continuation();
+                    hasMore = page.hasMore();
+                }
             }
 
-            // User-facing challenge lists should never include soft-deleted
-            // challenges by default. Inactive rows remain available only when
-            // a caller explicitly requests active=false.
-            boolean requestedActive = activeFilter == null || activeFilter;
-            allUserChallenges = allUserChallenges.stream()
-                    .filter(challenge -> java.util.Objects.equals(
-                            challenge.getActive(),
-                            requestedActive
-                    ))
-                    .toList();
-
-            allUserChallenges = allUserChallenges.stream()
-                    .sorted(ChallengeServiceImpl::compareChallengesByCreatedAtDesc)
-                    .toList();
-
-            int totalCount = allUserChallenges.size();
-            int offset = (page - 1) * pageSize;
-            List<Challenge> paginatedChallenges = allUserChallenges.stream()
-                    .skip(offset)
-                    .limit(pageSize)
-                    .collect(Collectors.toList());
-
-            logger.info("Found {} challenges for userId: {} (page {}/{})",
-                    paginatedChallenges.size(), userId, page, (int) Math.ceil((double) totalCount / pageSize));
+            logger.info("Found {} challenges for userId: {}", challenges.size(), userId);
 
             UserChallengesResponse response = UserChallengesResponse.create(
                     userId,
-                    withReadableCoverPhotoUrls(paginatedChallenges),
-                    page,
-                    pageSize,
-                    totalCount
+                    withReadableCoverPhotoUrls(challenges),
+                    encodeShardContinuation(queryBinding, continuation, hasMore),
+                    hasMore
             );
 
             return response;
@@ -255,31 +295,79 @@ public class ChallengeServiceImpl implements ChallengeService {
 
     @Override
     @Transactional(readOnly = true)
-    public UserChallengesResponse getPublicChallengesByCreator(Long creatorId, int page, int pageSize, Long currentUserId)
+    public UserChallengesResponse getPublicChallengesByCreator(
+            String creatorId,
+            String currentUserId,
+            int limit,
+            String cursor
+    )
             throws ChallengeSphereException {
-        logger.info("Getting public challenges for creatorId: {}, page: {}, pageSize: {}, viewer: {}",
-                creatorId, page, pageSize, currentUserId);
+        int boundedLimit = normalizeLimit(limit, 10);
+        String queryBinding = cursorBinding(
+                "challenge:creator-public:v2",
+                creatorId,
+                currentUserId,
+                boundedLimit
+        );
+        logger.info("Getting public challenges for creatorId: {}, limit: {}, viewer: {}",
+                creatorId, boundedLimit, currentUserId);
 
         try {
-            int normalizedPage = Math.max(page, 1);
-            int normalizedPageSize = Math.min(Math.max(pageSize, 1), 100);
-            List<Challenge> publicChallenges = challengeRepository.findPublicActiveByCreatorId(creatorId).stream()
-                    .filter(challenge -> canViewChallenge(challenge, currentUserId))
-                    .toList();
-            int totalCount = publicChallenges.size();
-            int offset = (normalizedPage - 1) * normalizedPageSize;
-            List<Challenge> paginatedChallenges = publicChallenges.stream()
-                    .skip(offset)
-                    .limit(normalizedPageSize)
-                    .toList();
+            Map<String, AttributeValue> continuation = decodeContinuation(cursor, queryBinding);
+            List<Challenge> publicChallenges = new ArrayList<>(boundedLimit);
+            int candidatesExamined = 0;
+            int pageReads = 0;
+            boolean hasMore = true;
+            search:
+            while (publicChallenges.size() < boundedLimit
+                    && candidatesExamined < MAX_FILTER_CANDIDATES
+                    && pageReads++ < MAX_FILTER_PAGE_READS
+                    && hasMore) {
+                int pageLimit = candidateWindow(
+                        boundedLimit - publicChallenges.size(),
+                        MAX_FILTER_CANDIDATES - candidatesExamined
+                );
+                DynamoPage<Challenge> page = challengeRepository.findPublicActiveByCreatorIdPage(
+                        creatorId,
+                        pageLimit,
+                        continuation
+                );
+                candidatesExamined += page.items().size();
+                Set<String> visibleIds = visibleActiveChallengeIds(page.items(), currentUserId);
+                for (int index = 0; index < page.items().size(); index++) {
+                    Challenge challenge = page.items().get(index);
+                    continuation = continuationKey(
+                            ChallengeRepositoryKeys.join(
+                                    "CHALLENGE", "CREATOR", creatorId, "PUBLIC_ACTIVE"
+                            ),
+                            ChallengeRepositoryKeys.createdSk(
+                                    challenge.getCreatedAt(), challenge.getId()
+                            )
+                    );
+                    if (visibleIds.contains(challenge.getId())) {
+                        publicChallenges.add(challenge);
+                        if (publicChallenges.size() == boundedLimit) {
+                            hasMore = index + 1 < page.items().size()
+                                    || !page.lastEvaluatedKey().isEmpty();
+                            break search;
+                        }
+                    }
+                }
+                continuation = page.lastEvaluatedKey();
+                hasMore = !continuation.isEmpty();
+                if (page.items().isEmpty()) {
+                    break;
+                }
+            }
 
             return UserChallengesResponse.create(
                     creatorId,
-                    withReadableCoverPhotoUrls(paginatedChallenges),
-                    normalizedPage,
-                    normalizedPageSize,
-                    totalCount
+                    withReadableCoverPhotoUrls(publicChallenges),
+                    encodeContinuation(queryBinding, hasMore ? continuation : Map.of()),
+                    hasMore
             );
+        } catch (ChallengeSphereException e) {
+            throw e;
         } catch (Exception e) {
             logger.error("Error getting public challenges for creatorId {}: {}", creatorId, e.getClass().getSimpleName());
             throw new ChallengeSphereException(
@@ -342,7 +430,22 @@ public class ChallengeServiceImpl implements ChallengeService {
             creatorParticipant.setJoinedAt(new Timestamp(System.currentTimeMillis()));
             creatorParticipant.setCompleted(false);
             creatorParticipant.setActive(true);
-            userChallengeRepository.save(creatorParticipant);
+            try {
+                userChallengeRepository.save(creatorParticipant);
+            } catch (ParticipationQuotaExceededException quotaExceeded) {
+                // DynamoDB cannot transact across two independently assembled
+                // aggregate writes. Compensate the new participant-less
+                // challenge if the membership/slot transaction loses a race.
+                try {
+                    challengeRepository.delete(savedChallenge);
+                } catch (RuntimeException cleanupFailure) {
+                    logger.error(
+                            "Failed to compensate challenge {} after participation quota rejection",
+                            savedChallenge.getId()
+                    );
+                }
+                throw quotaExceeded;
+            }
 
             logger.info("Successfully created challenge with id: {} for user: {}", savedChallenge.getId(), request.getCreatorUserId());
             cacheService.cacheChallenge(savedChallenge.getId(), savedChallenge);
@@ -375,9 +478,14 @@ public class ChallengeServiceImpl implements ChallengeService {
                     savedChallenge.getNumberOfDays(),
                     savedChallenge.getChallengeMode(),
                     savedChallenge.getProofMode(),
-                    toReadableCoverPhotoUrls(savedChallenge)
+                    toReadableCoverPhotoUrls(
+                            savedChallenge,
+                            Map.of(creator.getId(), creator)
+                    )
             );
 
+        } catch (ParticipationQuotaExceededException e) {
+            throw participationQuotaConflict(e);
         } catch (ChallengeSphereException e) {
             throw e;
         } catch (Exception e) {
@@ -418,7 +526,7 @@ public class ChallengeServiceImpl implements ChallengeService {
      */
     @Async
     @Transactional
-    protected void updateChallengesCreatedCountAsync(Long userId) {
+    protected void updateChallengesCreatedCountAsync(String userId) {
         try {
             logger.info("Async update challengesCreated count for user: {}", userId);
             userRepository.increaseChallengeCreatedCountForAUser(userId);
@@ -430,7 +538,7 @@ public class ChallengeServiceImpl implements ChallengeService {
 
     @Async
     @Transactional
-    protected void updateChallengesAcceptedCountAsync(Long userId, boolean increment) {
+    protected void updateChallengesAcceptedCountAsync(String userId, boolean increment) {
         try {
             logger.info("Async update challengesAccepted count for user: {}, increment: {}", userId, increment);
             userRepository.adjustChallengeAcceptedCountForAUser(userId, increment ? 1 : -1);
@@ -442,15 +550,15 @@ public class ChallengeServiceImpl implements ChallengeService {
     }
 
     @Override
-    public List<Challenge> getChallengeByIds(List<Long> challengeIds, Long currentUserId) throws ChallengeSphereException {
+    public List<Challenge> getChallengeByIds(List<String> challengeIds, String currentUserId) throws ChallengeSphereException {
         try {
             logger.info("Fetching challenges by ids: {}", challengeIds);
 
             List<Challenge> result = new ArrayList<>();
-            List<Long> cacheMisses = new ArrayList<>();
+            List<String> cacheMisses = new ArrayList<>();
 
             // Try to get challenges from cache first
-            // for (Long challengeId : challengeIds) {
+            // for (String challengeId : challengeIds) {
             //     Optional<Challenge> cached = cacheService.getCachedChallenge(challengeId, Challenge.class);
             //     if (cached.isPresent()) {
             //         result.add(cached.get());
@@ -471,7 +579,7 @@ public class ChallengeServiceImpl implements ChallengeService {
             // }
             cacheMisses.addAll(challengeIds);
             List<Challenge> dbChallenges = challengeRepository.findAllById(cacheMisses);
-            Map<Long, UserChallenge> viewerMembershipByChallengeId = currentUserId == null || cacheMisses.isEmpty()
+            Map<String, UserChallenge> viewerMembershipByChallengeId = currentUserId == null || cacheMisses.isEmpty()
                     ? Map.of()
                     : userChallengeRepository.findByUserIdAndChallengeIds(currentUserId, cacheMisses).stream()
                             .collect(Collectors.toMap(
@@ -504,7 +612,7 @@ public class ChallengeServiceImpl implements ChallengeService {
 
     @Override
     @Transactional
-    public void deleteChallenge(Long challengeId, Long actorUserId) throws ChallengeSphereException {
+    public void deleteChallenge(String challengeId, String actorUserId) throws ChallengeSphereException {
         logger.info("Deleting challenge {} by actor {}", challengeId, actorUserId);
 
         Challenge challenge = challengeRepository.findById(challengeId)
@@ -563,7 +671,7 @@ public class ChallengeServiceImpl implements ChallengeService {
             return false;
         }
 
-        Set<Long> activeMemberIds = participantLinks == null
+        Set<String> activeMemberIds = participantLinks == null
                 ? new HashSet<>()
                 : participantLinks.stream()
                         .filter(link -> Boolean.TRUE.equals(link.getActive()))
@@ -578,7 +686,7 @@ public class ChallengeServiceImpl implements ChallengeService {
 
     @Override
     @Transactional
-    public void deleteChallenges(List<Long> challengeIds) {
+    public void deleteChallenges(List<String> challengeIds) {
         try {
             logger.info("Bulk update on challenges {}", challengeIds);
 
@@ -599,7 +707,7 @@ public class ChallengeServiceImpl implements ChallengeService {
                 userChallengeRepository.saveAll(participantLinks);
             }
 
-            Map<Long, List<UserChallenge>> participantsByChallengeId = allParticipantLinks.stream()
+            Map<String, List<UserChallenge>> participantsByChallengeId = allParticipantLinks.stream()
                     .collect(Collectors.groupingBy(UserChallenge::getChallengeId));
             challenges.forEach(challenge -> invalidateDeletedChallengeCaches(
                     challenge,
@@ -618,13 +726,13 @@ public class ChallengeServiceImpl implements ChallengeService {
             return;
         }
 
-        Long challengeId = challenge.getId();
+        String challengeId = challenge.getId();
         cacheService.clearChallengeCache(challengeId);
         cacheService.invalidateChallengeParticipants(challengeId);
         cacheService.invalidateHashtagChallenges();
         cacheService.invalidateAllFeeds();
 
-        Set<Long> affectedUserIds = new HashSet<>();
+        Set<String> affectedUserIds = new HashSet<>();
         if (challenge.getCreatorId() != null) {
             affectedUserIds.add(challenge.getCreatorId());
         }
@@ -642,7 +750,7 @@ public class ChallengeServiceImpl implements ChallengeService {
 
     @Override
     @Transactional
-    public void disableChallengesForUsers(List<Long> userIds) throws ChallengeSphereException {
+    public void disableChallengesForUsers(List<String> userIds) throws ChallengeSphereException {
         try {
             logger.info("Disabling all challenges for userIds: {}", userIds);
 
@@ -659,6 +767,9 @@ public class ChallengeServiceImpl implements ChallengeService {
             }
 
             challengeRepository.saveAll(challenges);
+            for (Challenge challenge : challenges) {
+                userChallengeRepository.reconcileParticipationQuotaForChallenge(challenge);
+            }
 
             // Invalidate list caches
             // cacheService.invalidateRecentChallenges();
@@ -703,8 +814,8 @@ public class ChallengeServiceImpl implements ChallengeService {
     private JoinChallengeResponse joinChallenge(
             JoinChallengeRequest request,
             boolean verifiedInvitation) throws ChallengeSphereException {
-        Long challengeId = request.getChallengeId();
-        List<Long> userIds = request.getUserIds();
+        String challengeId = request.getChallengeId();
+        List<String> userIds = request.getUserIds();
 
         logger.info("Processing join request for challenge {} with {} user(s)", challengeId, userIds.size());
 
@@ -732,8 +843,8 @@ public class ChallengeServiceImpl implements ChallengeService {
                 );
             }
 
-            Long ownerUserId = challenge.getCurrentOwnerId() != null ? challenge.getCurrentOwnerId() : challenge.getCreatorId();
-            for (Long userId : userIds) {
+            String ownerUserId = challenge.getCurrentOwnerId() != null ? challenge.getCurrentOwnerId() : challenge.getCreatorId();
+            for (String userId : userIds) {
                 if (!canJoinChallenge(challenge, ownerUserId, userId, verifiedInvitation)) {
                     throw new ChallengeSphereException(
                             "Not authorized to join this challenge",
@@ -744,13 +855,13 @@ public class ChallengeServiceImpl implements ChallengeService {
             }
 
             // Batch validation: Check which users exist (single query)
-            List<Long> existingUserIds = userRepository.findAllById(userIds).stream()
+            List<String> existingUserIds = userRepository.findAllById(userIds).stream()
                     .map(User::getId)
                     .toList();
-            Set<Long> existingUserIdSet = new HashSet<>(existingUserIds);
+            Set<String> existingUserIdSet = new HashSet<>(existingUserIds);
 
             // Find non-existent users
-            List<Long> nonExistentUserIds = userIds.stream()
+            List<String> nonExistentUserIds = userIds.stream()
                     .filter(userId -> !existingUserIdSet.contains(userId))
                     .collect(Collectors.toList());
 
@@ -760,7 +871,7 @@ public class ChallengeServiceImpl implements ChallengeService {
 
             // Batch check: Find existing UserChallenge associations (single query)
             List<UserChallenge> existingAssociations = userChallengeRepository.findByChallengeId(challengeId);
-            Map<Long, UserChallenge> existingByUserId = existingAssociations.stream()
+            Map<String, UserChallenge> existingByUserId = existingAssociations.stream()
                     .filter(userChallenge -> userIds.contains(userChallenge.getUserId()))
                     .collect(Collectors.toMap(UserChallenge::getUserId, userChallenge -> userChallenge, (a, b) -> a));
 
@@ -776,7 +887,7 @@ public class ChallengeServiceImpl implements ChallengeService {
                 );
             }
 
-            Set<Long> alreadyJoinedUserIds = existingByUserId.values().stream()
+            Set<String> alreadyJoinedUserIds = existingByUserId.values().stream()
                     .filter(userChallenge -> Boolean.TRUE.equals(userChallenge.getActive()))
                     .map(UserChallenge::getUserId)
                     .collect(Collectors.toSet());
@@ -786,11 +897,11 @@ public class ChallengeServiceImpl implements ChallengeService {
             }
 
             // Determine which users can successfully join
-            List<Long> successfulUserIds = existingUserIds.stream()
+            List<String> successfulUserIds = existingUserIds.stream()
                     .filter(userId -> !alreadyJoinedUserIds.contains(userId))
                     .collect(Collectors.toList());
 
-            for (Long userId : successfulUserIds.stream().sorted().toList()) {
+            for (String userId : successfulUserIds.stream().sorted().toList()) {
                 User joiningUser = userRepository.findByIdForUpdate(userId)
                         .orElseThrow(() -> new ChallengeSphereException(
                                 "User not found with id: " + userId,
@@ -804,7 +915,7 @@ public class ChallengeServiceImpl implements ChallengeService {
             }
 
             // Determine failed users (non-existent + already joined)
-            List<Long> failedUserIds = new ArrayList<>();
+            List<String> failedUserIds = new ArrayList<>();
             failedUserIds.addAll(nonExistentUserIds);
             failedUserIds.addAll(alreadyJoinedUserIds);
 
@@ -812,7 +923,7 @@ public class ChallengeServiceImpl implements ChallengeService {
             if (!successfulUserIds.isEmpty()) {
                 Timestamp now = new Timestamp(System.currentTimeMillis());
                 List<UserChallenge> userChallenges = new ArrayList<>();
-                for (Long userId : successfulUserIds) {
+                for (String userId : successfulUserIds) {
                     UserChallenge userChallenge = existingByUserId.get(userId);
                     if (userChallenge == null) {
                         userChallenge = new UserChallenge();
@@ -826,14 +937,28 @@ public class ChallengeServiceImpl implements ChallengeService {
                     userChallenges.add(userChallenge);
                 }
 
-                userChallengeRepository.saveAll(userChallenges);
+                List<String> persistedUserIds = new ArrayList<>(userChallenges.size());
+                for (UserChallenge userChallenge : userChallenges) {
+                    try {
+                        userChallengeRepository.save(userChallenge);
+                        persistedUserIds.add(userChallenge.getUserId());
+                    } catch (ParticipationQuotaExceededException quotaExceeded) {
+                        failedUserIds.add(userChallenge.getUserId());
+                        logger.info(
+                                "User {} could not join challenge {} because the active participation quota is full",
+                                userChallenge.getUserId(),
+                                challengeId
+                        );
+                    }
+                }
+                successfulUserIds = List.copyOf(persistedUserIds);
                 logger.info("Successfully joined {} users to challenge {}", successfulUserIds.size(), challengeId);
                 cacheService.invalidateChallengeParticipants(challengeId);
                 cacheService.invalidateRecentAndTrendingChallenges();
                 cacheService.invalidateHashtagChallenges();
 
                 // Restore ranking history; created challenges do not count as accepted challenges.
-                for (Long userId : successfulUserIds) {
+                for (String userId : successfulUserIds) {
                     cacheService.invalidateTimeline(userId);
                     leaderboardService.reactivateParticipation(challengeId, userId);
                     if (!userId.equals(challenge.getCreatorId())) {
@@ -853,6 +978,8 @@ public class ChallengeServiceImpl implements ChallengeService {
                 return JoinChallengeResponse.partial(challengeId, challenge.getTitle(), successfulUserIds, failedUserIds);
             }
 
+        } catch (ParticipationQuotaExceededException e) {
+            throw participationQuotaConflict(e);
         } catch (ChallengeSphereException e) {
             throw e;
         } catch (Exception e) {
@@ -868,8 +995,8 @@ public class ChallengeServiceImpl implements ChallengeService {
     @Override
     @Transactional
     public LeaveChallengeResponse leaveChallenge(LeaveChallengeRequest request) throws ChallengeSphereException {
-        Long challengeId = request.getChallengeId();
-        List<Long> userIds = request.getUserIds();
+        String challengeId = request.getChallengeId();
+        List<String> userIds = request.getUserIds();
 
         logger.info("Processing leave request for challenge {} with {} user(s)", challengeId, userIds.size());
 
@@ -886,18 +1013,18 @@ public class ChallengeServiceImpl implements ChallengeService {
             List<UserChallenge> existingAssociations = userChallengeRepository.findByChallengeId(challengeId);
 
             // Filter to only associations for the requested users
-            Map<Long, UserChallenge> userChallengeMap = existingAssociations.stream()
+            Map<String, UserChallenge> userChallengeMap = existingAssociations.stream()
                     .filter(uc -> userIds.contains(uc.getUserId()))
                     .collect(Collectors.toMap(UserChallenge::getUserId, uc -> uc));
 
             // Determine which users successfully have associations to deactivate
-            List<Long> successfulUserIds = new ArrayList<>();
-            List<Long> failedUserIds = new ArrayList<>();
+            List<String> successfulUserIds = new ArrayList<>();
+            List<String> failedUserIds = new ArrayList<>();
             List<UserChallenge> toDeactivate = new ArrayList<>();
 
             // Participation is independent from creator attribution and ownership. The
             // current owner may stop participating while retaining management access.
-            for (Long userId : userIds) {
+            for (String userId : userIds) {
                 if (userChallengeMap.containsKey(userId)) {
                     UserChallenge userChallenge = userChallengeMap.get(userId);
                     // Only deactivate if currently active
@@ -931,7 +1058,7 @@ public class ChallengeServiceImpl implements ChallengeService {
                 // Access revocation must not depend on asynchronous broad cache invalidation.
                 // Remove each leaving user's ID-only timeline so the next read rebuilds from DB;
                 // rendered feed responses are intentionally no longer cached.
-                for (Long userId : successfulUserIds) {
+                for (String userId : successfulUserIds) {
                     cacheService.invalidateTimeline(userId);
                 }
                 cacheService.invalidateChallengeParticipants(challengeId);
@@ -939,7 +1066,7 @@ public class ChallengeServiceImpl implements ChallengeService {
                 cacheService.invalidateHashtagChallenges();
 
                 // Hide departed users from rankings; created challenges never counted as accepted.
-                for (Long userId : successfulUserIds) {
+                for (String userId : successfulUserIds) {
                     leaderboardService.deactivateParticipation(challengeId, userId);
                     if (!userId.equals(challenge.getCreatorId())) {
                         updateChallengesAcceptedCountAsync(userId, false);
@@ -975,9 +1102,9 @@ public class ChallengeServiceImpl implements ChallengeService {
     @Override
     @Transactional
     public LeaveChallengeResponse removeParticipant(
-            Long challengeId,
-            Long actorUserId,
-            Long participantUserId,
+            String challengeId,
+            String actorUserId,
+            String participantUserId,
             String reason) throws ChallengeSphereException {
         logger.info("Processing creator remove participant request for challenge {} by actor {}", challengeId, actorUserId);
 
@@ -1080,8 +1207,15 @@ public class ChallengeServiceImpl implements ChallengeService {
     @Override
     @Transactional
     public ChallengeParticipantsResponse getChallengeParticipants(GetChallengeParticipantsRequest request) throws ChallengeSphereException {
-        Long challengeId = request.getChallengeId();
-        Long currentUserId = request.getCurrentUserId();
+        String challengeId = request.getChallengeId();
+        String currentUserId = request.getCurrentUserId();
+        int limit = normalizeLimit(request.getLimit(), 50);
+        String queryBinding = cursorBinding(
+                "challenge:participants:v2",
+                challengeId,
+                currentUserId,
+                limit
+        );
 
         logger.info("Getting active participants for challenge {}", challengeId);
 
@@ -1101,26 +1235,51 @@ public class ChallengeServiceImpl implements ChallengeService {
                 );
             }
 
-            List<UserChallenge> activeUserChallenges = userChallengeRepository.findActiveByChallengeId(challengeId);
-
-            Set<Long> userIds = activeUserChallenges.stream()
-                    .map(UserChallenge::getUserId)
-                    .collect(Collectors.toSet());
-
-            userIds.removeAll(userBlockRepository.findActiveBlockedCounterpartIds(currentUserId));
-
-            if (userIds.isEmpty()) {
-                logger.info("No participants found for challenge: {}", challengeId);
-                return ChallengeParticipantsResponse.create(challengeId, new ArrayList<>());
+            Map<String, AttributeValue> continuation = decodeContinuation(
+                    request.getCursor(), queryBinding
+            );
+            List<User> users = new ArrayList<>(limit);
+            int pageReads = 0;
+            while (users.size() < limit && pageReads++ < MAX_FILTER_PAGE_READS) {
+                DynamoPage<UserChallenge> page =
+                        userChallengeRepository.findActiveByChallengeIdOrderedByUserPage(
+                                challengeId,
+                                limit - users.size(),
+                                continuation
+                        );
+                List<String> orderedUserIds = page.items().stream()
+                        .map(UserChallenge::getUserId)
+                        .filter(java.util.Objects::nonNull)
+                        .distinct()
+                        .toList();
+                Map<String, User> usersById = userRepository.findAllById(orderedUserIds).stream()
+                        .collect(Collectors.toMap(User::getId, user -> user));
+                Set<String> blockedUserIds = userBlockRepository.findActiveBlockedCounterpartIds(
+                        currentUserId,
+                        orderedUserIds
+                );
+                orderedUserIds.stream()
+                        .filter(userId -> !blockedUserIds.contains(userId))
+                        .map(usersById::get)
+                        .filter(java.util.Objects::nonNull)
+                        .limit(limit - users.size())
+                        .forEach(users::add);
+                continuation = page.lastEvaluatedKey();
+                if (continuation.isEmpty() || page.items().isEmpty()) {
+                    break;
+                }
             }
+            boolean hasMore = !continuation.isEmpty();
+            int totalParticipants = userChallengeRepository.countActiveByChallengeId(challengeId);
 
-            List<User> users = userRepository.findAllById(new ArrayList<>(userIds));
-
-            logger.info("Found {} active participants for challenge {}", users.size(), challengeId);
+            logger.info("Found {} visible active participants for challenge {}", users.size(), challengeId);
 
             return ChallengeParticipantsResponse.create(
                     challengeId,
-                    withReadableParticipantProfilePhotos(users)
+                    withReadableParticipantProfilePhotos(users),
+                    totalParticipants,
+                    encodeContinuation(queryBinding, continuation),
+                    hasMore
             );
 
         } catch (ChallengeSphereException e) {
@@ -1164,72 +1323,125 @@ public class ChallengeServiceImpl implements ChallengeService {
     @Transactional(readOnly = true)
     public ChallengesByHashtagResponse getChallengesByHashtag(GetChallengesByHashtagRequest request) throws ChallengeSphereException {
         List<String> hashtags = request.getHashtags();
-        Long currentUserId = request.getCurrentUserId();
-        int page = request.getPage();
-        int pageSize = request.getPageSize();
+        String currentUserId = request.getCurrentUserId();
+        int limit = normalizeLimit(request.getLimit(), 10);
+        String queryBinding = cursorBinding(
+                "challenge:hashtags:v2",
+                currentUserId,
+                hashtags,
+                limit
+        );
 
-        logger.info("Getting challenges by hashtag filter for userId={}, page={}, pageSize={}",
-                currentUserId, page, pageSize);
+        logger.info("Getting challenges by hashtag filter for userId={}, limit={}",
+                currentUserId, limit);
 
         try {
             if (currentUserId == null || !userRepository.existsById(currentUserId)) {
-                return ChallengesByHashtagResponse.create(hashtags, new ArrayList<>(), page, pageSize, 0);
+                return ChallengesByHashtagResponse.create(hashtags, List.of(), null, false);
             }
+            if (hashtags == null || hashtags.isEmpty() || hashtags.size() > MAX_TAG_FILTER_VALUES) {
+                throw new ChallengeSphereException(
+                        "Between 1 and 20 hashtags or categories are required",
+                        HttpStatus.BAD_REQUEST,
+                        logger
+                );
+            }
+            Map<String, Map<String, AttributeValue>> continuation = decodeShardContinuation(
+                    request.getCursor(), queryBinding
+            );
 
-            // Category chips are backed by this endpoint in the app, so match both hashtags and categories.
-            List<Challenge> matchingChallenges = hashtags.stream()
-                    .flatMap(hashtag -> java.util.stream.Stream.concat(
-                            challengeRepository.findByHashtagsContaining(hashtag).stream(),
-                            challengeRepository.findByCategoriesContaining(hashtag).stream()
-                    ))
-                    .filter(Challenge::getActive)
-                    .filter(challenge -> !isExpiredChallenge(challenge))
-                    .filter(challenge -> canViewChallengeDiscovery(challenge, currentUserId))
-                    .distinct()
-                    .sorted(ChallengeServiceImpl::compareChallengesByCreatedAtDesc)
-                    .toList();
+            // Category chips are backed by this endpoint in the app, so the
+            // repository merges both exact hashtag and exact category partitions.
+            List<Challenge> matchingChallenges = new ArrayList<>(limit);
+            int candidatesExamined = 0;
+            int pageReads = 0;
+            boolean hasMore = true;
+            search:
+            while (matchingChallenges.size() < limit
+                    && candidatesExamined < MAX_FILTER_CANDIDATES
+                    && pageReads++ < MAX_FILTER_PAGE_READS
+                    && hasMore) {
+                int candidateLimit = candidateWindow(
+                        limit - matchingChallenges.size(),
+                        MAX_FILTER_CANDIDATES - candidatesExamined
+                );
+                ChallengeRepository.ShardedChallengePage page;
+                try {
+                    page = challengeRepository.findByTagsPage(
+                            hashtags,
+                            candidateLimit,
+                            continuation
+                    );
+                } catch (IllegalArgumentException invalidState) {
+                    throw new ChallengeSphereException(
+                            "Invalid cursor", HttpStatus.BAD_REQUEST, logger
+                    );
+                }
+                List<Challenge> candidates = page.candidates().stream()
+                        .map(ChallengeRepository.ShardedChallengeCandidate::challenge)
+                        .toList();
+                Set<String> visibleIds = visibleActiveChallengeIds(candidates, currentUserId);
+                for (ChallengeRepository.ShardedChallengeCandidate candidate : page.candidates()) {
+                    candidatesExamined++;
+                    Challenge challenge = candidate.challenge();
+                    continuation = candidate.continuation();
+                    hasMore = candidate.hasMore();
+                    if (Boolean.TRUE.equals(challenge.getActive())
+                            && !isExpiredChallenge(challenge)
+                            && visibleIds.contains(challenge.getId())) {
+                        matchingChallenges.add(challenge);
+                        if (matchingChallenges.size() == limit) {
+                            break search;
+                        }
+                    }
+                    if (candidatesExamined == MAX_FILTER_CANDIDATES) {
+                        break search;
+                    }
+                }
+                if (page.candidates().isEmpty()) {
+                    continuation = page.continuation();
+                    hasMore = page.hasMore();
+                }
+            }
 
             if (matchingChallenges.isEmpty()) {
                 logger.info("No active challenges found for hashtag filter");
-                return ChallengesByHashtagResponse.create(hashtags, new ArrayList<>(), page, pageSize, 0);
+                return ChallengesByHashtagResponse.create(
+                        hashtags,
+                        List.of(),
+                        encodeShardContinuation(queryBinding, continuation, hasMore),
+                        hasMore
+                );
             }
 
-            // Extract challenge IDs
-            List<Long> challengeIds = matchingChallenges.stream()
+            List<String> challengeIds = matchingChallenges.stream()
                     .map(Challenge::getId)
-                    .collect(Collectors.toList());
-
-            // Batch query: Get all active UserChallenge records for these challenges (single query)
-            List<UserChallenge> activeUserChallenges = userChallengeRepository.findActiveByChallengeIds(challengeIds);
-
-            // Count active participants per challenge
-            Map<Long, Long> participantCountMap = activeUserChallenges.stream()
-                    .collect(Collectors.groupingBy(UserChallenge::getChallengeId, Collectors.counting()));
+                    .toList();
+            Map<String, Integer> participantCountMap =
+                    userChallengeRepository.countActiveByChallengeIds(challengeIds);
 
             // Preserve newest-first challenge ordering while adding participant counts.
             List<ChallengesByHashtagResponse.ChallengeWithParticipantCount> challengeWithCounts =
                     withReadableCoverPhotoUrls(matchingChallenges).stream()
                     .map(challenge -> new ChallengesByHashtagResponse.ChallengeWithParticipantCount(
                             challenge,
-                            participantCountMap.getOrDefault(challenge.getId(), 0L).intValue()
+                            participantCountMap.getOrDefault(challenge.getId(), 0)
                     ))
                     .toList();
 
-            // Apply pagination
-            int totalCount = challengeWithCounts.size();
-            int offset = (page - 1) * pageSize;
-            List<ChallengesByHashtagResponse.ChallengeWithParticipantCount> paginatedChallenges = challengeWithCounts.stream()
-                    .skip(offset)
-                    .limit(pageSize)
-                    .collect(Collectors.toList());
+            logger.info("Found {} challenges for hashtag filter", challengeWithCounts.size());
 
-            logger.info("Found {} challenges for hashtag filter (showing page {}/{})",
-                    totalCount, page, (int) Math.ceil((double) totalCount / pageSize));
-
-            ChallengesByHashtagResponse response = ChallengesByHashtagResponse.create(hashtags, paginatedChallenges, page, pageSize, totalCount);
+            ChallengesByHashtagResponse response = ChallengesByHashtagResponse.create(
+                    hashtags,
+                    challengeWithCounts,
+                    encodeShardContinuation(queryBinding, continuation, hasMore),
+                    hasMore
+            );
 
             return response;
 
+        } catch (ChallengeSphereException e) {
+            throw e;
         } catch (Exception e) {
             logger.error("Hashtag challenge lookup failed | exception={}", e.getClass().getSimpleName());
             throw new ChallengeSphereException(
@@ -1243,93 +1455,58 @@ public class ChallengeServiceImpl implements ChallengeService {
     @Override
     @Transactional(readOnly = true)
     public PopularChallengesResponse getPopularChallenges(GetPopularChallengesRequest request) throws ChallengeSphereException {
-        Long currentUserId = request.getCurrentUserId();
+        String currentUserId = request.getCurrentUserId();
         Boolean activeFilter = request.getActive();
         LocalDate startDate = request.getStartDate();
         LocalDate endDate = request.getEndDate();
-        int page = request.getPage();
-        int pageSize = request.getPageSize();
+        int limit = normalizeLimit(request.getLimit(), 10);
+        String queryBinding = cursorBinding(
+                "challenge:popular:v2",
+                currentUserId,
+                activeFilter,
+                startDate,
+                endDate,
+                limit
+        );
 
-        logger.info("Getting popular challenges - currentUserId: {}, active: {}, startDate: {}, endDate: {}, page: {}, pageSize: {}",
-                currentUserId, activeFilter, startDate, endDate, page, pageSize);
+        logger.info("Getting popular challenges - currentUserId: {}, active: {}, startDate: {}, endDate: {}, limit: {}",
+                currentUserId, activeFilter, startDate, endDate, limit);
 
         try {
             if (currentUserId == null || !userRepository.existsById(currentUserId)) {
-                return PopularChallengesResponse.create(new ArrayList<>(), page, pageSize, 0);
+                return PopularChallengesResponse.create(List.of(), null, false);
             }
-
-            // Get all public challenges
-            List<Challenge> publicChallenges = challengeRepository.findAll().stream()
-                    .filter(challenge -> !challenge.getIsPrivate())
-                    .filter(challenge -> !isExpiredChallenge(challenge))
-                    .filter(challenge -> canViewChallengeDiscovery(challenge, currentUserId))
-                    .collect(Collectors.toList());
-
-            // Apply active filter if specified
-            if (activeFilter != null) {
-                publicChallenges = publicChallenges.stream()
-                        .filter(challenge -> challenge.getActive().equals(activeFilter))
-                        .collect(Collectors.toList());
+            Map<String, AttributeValue> continuation = decodeContinuation(
+                    request.getCursor(), queryBinding
+            );
+            // canViewChallengeDiscovery has always limited this endpoint to
+            // active challenges, so active=false remains an empty result.
+            if (Boolean.FALSE.equals(activeFilter)) {
+                return PopularChallengesResponse.create(List.of(), null, false);
             }
-
-            // Apply date range filter if specified
-            if (startDate != null || endDate != null) {
-                publicChallenges = publicChallenges.stream()
-                        .filter(challenge -> {
-                            LocalDate challengeStartDate = challenge.getStartDate();
-                            if (challengeStartDate == null) {
-                                return false;
-                            }
-                            boolean afterStart = startDate == null || !challengeStartDate.isBefore(startDate);
-                            boolean beforeEnd = endDate == null || !challengeStartDate.isAfter(endDate);
-                            return afterStart && beforeEnd;
-                        })
-                        .collect(Collectors.toList());
-            }
-
-            if (publicChallenges.isEmpty()) {
-                logger.info("No public challenges found matching the criteria");
-                return PopularChallengesResponse.create(new ArrayList<>(), page, pageSize, 0);
-            }
-
-            // Extract challenge IDs
-            List<Long> challengeIds = publicChallenges.stream()
-                    .map(Challenge::getId)
-                    .collect(Collectors.toList());
-
-            // Batch query: Get active memberships for these challenges (single query)
-            List<UserChallenge> userChallenges = userChallengeRepository.findActiveByChallengeIds(challengeIds);
-
-            // Count current participants per challenge.
-            Map<Long, Long> participantCountMap = userChallenges.stream()
-                    .collect(Collectors.groupingBy(UserChallenge::getChallengeId, Collectors.counting()));
-
-            // Add participant counts, then order by challenge creation time before pagination.
+            ChallengeDiscoveryPage page = findPublicDiscoveryPage(
+                    currentUserId,
+                    limit,
+                    continuation,
+                    startDate,
+                    endDate
+            );
             List<PopularChallengesResponse.ChallengeWithParticipantCount> challengeWithCounts =
-                    withReadableCoverPhotoUrls(publicChallenges).stream()
+                    withReadableCoverPhotoUrls(page.challenges()).stream()
                     .map(challenge -> new PopularChallengesResponse.ChallengeWithParticipantCount(
                             challenge,
-                            participantCountMap.getOrDefault(challenge.getId(), 0L).intValue()
+                            userChallengeRepository.countActiveByChallengeId(challenge.getId())
                     ))
-                    .sorted((left, right) -> compareCreatedAtDesc(
-                            left.getCreatedAt(), left.getId(), right.getCreatedAt(), right.getId()))
                     .toList();
+            logger.info("Found {} public challenges matching criteria", challengeWithCounts.size());
+            return PopularChallengesResponse.create(
+                    challengeWithCounts,
+                    encodeContinuation(queryBinding, page.continuation()),
+                    page.hasMore()
+            );
 
-            // Apply pagination
-            int totalCount = challengeWithCounts.size();
-            int offset = (page - 1) * pageSize;
-            List<PopularChallengesResponse.ChallengeWithParticipantCount> paginatedChallenges = challengeWithCounts.stream()
-                    .skip(offset)
-                    .limit(pageSize)
-                    .collect(Collectors.toList());
-
-            logger.info("Found {} public challenges matching criteria (showing page {}/{})",
-                    totalCount, page, (int) Math.ceil((double) totalCount / pageSize));
-
-            PopularChallengesResponse response = PopularChallengesResponse.create(paginatedChallenges, page, pageSize, totalCount);
-
-            return response;
-
+        } catch (ChallengeSphereException e) {
+            throw e;
         } catch (Exception e) {
             logger.error("Error fetching popular challenges: {}", e.getClass().getSimpleName());
             throw new ChallengeSphereException(
@@ -1344,70 +1521,50 @@ public class ChallengeServiceImpl implements ChallengeService {
 
     @Override
     @Transactional(readOnly = true)
-    public RecentChallengesResponse getRecentChallenges(int page, int pageSize, Long currentUserId) throws ChallengeSphereException {
-        logger.info("Getting recent challenges - currentUserId: {}, page: {}, pageSize: {}",
-                currentUserId, page, pageSize);
+    public RecentChallengesResponse getRecentChallenges(
+            String currentUserId,
+            int limit,
+            String cursor
+    ) throws ChallengeSphereException {
+        int boundedLimit = normalizeLimit(limit, 10);
+        String queryBinding = cursorBinding(
+                "challenge:recent:v2",
+                currentUserId,
+                boundedLimit
+        );
+        logger.info("Getting recent challenges - currentUserId: {}, limit: {}",
+                currentUserId, boundedLimit);
 
         try {
             if (currentUserId == null || !userRepository.existsById(currentUserId)) {
-                return RecentChallengesResponse.empty(page, pageSize);
+                return RecentChallengesResponse.empty();
             }
-
-            // Validate pagination parameters
-            if (page < 1) page = 1;
-            if (pageSize < 1) pageSize = 10;
-            if (pageSize > 100) pageSize = 100; // Cap at 100
-
-            List<Challenge> visibleChallenges = challengeRepository.findAllPublicChallenges().stream()
-                    .sorted((left, right) -> {
-                        if (left.getCreatedAt() == null && right.getCreatedAt() == null) return 0;
-                        if (left.getCreatedAt() == null) return 1;
-                        if (right.getCreatedAt() == null) return -1;
-                        return right.getCreatedAt().compareTo(left.getCreatedAt());
-                    })
-                    .filter(challenge -> !isExpiredChallenge(challenge))
-                    .filter(challenge -> canViewChallengeDiscovery(challenge, currentUserId))
-                    .toList();
-
-            if (visibleChallenges.isEmpty()) {
-                return RecentChallengesResponse.empty(page, pageSize);
-            }
-
-            int totalCount = visibleChallenges.size();
-            int offset = (page - 1) * pageSize;
-            List<Challenge> challenges = visibleChallenges.stream()
-                    .skip(offset)
-                    .limit(pageSize)
-                    .toList();
-
-            // Get participant counts for these challenges
-            List<Long> challengeIds = challenges.stream()
-                    .map(Challenge::getId)
-                    .toList();
-
-            Map<Long, Long> participantCountMap = new java.util.HashMap<>();
-            if (!challengeIds.isEmpty()) {
-                List<UserChallenge> userChallenges = userChallengeRepository.findActiveByChallengeIds(challengeIds);
-                participantCountMap = userChallenges.stream()
-                        .collect(Collectors.groupingBy(UserChallenge::getChallengeId, Collectors.counting()));
-            }
-
-            // Convert to response with engagement metrics
-            final Map<Long, Long> finalParticipantMap = participantCountMap;
+            Map<String, AttributeValue> continuation = decodeContinuation(cursor, queryBinding);
+            ChallengeDiscoveryPage page = findPublicDiscoveryPage(
+                    currentUserId,
+                    boundedLimit,
+                    continuation,
+                    null,
+                    null
+            );
             List<RecentChallengesResponse.ChallengeInfo> challengeInfos =
-                    withReadableCoverPhotoUrls(challenges).stream()
+                    withReadableCoverPhotoUrls(page.challenges()).stream()
                     .map(challenge -> {
-                        int participantCount = finalParticipantMap.getOrDefault(challenge.getId(), 0L).intValue();
+                        int participantCount = userChallengeRepository.countActiveByChallengeId(
+                                challenge.getId()
+                        );
                         return RecentChallengesResponse.ChallengeInfo.fromChallenge(
                                 challenge, 0, 0, participantCount);
                     })
                     .toList();
+            return RecentChallengesResponse.create(
+                    challengeInfos,
+                    encodeContinuation(queryBinding, page.continuation()),
+                    page.hasMore()
+            );
 
-            RecentChallengesResponse response = RecentChallengesResponse.create(
-                    challengeInfos, page, pageSize, (int) totalCount);
-
-            return response;
-
+        } catch (ChallengeSphereException e) {
+            throw e;
         } catch (Exception e) {
             logger.error("Error fetching recent challenges: {}", e.getClass().getSimpleName());
             throw new ChallengeSphereException(
@@ -1419,21 +1576,28 @@ public class ChallengeServiceImpl implements ChallengeService {
     }
 
     @Override
-    public List<Long> getTrendingChallengeIds(int limit) {
+    public CursorPageResponse<String> getTrendingChallengeIds(int limit, String cursor) {
         logger.info("Getting trending challenge IDs, limit: {}", limit);
 
-        if (limit < 1) limit = 10;
-        if (limit > 100) limit = 100;
+        int boundedLimit = normalizeLimit(limit, 10);
+        String queryBinding = cursorBinding("challenge:trending-ids:v2", boundedLimit);
+        if (cursor != null && !cursor.isBlank()) {
+            DynamoDbCursorCodec.CursorState state = cursorCodec.decode(cursor, queryBinding);
+            if (!state.lastEvaluatedKey().isEmpty() || !state.shardState().isEmpty()) {
+                throw new IllegalArgumentException("Trending challenge cursor state is invalid");
+            }
+        }
 
-        return List.of();
+        return CursorPageResponse.empty();
     }
 
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public Challenge updateChallenge(Long id, ChallengeUpdateRequest request, Long actorUserId, boolean admin) throws ChallengeSphereException {
+    public Challenge updateChallenge(String id, ChallengeUpdateRequest request, String actorUserId, boolean admin) throws ChallengeSphereException {
         logger.info("Updating challenge id: {}", id);
 
-        Challenge challenge = challengeRepository.findByIdForUpdate(id)
+        try (var challengeLease = challengeRepository.acquireChallengeLease(id)) {
+        Challenge challenge = challengeRepository.findById(id)
                 .orElseThrow(() -> new ChallengeSphereException(
                         "Challenge not found with id: " + id,
                         HttpStatus.NOT_FOUND,
@@ -1468,14 +1632,14 @@ public class ChallengeServiceImpl implements ChallengeService {
                 && Boolean.TRUE.equals(challenge.getActive())
                 && !isExpiredChallenge(challenge)) {
             boolean targetPrivate = Boolean.TRUE.equals(request.getIsPrivate());
-            List<Long> activeParticipantIds = userChallengeRepository.findActiveByChallengeId(id).stream()
+            List<String> activeParticipantIds = userChallengeRepository.findActiveByChallengeId(id).stream()
                     .filter(membership -> !Boolean.TRUE.equals(membership.getCompleted()))
                     .map(UserChallenge::getUserId)
                     .filter(java.util.Objects::nonNull)
                     .distinct()
                     .sorted()
                     .toList();
-            for (Long participantId : activeParticipantIds) {
+            for (String participantId : activeParticipantIds) {
                 User participant = userRepository.findByIdForUpdate(participantId)
                         .orElseThrow(() -> new ChallengeSphereException(
                                 "User not found with id: " + participantId,
@@ -1488,7 +1652,7 @@ public class ChallengeServiceImpl implements ChallengeService {
         if (request.getIsPrivate() != null) {
             challenge.setIsPrivate(request.getIsPrivate());
         }
-        Long effectiveOwnerId = challenge.getCurrentOwnerId() != null
+        String effectiveOwnerId = challenge.getCurrentOwnerId() != null
                 ? challenge.getCurrentOwnerId()
                 : challenge.getCreatorId();
         if (Boolean.TRUE.equals(challenge.getIsPrivate())
@@ -1547,7 +1711,7 @@ public class ChallengeServiceImpl implements ChallengeService {
         }
         List<String> requestedCoverPhotoUrls = getRequestedCoverPhotoUrls(request);
         if (requestedCoverPhotoUrls != null) {
-            Long mediaOwnerId = actorUserId != null
+            String mediaOwnerId = actorUserId != null
                     ? actorUserId
                     : (challenge.getCurrentOwnerId() != null
                             ? challenge.getCurrentOwnerId()
@@ -1560,9 +1724,9 @@ public class ChallengeServiceImpl implements ChallengeService {
                 && actorUserId.equals(challenge.getCreatorId())
                 && request.getInvitedUserIds() != null
                 && !request.getInvitedUserIds().isEmpty()) {
-            Set<Long> invitedUserIds = request.getInvitedUserIds().stream()
+            Set<String> invitedUserIds = request.getInvitedUserIds().stream()
                     .filter(java.util.Objects::nonNull)
-                    .filter(userId -> userId > 0)
+                    .filter(userId -> !userId.isBlank())
                     .collect(Collectors.toSet());
             List<UserChallenge> reinstatedMemberships = userChallengeRepository.findByChallengeId(id).stream()
                     .filter(membership -> invitedUserIds.contains(membership.getUserId()))
@@ -1580,7 +1744,24 @@ public class ChallengeServiceImpl implements ChallengeService {
             }
         }
 
+        boolean quotaClassificationChanged = changingVisibility
+                || request.getActive() != null
+                || request.getChallengeMode() != null
+                || request.getNumberOfDays() != null;
+        if (quotaClassificationChanged
+                && Boolean.TRUE.equals(challenge.getActive())
+                && !isExpiredChallenge(challenge)) {
+            // Reserve the target visibility/tier slots before exposing a
+            // classification that would otherwise be under-counted.
+            reconcileParticipationQuota(challenge);
+        }
+
         Challenge updated = challengeRepository.save(challenge);
+        if (quotaClassificationChanged) {
+            // A second pass releases source slots and catches memberships
+            // created while the challenge classification was being changed.
+            reconcileParticipationQuota(updated);
+        }
         cacheService.invalidateChallenge(id);
         cacheService.invalidateAllFeeds();
         notifyChallengeInvitesAfterCommit(
@@ -1590,11 +1771,30 @@ public class ChallengeServiceImpl implements ChallengeService {
         );
         logger.info("Challenge {} updated successfully", id);
         return withReadableCoverPhotoUrls(updated);
+        }
+    }
+
+    private void reconcileParticipationQuota(Challenge challenge) throws ChallengeSphereException {
+        try {
+            userChallengeRepository.reconcileParticipationQuotaForChallenge(challenge);
+        } catch (ParticipationQuotaExceededException quotaExceeded) {
+            throw participationQuotaConflict(quotaExceeded);
+        }
+    }
+
+    private ChallengeSphereException participationQuotaConflict(
+            ParticipationQuotaExceededException quotaExceeded
+    ) {
+        return new ChallengeSphereException(
+                quotaExceeded.getMessage(),
+                HttpStatus.CONFLICT,
+                logger
+        );
     }
 
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public void inviteChallengeUsers(Long challengeId, Long actorUserId, List<Long> invitedUserIds)
+    public void inviteChallengeUsers(String challengeId, String actorUserId, List<String> invitedUserIds)
             throws ChallengeSphereException {
         Challenge challenge = challengeRepository.findById(challengeId)
                 .orElseThrow(() -> new ChallengeSphereException(
@@ -1603,7 +1803,7 @@ public class ChallengeServiceImpl implements ChallengeService {
                         logger
                 ));
 
-        Long effectiveOwnerId = challenge.getCurrentOwnerId() != null
+        String effectiveOwnerId = challenge.getCurrentOwnerId() != null
                 ? challenge.getCurrentOwnerId()
                 : challenge.getCreatorId();
         boolean owner = actorUserId != null && actorUserId.equals(effectiveOwnerId);
@@ -1635,11 +1835,11 @@ public class ChallengeServiceImpl implements ChallengeService {
             );
         }
 
-        Set<Long> requestedRecipientIds = invitedUserIds == null
+        Set<String> requestedRecipientIds = invitedUserIds == null
                 ? Set.of()
                 : invitedUserIds.stream()
                         .filter(java.util.Objects::nonNull)
-                        .filter(userId -> userId > 0)
+                        .filter(userId -> !userId.isBlank())
                         .filter(userId -> !userId.equals(actorUserId))
                         .collect(Collectors.toCollection(java.util.LinkedHashSet::new));
         if (requestedRecipientIds.isEmpty()) {
@@ -1662,11 +1862,11 @@ public class ChallengeServiceImpl implements ChallengeService {
         List<UserChallenge> recipientMemberships = userChallengeRepository.findByChallengeId(challengeId).stream()
                 .filter(membership -> requestedRecipientIds.contains(membership.getUserId()))
                 .toList();
-        Set<Long> alreadyActiveRecipientIds = recipientMemberships.stream()
+        Set<String> alreadyActiveRecipientIds = recipientMemberships.stream()
                 .filter(membership -> Boolean.TRUE.equals(membership.getActive()))
                 .map(UserChallenge::getUserId)
                 .collect(Collectors.toSet());
-        Set<Long> bannedRecipientIds = recipientMemberships.stream()
+        Set<String> bannedRecipientIds = recipientMemberships.stream()
                 .filter(membership -> Boolean.TRUE.equals(membership.getBanned()))
                 .map(UserChallenge::getUserId)
                 .collect(Collectors.toSet());
@@ -1710,7 +1910,7 @@ public class ChallengeServiceImpl implements ChallengeService {
 
     @Override
     @Transactional(readOnly = true)
-    public ChallengeDetailResponse getChallengeDetail(Long challengeId, Long currentUserId) throws ChallengeSphereException {
+    public ChallengeDetailResponse getChallengeDetail(String challengeId, String currentUserId) throws ChallengeSphereException {
         logger.info("Fetching challenge detail: challengeId={}, currentUserId={}", challengeId, currentUserId);
         try {
             Challenge challenge = challengeRepository.findById(challengeId)
@@ -1746,15 +1946,15 @@ public class ChallengeServiceImpl implements ChallengeService {
 
     @Override
     @Transactional(readOnly = true)
-    public ChallengeProgressResponse getChallengeProgress(Long challengeId, Long userId) throws ChallengeSphereException {
+    public ChallengeProgressResponse getChallengeProgress(String challengeId, String userId) throws ChallengeSphereException {
         return getChallengeProgress(challengeId, userId, LocalDate.now(java.time.ZoneOffset.UTC));
     }
 
     @Override
     @Transactional(readOnly = true)
     public ChallengeProgressResponse getChallengeProgress(
-            Long challengeId,
-            Long userId,
+            String challengeId,
+            String userId,
             LocalDate currentDate
     ) throws ChallengeSphereException {
         LocalDate effectiveCurrentDate = currentDate != null
@@ -1852,58 +2052,70 @@ public class ChallengeServiceImpl implements ChallengeService {
     @Override
     @Transactional
     public ChallengeFavoriteResponse setChallengeFavorite(
-            Long challengeId,
-            Long userId,
+            String challengeId,
+            String userId,
             boolean favorite
     ) throws ChallengeSphereException {
-        Challenge challenge = challengeRepository.findByIdForUpdate(challengeId)
-                .orElseThrow(() -> new ChallengeSphereException(
-                        "Challenge not found with id: " + challengeId,
-                        HttpStatus.NOT_FOUND,
-                        logger
-                ));
-        UserChallenge membership = userChallengeRepository
-                .findByUserIdAndChallengeIdForUpdate(userId, challengeId)
-                .orElseThrow(() -> new ChallengeSphereException(
-                        "Only created or joined challenges can be favorited",
-                        HttpStatus.FORBIDDEN,
-                        logger
-                ));
+        try (var challengeLease = challengeRepository.acquireChallengeLease(challengeId)) {
+            Challenge challenge = challengeRepository.findById(challengeId)
+                    .orElseThrow(() -> new ChallengeSphereException(
+                            "Challenge not found with id: " + challengeId,
+                            HttpStatus.NOT_FOUND,
+                            logger
+                    ));
+            try (var membershipLease = userChallengeRepository.acquireMembershipLease(
+                    userId, challengeId
+            )) {
+                UserChallenge membership = userChallengeRepository
+                        .findByUserIdAndChallengeId(userId, challengeId)
+                        .orElseThrow(() -> new ChallengeSphereException(
+                                "Only created or joined challenges can be favorited",
+                                HttpStatus.FORBIDDEN,
+                                logger
+                        ));
 
-        if (Boolean.TRUE.equals(membership.getBanned())) {
-            throw new ChallengeSphereException(
-                    "This challenge is no longer available to you",
-                    HttpStatus.FORBIDDEN,
-                    logger
-            );
-        }
-        if (favorite && !canKeepFavoriteChallenge(challenge, membership, userId)) {
-            throw new ChallengeSphereException(
-                    "This challenge is no longer available to favorite",
-                    HttpStatus.FORBIDDEN,
-                    logger
-            );
-        }
+                if (Boolean.TRUE.equals(membership.getBanned())) {
+                    throw new ChallengeSphereException(
+                            "This challenge is no longer available to you",
+                            HttpStatus.FORBIDDEN,
+                            logger
+                    );
+                }
+                if (favorite && !canKeepFavoriteChallenge(challenge, membership, userId)) {
+                    throw new ChallengeSphereException(
+                            "This challenge is no longer available to favorite",
+                            HttpStatus.FORBIDDEN,
+                            logger
+                    );
+                }
 
-        if (Boolean.TRUE.equals(membership.getFavorite()) != favorite) {
-            membership.setFavorite(favorite);
-            membership.setFavoritedAt(favorite
-                    ? new Timestamp(System.currentTimeMillis())
-                    : null);
-            userChallengeRepository.save(membership);
+                if (Boolean.TRUE.equals(membership.getFavorite()) != favorite) {
+                    membership.setFavorite(favorite);
+                    membership.setFavoritedAt(favorite
+                            ? new Timestamp(System.currentTimeMillis())
+                            : null);
+                    userChallengeRepository.save(membership);
+                }
+                return ChallengeFavoriteResponse.of(challengeId, favorite);
+            }
         }
-        return ChallengeFavoriteResponse.of(challengeId, favorite);
     }
 
     @Override
     @Transactional(readOnly = true)
-    public MyChallengesResponse getMyChallenges(Long userId, Long currentUserId, String status, int page, int pageSize) throws ChallengeSphereException {
+    public MyChallengesResponse getMyChallenges(
+            String userId,
+            String currentUserId,
+            String status,
+            int limit,
+            String cursor
+    ) throws ChallengeSphereException {
         return getMyChallenges(
                 userId,
                 currentUserId,
                 status,
-                page,
-                pageSize,
+                limit,
+                cursor,
                 LocalDate.now(java.time.ZoneOffset.UTC)
         );
     }
@@ -1911,18 +2123,19 @@ public class ChallengeServiceImpl implements ChallengeService {
     @Override
     @Transactional(readOnly = true)
     public MyChallengesResponse getMyChallenges(
-            Long userId,
-            Long currentUserId,
+            String userId,
+            String currentUserId,
             String status,
-            int page,
-            int pageSize,
+            int limit,
+            String cursor,
             LocalDate currentDate
     ) throws ChallengeSphereException {
+        int boundedLimit = normalizeLimit(limit, 10);
         LocalDate requestedCurrentDate = currentDate != null
                 ? currentDate
                 : LocalDate.now(java.time.ZoneOffset.UTC);
-        logger.info("Fetching my challenges: userId={}, viewerId={}, status={}, page={}, pageSize={}, localDate={}",
-                userId, currentUserId, status, page, pageSize, requestedCurrentDate);
+        logger.info("Fetching my challenges: userId={}, viewerId={}, status={}, limit={}, localDate={}",
+                userId, currentUserId, status, boundedLimit, requestedCurrentDate);
         try {
             ensureFollowAccess(userId, currentUserId, "challenges");
             boolean selfView = java.util.Objects.equals(userId, currentUserId);
@@ -1932,10 +2145,6 @@ public class ChallengeServiceImpl implements ChallengeService {
             LocalDate effectiveCurrentDate = selfView
                     ? requestedCurrentDate
                     : LocalDate.now(java.time.ZoneOffset.UTC);
-
-            if (page < 1) page = 1;
-            if (pageSize < 1) pageSize = 10;
-            if (pageSize > 100) pageSize = 100;
 
             boolean favoriteFilter = "favorite".equalsIgnoreCase(status)
                     || "favourite".equalsIgnoreCase(status);
@@ -1947,138 +2156,82 @@ public class ChallengeServiceImpl implements ChallengeService {
                         logger
                 );
             }
-
-            List<UserChallenge> userChallenges = favoriteFilter
-                    ? userChallengeRepository.findFavoritesByUserId(userId)
-                    : inactiveFilter
-                            ? userChallengeRepository.findByUserId(userId)
-                            : userChallengeRepository.findActiveByUserId(userId);
-
-            List<Long> challengeIds = userChallenges.stream().map(UserChallenge::getChallengeId).toList();
-            Map<Long, Long> activeParticipantCountMap = challengeIds.isEmpty()
-                    ? Map.of()
-                    : userChallengeRepository.findActiveByChallengeIds(challengeIds).stream()
-                    .collect(Collectors.groupingBy(UserChallenge::getChallengeId, Collectors.counting()));
-            List<Challenge> visibleChallenges = challengeIds.isEmpty()
-                    ? List.of()
-                    : (favoriteFilter || inactiveFilter)
-                            ? challengeRepository.findAllById(challengeIds)
-                            : challengeRepository.findActiveByIds(challengeIds);
-            if (favoriteFilter || inactiveFilter) {
-                Map<Long, UserChallenge> membershipByChallengeId = userChallenges.stream()
-                        .collect(Collectors.toMap(
-                                UserChallenge::getChallengeId,
-                                membership -> membership,
-                                (left, right) -> left
-                        ));
-                visibleChallenges = visibleChallenges.stream()
-                        .filter(challenge -> !isBlockedChallengeOwner(challenge, currentUserId))
-                        .filter(challenge -> favoriteFilter
-                                ? canKeepFavoriteChallenge(
-                                        challenge,
-                                        membershipByChallengeId.get(challenge.getId()),
-                                        userId
-                                )
-                                : canViewInactiveChallengeHistory(
-                                        challenge,
-                                        membershipByChallengeId.get(challenge.getId()),
-                                        userId
-                                ))
-                        .toList();
-            } else {
-                visibleChallenges = visibleChallenges.stream()
-                        .filter(challenge -> canViewChallenge(challenge, currentUserId))
-                        .toList();
-            }
-            Map<Long, Challenge> challengeMap = withReadableCoverPhotoUrls(visibleChallenges)
-                    .stream().collect(Collectors.toMap(Challenge::getId, c -> c));
-            List<Long> privateChallengeIds = challengeMap.values().stream()
-                    .filter(challenge -> Boolean.TRUE.equals(challenge.getIsPrivate()))
-                    .map(Challenge::getId)
-                    .toList();
-            Map<Long, ChallengeCrewLifecycle> privateLifecycleMap = privateChallengeIds.isEmpty()
-                    ? Map.of()
-                    : challengeCrewLifecycleRepository.findAllById(privateChallengeIds).stream()
-                            .collect(Collectors.toMap(
-                                    ChallengeCrewLifecycle::getChallengeId,
-                                    lifecycle -> lifecycle
-                            ));
+            String queryBinding = cursorBinding(
+                    "challenge:my:v2",
+                    userId,
+                    currentUserId,
+                    status,
+                    effectiveCurrentDate,
+                    boundedLimit
+            );
+            Map<String, AttributeValue> continuation = decodeContinuation(cursor, queryBinding);
             List<MyChallengesResponse.ChallengeSummary> summaries = new ArrayList<>();
-            for (UserChallenge uc : userChallenges) {
-                Challenge c = challengeMap.get(uc.getChallengeId());
-                if (c == null) continue;
-
-                List<com.ironside.challengesphere.model.Submission> subs =
-                        submissionRepository.findActiveByUserIdAndChallengeId(userId, uc.getChallengeId());
-
-                boolean oneOff = Challenge.isOneOffMode(c.getChallengeMode());
-                int totalDays = oneOff ? 1 : c.getNumberOfDays();
-                List<Integer> submittedDays = distinctSubmittedDays(subs, totalDays);
-                int daysCompleted = oneOff && !submittedDays.isEmpty() ? 1 : submittedDays.size();
-                int completionPct = totalDays > 0 ? (int) Math.round((daysCompleted * 100.0) / totalDays) : 0;
-
-                MyChallengesResponse.ChallengeSummary summary = MyChallengesResponse.ChallengeSummary.from(
-                        c
+            int candidatesExamined = 0;
+            int pageReads = 0;
+            boolean hasMore = true;
+            search:
+            while (summaries.size() < boundedLimit
+                    && candidatesExamined < MAX_FILTER_CANDIDATES
+                    && pageReads++ < MAX_FILTER_PAGE_READS
+                    && hasMore) {
+                int pageLimit = candidateWindow(
+                        boundedLimit - summaries.size(),
+                        MAX_FILTER_CANDIDATES - candidatesExamined
                 );
-                summary.setDaysCompleted(daysCompleted);
-                int streakThroughDay = resolveStreakThroughDay(
-                        c,
-                        submittedDays,
-                        totalDays,
-                        effectiveCurrentDate
-                );
-                summary.setCurrentStreak(StreakCalculator.currentStreak(submittedDays, streakThroughDay));
-                summary.setCompletionPercentage(completionPct);
-                summary.setJoinedAt(uc.getJoinedAt());
-                summary.setCompleted(oneOff
-                        ? daysCompleted == 1
-                        : Boolean.TRUE.equals(uc.getCompleted())
-                                || isExpiredChallenge(c, effectiveCurrentDate));
-                summary.setFavorite(selfView && Boolean.TRUE.equals(uc.getFavorite()));
-                summary.setParticipationActive(Boolean.TRUE.equals(uc.getActive()));
-                int participantCount = activeParticipantCountMap.getOrDefault(c.getId(), 0L).intValue();
-                summary.setParticipantCount(participantCount);
-                summary.setActiveParticipantCount(participantCount);
-                boolean privateLobby = isPrivateLobby(c, privateLifecycleMap.get(c.getId()));
-                summary.setMomentum(selfView ? buildMomentum(
-                        c,
-                        uc,
-                        submittedDays,
-                        totalDays,
-                        privateLobby,
-                        effectiveCurrentDate
-                ) : null);
-                summary.setPrivateRank(selfView ? resolvePrivateRank(
-                        c,
-                        userId,
-                        currentUserId,
-                        oneOff,
-                        summary.isCompleted(),
-                        privateLobby
-                ) : null);
-                summaries.add(summary);
+                DynamoPage<UserChallenge> page = favoriteFilter
+                        ? userChallengeRepository.findFavoritesByUserIdPage(
+                                userId, pageLimit, continuation
+                        )
+                        : inactiveFilter
+                                ? userChallengeRepository.findByUserIdPage(
+                                        userId, pageLimit, continuation
+                                )
+                                : userChallengeRepository.findActiveByUserIdPage(
+                                        userId, pageLimit, continuation
+                                );
+                candidatesExamined += page.items().size();
+                Map<String, MyChallengesResponse.ChallengeSummary> summariesByMembershipId =
+                        buildMyChallengeSummaries(
+                                page.items(),
+                                userId,
+                                currentUserId,
+                                status,
+                                selfView,
+                                favoriteFilter,
+                                inactiveFilter,
+                                effectiveCurrentDate
+                        );
+                for (int index = 0; index < page.items().size(); index++) {
+                    UserChallenge membership = page.items().get(index);
+                    MyChallengesResponse.ChallengeSummary summary =
+                            summariesByMembershipId.get(membership.getId());
+                    continuation = membershipContinuation(
+                            userId, membership, favoriteFilter, inactiveFilter
+                    );
+                    if (summary != null) {
+                        summaries.add(summary);
+                        if (summaries.size() == boundedLimit) {
+                            hasMore = index + 1 < page.items().size()
+                                    || !page.lastEvaluatedKey().isEmpty();
+                            break search;
+                        }
+                    }
+                }
+                continuation = page.lastEvaluatedKey();
+                hasMore = !continuation.isEmpty();
+                if (page.items().isEmpty()) {
+                    break;
+                }
             }
 
-            if (status != null && !status.isBlank() && !favoriteFilter && !inactiveFilter) {
-                boolean filterCompleted = "completed".equalsIgnoreCase(status);
-                summaries = summaries.stream()
-                        .filter(summary -> summary.isCompleted() == filterCompleted)
-                        .toList();
-            }
-
-            summaries = summaries.stream()
-                    .sorted((left, right) -> compareCreatedAtDesc(
-                            left.getCreatedAt(), left.getId(), right.getCreatedAt(), right.getId()))
-                    .toList();
-
-            int totalCount = summaries.size();
-            int offset = (page - 1) * pageSize;
-            List<MyChallengesResponse.ChallengeSummary> paginatedSummaries = summaries.stream()
-                    .skip(offset)
-                    .limit(pageSize)
-                    .toList();
-
-            return MyChallengesResponse.create(paginatedSummaries, page, pageSize, totalCount);
+            return MyChallengesResponse.create(
+                    summaries,
+                    encodeContinuation(
+                            queryBinding,
+                            hasMore ? continuation : Map.of()
+                    ),
+                    hasMore
+            );
         } catch (ChallengeSphereException e) {
             throw e;
         } catch (Exception e) {
@@ -2270,8 +2423,8 @@ public class ChallengeServiceImpl implements ChallengeService {
 
     private MyChallengesResponse.PrivateRank resolvePrivateRank(
             Challenge challenge,
-            Long userId,
-            Long viewerUserId,
+            String userId,
+            String viewerUserId,
             boolean oneOff,
             boolean completed,
             boolean privateLobby
@@ -2319,17 +2472,13 @@ public class ChallengeServiceImpl implements ChallengeService {
             return List.of();
         }
 
-        Set<Long> creatorIds = challenges.stream()
-                .map(Challenge::getCreatorId)
-                .filter(java.util.Objects::nonNull)
-                .collect(Collectors.toSet());
-        Map<Long, User> creatorsById = userRepository.findAllById(creatorIds).stream()
-                .collect(Collectors.toMap(User::getId, creator -> creator));
+        Map<String, User> ownerUsersById = hydrateChallengeOwnerUsers(challenges);
 
         return challenges.stream()
                 .map(challenge -> withReadableChallengeMedia(
                         challenge,
-                        creatorsById.get(challenge.getCreatorId())
+                        ownerUsersById.get(challenge.getCreatorId()),
+                        ownerUsersById
                 ))
                 .toList();
     }
@@ -2339,13 +2488,19 @@ public class ChallengeServiceImpl implements ChallengeService {
             return null;
         }
 
-        User creator = challenge.getCreatorId() == null
-                ? null
-                : userRepository.findById(challenge.getCreatorId()).orElse(null);
-        return withReadableChallengeMedia(challenge, creator);
+        Map<String, User> ownerUsersById = hydrateChallengeOwnerUsers(List.of(challenge));
+        return withReadableChallengeMedia(
+                challenge,
+                ownerUsersById.get(challenge.getCreatorId()),
+                ownerUsersById
+        );
     }
 
-    private Challenge withReadableChallengeMedia(Challenge challenge, User creator) {
+    private Challenge withReadableChallengeMedia(
+            Challenge challenge,
+            User creator,
+            Map<String, User> ownerUsersById
+    ) {
         Challenge copy = new Challenge();
         copy.setId(challenge.getId());
         copy.setHashtags(challenge.getHashtags());
@@ -2369,13 +2524,13 @@ public class ChallengeServiceImpl implements ChallengeService {
         copy.setNumberOfDays(challenge.getNumberOfDays());
         copy.setChallengeMode(challenge.getChallengeMode());
         copy.setProofMode(challenge.getProofMode());
-        copy.setCoverPhotoUrls(toReadableCoverPhotoUrls(challenge));
+        copy.setCoverPhotoUrls(toReadableCoverPhotoUrls(challenge, ownerUsersById));
         copy.setOfficialTemplateKey(challenge.getOfficialTemplateKey());
         copy.setCohortKey(challenge.getCohortKey());
         return copy;
     }
 
-    private String toReadableProfilePicUrl(Long userId, String profilePicUrl) {
+    private String toReadableProfilePicUrl(String userId, String profilePicUrl) {
         if (profilePicUrl == null || profilePicUrl.isBlank() || mediaUrlService == null) {
             return profilePicUrl;
         }
@@ -2388,7 +2543,10 @@ public class ChallengeServiceImpl implements ChallengeService {
         }
     }
 
-    private String toReadableCoverPhotoUrls(Challenge challenge) {
+    private String toReadableCoverPhotoUrls(
+            Challenge challenge,
+            Map<String, User> ownerUsersById
+    ) {
         String rawCoverPhotoUrls = challenge == null ? null : challenge.getCoverPhotoUrls();
         if (rawCoverPhotoUrls == null || rawCoverPhotoUrls.isBlank()) {
             return rawCoverPhotoUrls;
@@ -2398,13 +2556,7 @@ public class ChallengeServiceImpl implements ChallengeService {
         }
 
         try {
-            Set<Long> allowedOwnerIds = new HashSet<>();
-            if (challenge.getCreatorId() != null) {
-                allowedOwnerIds.add(challenge.getCreatorId());
-            }
-            if (challenge.getCurrentOwnerId() != null) {
-                allowedOwnerIds.add(challenge.getCurrentOwnerId());
-            }
+            Set<String> allowedOwnerIds = challengeMediaOwnerIds(challenge, ownerUsersById);
             List<String> safeKeys = challengeMediaKeyPolicy.filterOwnedKeysForRead(
                     rawCoverPhotoUrls, allowedOwnerIds);
             return safeKeys.isEmpty()
@@ -2414,6 +2566,78 @@ public class ChallengeServiceImpl implements ChallengeService {
             logger.warn("Failed to prepare readable challenge cover URL(s): {}", e.getClass().getSimpleName());
             return null;
         }
+    }
+
+    private Map<String, User> hydrateChallengeOwnerUsers(Collection<Challenge> challenges) {
+        Set<String> ownerUserIds = new HashSet<>();
+        if (challenges != null) {
+            for (Challenge challenge : challenges) {
+                if (challenge == null) {
+                    continue;
+                }
+                if (challenge.getCreatorId() != null && !challenge.getCreatorId().isBlank()) {
+                    ownerUserIds.add(challenge.getCreatorId());
+                }
+                if (challenge.getCurrentOwnerId() != null && !challenge.getCurrentOwnerId().isBlank()) {
+                    ownerUserIds.add(challenge.getCurrentOwnerId());
+                }
+            }
+        }
+        if (ownerUserIds.isEmpty()) {
+            return new LinkedHashMap<>();
+        }
+        return userRepository.findAllById(ownerUserIds).stream()
+                .collect(Collectors.toMap(
+                        User::getId,
+                        user -> user,
+                        (left, right) -> left
+                ));
+    }
+
+    private Set<String> challengeMediaOwnerIds(
+            Challenge challenge,
+            Map<String, User> ownerUsersById
+    ) {
+        if (challenge == null) {
+            return Set.of();
+        }
+        Map<String, User> usersById = ownerUsersById == null
+                ? new LinkedHashMap<>()
+                : ownerUsersById;
+        Set<String> allowedOwnerIds = new HashSet<>();
+        addChallengeMediaOwnerId(
+                allowedOwnerIds,
+                challenge.getCreatorId(),
+                usersById.get(challenge.getCreatorId())
+        );
+        addChallengeMediaOwnerId(
+                allowedOwnerIds,
+                challenge.getCurrentOwnerId(),
+                usersById.get(challenge.getCurrentOwnerId())
+        );
+        return Set.copyOf(allowedOwnerIds);
+    }
+
+    private void addChallengeMediaOwnerId(
+            Set<String> allowedOwnerIds,
+            String currentOwnerId,
+            User owner
+    ) {
+        if (currentOwnerId == null || currentOwnerId.isBlank()) {
+            return;
+        }
+        allowedOwnerIds.add(currentOwnerId);
+        if (owner != null
+                && currentOwnerId.equals(owner.getId())
+                && isNumericLegacyUserId(owner.getLegacyId())) {
+            allowedOwnerIds.add(owner.getLegacyId());
+        }
+    }
+
+    private static boolean isNumericLegacyUserId(String userId) {
+        return userId != null
+                && !userId.isBlank()
+                && userId.chars().allMatch(character -> character >= '0' && character <= '9');
     }
 
     private List<String> getRequestedCoverPhotoUrls(ChallengeCreateRequest request) {
@@ -2443,7 +2667,7 @@ public class ChallengeServiceImpl implements ChallengeService {
     }
 
     private String validateAndSerializeCoverPhotoUrls(
-            Long ownerUserId,
+            String ownerUserId,
             List<String> urls,
             String existingMediaKeys)
             throws ChallengeSphereException {
@@ -2542,9 +2766,9 @@ public class ChallengeServiceImpl implements ChallengeService {
 
     private static int compareCreatedAtDesc(
             Timestamp leftCreatedAt,
-            Long leftId,
+            String leftId,
             Timestamp rightCreatedAt,
-            Long rightId
+            String rightId
     ) {
         if (leftCreatedAt != null && rightCreatedAt != null) {
             int createdAtComparison = rightCreatedAt.compareTo(leftCreatedAt);
@@ -2557,12 +2781,862 @@ public class ChallengeServiceImpl implements ChallengeService {
             return -1;
         }
 
-        long safeLeftId = leftId == null ? 0L : leftId;
-        long safeRightId = rightId == null ? 0L : rightId;
-        return Long.compare(safeRightId, safeLeftId);
+        if (leftId == null && rightId == null) {
+            return 0;
+        }
+        if (leftId == null) {
+            return 1;
+        }
+        if (rightId == null) {
+            return -1;
+        }
+        return rightId.compareTo(leftId);
     }
 
-    private void ensureFollowAccess(Long ownerUserId, Long viewerUserId, String contentType)
+    private static int compareNullableIds(String leftId, String rightId) {
+        if (leftId == null && rightId == null) {
+            return 0;
+        }
+        if (leftId == null) {
+            return 1;
+        }
+        if (rightId == null) {
+            return -1;
+        }
+        return leftId.compareTo(rightId);
+    }
+
+    private static int normalizeLimit(Integer requestedLimit, int defaultLimit) {
+        int resolvedLimit = requestedLimit == null || requestedLimit < 1
+                ? defaultLimit
+                : requestedLimit;
+        return Math.min(resolvedLimit, MAX_LIMIT);
+    }
+
+    private static int candidateWindow(int remainingResults, int remainingBudget) {
+        int usefulWindow = Math.max(10, Math.max(1, remainingResults) * 2);
+        return Math.max(1, Math.min(
+                Math.min(100, usefulWindow),
+                Math.max(1, remainingBudget)
+        ));
+    }
+
+    private static String cursorBinding(String endpoint, Object... components) {
+        StringBuilder binding = new StringBuilder(endpoint);
+        for (Object component : components) {
+            binding.append('|');
+            appendCursorBindingComponent(binding, component);
+        }
+        return binding.toString();
+    }
+
+    private static void appendCursorBindingComponent(StringBuilder binding, Object component) {
+        if (component == null) {
+            binding.append("N;");
+            return;
+        }
+        if (component instanceof Collection<?> collection) {
+            binding.append('L').append(collection.size()).append('{');
+            collection.forEach(value -> appendCursorBindingComponent(binding, value));
+            binding.append("};");
+            return;
+        }
+        String value = component.toString();
+        binding.append('S').append(value.length()).append(':').append(value).append(';');
+    }
+
+    private Map<String, MyChallengesResponse.ChallengeSummary> buildMyChallengeSummaries(
+            List<UserChallenge> memberships,
+            String userId,
+            String currentUserId,
+            String status,
+            boolean selfView,
+            boolean favoriteFilter,
+            boolean inactiveFilter,
+            LocalDate effectiveCurrentDate
+    ) {
+        if (memberships == null || memberships.isEmpty()) {
+            return Map.of();
+        }
+        List<String> challengeIds = memberships.stream()
+                .map(UserChallenge::getChallengeId)
+                .filter(java.util.Objects::nonNull)
+                .distinct()
+                .toList();
+        List<Challenge> candidates = challengeRepository.findAllById(challengeIds);
+        Map<String, UserChallenge> membershipByChallengeId = memberships.stream()
+                .collect(Collectors.toMap(
+                        UserChallenge::getChallengeId,
+                        membership -> membership,
+                        (left, ignored) -> left,
+                        LinkedHashMap::new
+                ));
+
+        Set<String> visibleIds;
+        if (favoriteFilter || inactiveFilter) {
+            Set<String> blockedChallengeIds = blockedChallengeIds(candidates, currentUserId);
+            visibleIds = candidates.stream()
+                    .filter(challenge -> !blockedChallengeIds.contains(challenge.getId()))
+                    .filter(challenge -> favoriteFilter
+                            ? canKeepFavoriteChallenge(
+                                    challenge,
+                                    membershipByChallengeId.get(challenge.getId()),
+                                    userId
+                            )
+                            : canViewInactiveChallengeHistory(
+                                    challenge,
+                                    membershipByChallengeId.get(challenge.getId()),
+                                    userId
+                            ))
+                    .map(Challenge::getId)
+                    .collect(Collectors.toUnmodifiableSet());
+        } else {
+            visibleIds = visibleActiveChallengeIds(candidates, currentUserId);
+        }
+
+        List<Challenge> visibleChallenges = candidates.stream()
+                .filter(challenge -> visibleIds.contains(challenge.getId()))
+                .toList();
+        Map<String, Challenge> challengeMap = withReadableCoverPhotoUrls(visibleChallenges)
+                .stream()
+                .collect(Collectors.toMap(Challenge::getId, challenge -> challenge));
+        Map<String, Integer> activeParticipantCountMap =
+                userChallengeRepository.countActiveByChallengeIds(challengeMap.keySet());
+        List<String> privateChallengeIds = challengeMap.values().stream()
+                .filter(challenge -> Boolean.TRUE.equals(challenge.getIsPrivate()))
+                .map(Challenge::getId)
+                .toList();
+        Map<String, ChallengeCrewLifecycle> privateLifecycleMap = privateChallengeIds.isEmpty()
+                ? Map.of()
+                : challengeCrewLifecycleRepository.findAllById(privateChallengeIds).stream()
+                        .collect(Collectors.toMap(
+                                ChallengeCrewLifecycle::getChallengeId,
+                                lifecycle -> lifecycle
+                        ));
+
+        boolean filterByCompletion = status != null
+                && !status.isBlank()
+                && !favoriteFilter
+                && !inactiveFilter;
+        boolean requestedCompleted = "completed".equalsIgnoreCase(status);
+        Map<String, MyChallengesResponse.ChallengeSummary> result = new LinkedHashMap<>();
+        for (UserChallenge membership : memberships) {
+            Challenge challenge = challengeMap.get(membership.getChallengeId());
+            if (challenge == null) {
+                continue;
+            }
+            List<Submission> submissions = submissionRepository.findActiveByUserIdAndChallengeId(
+                    userId,
+                    membership.getChallengeId()
+            );
+            boolean oneOff = Challenge.isOneOffMode(challenge.getChallengeMode());
+            int totalDays = oneOff ? 1 : challenge.getNumberOfDays();
+            List<Integer> submittedDays = distinctSubmittedDays(submissions, totalDays);
+            int daysCompleted = oneOff && !submittedDays.isEmpty()
+                    ? 1
+                    : submittedDays.size();
+            int completionPct = totalDays > 0
+                    ? (int) Math.round((daysCompleted * 100.0) / totalDays)
+                    : 0;
+
+            MyChallengesResponse.ChallengeSummary summary =
+                    MyChallengesResponse.ChallengeSummary.from(challenge);
+            summary.setDaysCompleted(daysCompleted);
+            int streakThroughDay = resolveStreakThroughDay(
+                    challenge,
+                    submittedDays,
+                    totalDays,
+                    effectiveCurrentDate
+            );
+            summary.setCurrentStreak(StreakCalculator.currentStreak(
+                    submittedDays,
+                    streakThroughDay
+            ));
+            summary.setCompletionPercentage(completionPct);
+            summary.setJoinedAt(membership.getJoinedAt());
+            summary.setCompleted(oneOff
+                    ? daysCompleted == 1
+                    : Boolean.TRUE.equals(membership.getCompleted())
+                            || isExpiredChallenge(challenge, effectiveCurrentDate));
+            if (filterByCompletion && summary.isCompleted() != requestedCompleted) {
+                continue;
+            }
+            summary.setFavorite(selfView && Boolean.TRUE.equals(membership.getFavorite()));
+            summary.setParticipationActive(Boolean.TRUE.equals(membership.getActive()));
+            int participantCount = activeParticipantCountMap.getOrDefault(challenge.getId(), 0);
+            summary.setParticipantCount(participantCount);
+            summary.setActiveParticipantCount(participantCount);
+            boolean privateLobby = isPrivateLobby(
+                    challenge,
+                    privateLifecycleMap.get(challenge.getId())
+            );
+            summary.setMomentum(selfView ? buildMomentum(
+                    challenge,
+                    membership,
+                    submittedDays,
+                    totalDays,
+                    privateLobby,
+                    effectiveCurrentDate
+            ) : null);
+            summary.setPrivateRank(selfView ? resolvePrivateRank(
+                    challenge,
+                    userId,
+                    currentUserId,
+                    oneOff,
+                    summary.isCompleted(),
+                    privateLobby
+            ) : null);
+            result.put(membership.getId(), summary);
+        }
+        return Map.copyOf(result);
+    }
+
+    private Map<String, AttributeValue> membershipContinuation(
+            String userId,
+            UserChallenge membership,
+            boolean favoriteFilter,
+            boolean inactiveFilter
+    ) {
+        String sortKey;
+        if (favoriteFilter) {
+            sortKey = ChallengeRepositoryKeys.membershipFavoriteSk(
+                    membership.getFavoritedAt(), membership.getJoinedAt(), membership.getId()
+            );
+        } else if (inactiveFilter) {
+            sortKey = ChallengeRepositoryKeys.membershipAllSk(
+                    membership.getJoinedAt(), membership.getId()
+            );
+        } else {
+            sortKey = ChallengeRepositoryKeys.membershipStatusSk(
+                    "ACTIVE", membership.getJoinedAt(), membership.getId()
+            );
+        }
+        return continuationKey(ChallengeRepositoryKeys.userPk(userId), sortKey);
+    }
+
+    private Set<String> visibleActiveChallengeIds(
+            Collection<Challenge> challenges,
+            String viewerUserId
+    ) {
+        if (viewerUserId == null || challenges == null || challenges.isEmpty()) {
+            return Set.of();
+        }
+        Set<String> ownerIds = challenges.stream()
+                .flatMap(challenge -> java.util.stream.Stream.of(
+                        challenge.getCreatorId(), challenge.getCurrentOwnerId()
+                ))
+                .filter(java.util.Objects::nonNull)
+                .filter(ownerId -> !viewerUserId.equals(ownerId))
+                .collect(Collectors.toCollection(java.util.LinkedHashSet::new));
+        Set<String> blockedOwnerIds = userBlockRepository.findActiveBlockedCounterpartIds(
+                viewerUserId,
+                ownerIds
+        );
+        Set<String> privateChallengeIds = challenges.stream()
+                .filter(challenge -> Boolean.TRUE.equals(challenge.getActive()))
+                .filter(challenge -> Boolean.TRUE.equals(challenge.getIsPrivate()))
+                .filter(challenge -> !viewerUserId.equals(challenge.getCreatorId()))
+                .filter(challenge -> !viewerUserId.equals(challenge.getCurrentOwnerId()))
+                .map(Challenge::getId)
+                .collect(Collectors.toCollection(java.util.LinkedHashSet::new));
+        Set<String> privateMemberships = userChallengeRepository.findActiveMembershipChallengeIds(
+                viewerUserId,
+                privateChallengeIds
+        );
+        return challenges.stream()
+                .filter(challenge -> Boolean.TRUE.equals(challenge.getActive()))
+                .filter(challenge -> !isBlockedChallengeOwner(
+                        challenge, viewerUserId, blockedOwnerIds
+                ))
+                .filter(challenge -> !Boolean.TRUE.equals(challenge.getIsPrivate())
+                        || viewerUserId.equals(challenge.getCreatorId())
+                        || viewerUserId.equals(challenge.getCurrentOwnerId())
+                        || privateMemberships.contains(challenge.getId()))
+                .map(Challenge::getId)
+                .collect(Collectors.toUnmodifiableSet());
+    }
+
+    private Set<String> blockedChallengeIds(
+            Collection<Challenge> challenges,
+            String viewerUserId
+    ) {
+        if (viewerUserId == null || challenges == null || challenges.isEmpty()) {
+            return Set.of();
+        }
+        Set<String> ownerIds = challenges.stream()
+                .flatMap(challenge -> java.util.stream.Stream.of(
+                        challenge.getCreatorId(), challenge.getCurrentOwnerId()
+                ))
+                .filter(java.util.Objects::nonNull)
+                .filter(ownerId -> !viewerUserId.equals(ownerId))
+                .collect(Collectors.toCollection(java.util.LinkedHashSet::new));
+        Set<String> blockedOwnerIds = userBlockRepository.findActiveBlockedCounterpartIds(
+                viewerUserId,
+                ownerIds
+        );
+        return challenges.stream()
+                .filter(challenge -> isBlockedChallengeOwner(
+                        challenge, viewerUserId, blockedOwnerIds
+                ))
+                .map(Challenge::getId)
+                .collect(Collectors.toUnmodifiableSet());
+    }
+
+    private static boolean isBlockedChallengeOwner(
+            Challenge challenge,
+            String viewerUserId,
+            Set<String> blockedOwnerIds
+    ) {
+        if (challenge == null || viewerUserId == null || blockedOwnerIds == null) {
+            return false;
+        }
+        if (viewerUserId.equals(challenge.getCreatorId())
+                || viewerUserId.equals(challenge.getCurrentOwnerId())) {
+            return false;
+        }
+        return blockedOwnerIds.contains(challenge.getCreatorId())
+                || blockedOwnerIds.contains(challenge.getCurrentOwnerId());
+    }
+
+    private UserChallengeCollectionPage findUserChallengeCollectionPage(
+            String userId,
+            int maximumRows,
+            Map<String, Map<String, AttributeValue>> suppliedState
+    ) {
+        int boundedRows = Math.max(1, Math.min(maximumRows, 100));
+        Map<String, Map<String, AttributeValue>> progress = initialUserCollectionState(
+                suppliedState
+        );
+        List<UserChallengeCollectionBuffer> buffers = new ArrayList<>(3);
+        PriorityQueue<UserChallengeCollectionBuffer> heads = new PriorityQueue<>((left, right) -> {
+            int entryOrder = compareUserCollectionEntries(left.head(), right.head());
+            return entryOrder != 0 ? entryOrder : left.name().compareTo(right.name());
+        });
+        int fetchedRows = 0;
+        int queryCalls = 0;
+        for (String stream : List.of(
+                USER_STREAM_CREATED, USER_STREAM_OWNED, USER_STREAM_JOINED
+        )) {
+            Map<String, AttributeValue> streamState = progress.get(stream);
+            if (done(streamState)) {
+                buffers.add(UserChallengeCollectionBuffer.done(stream));
+                continue;
+            }
+            UserChallengeCollectionFetch fetch = fetchUserChallengeCollectionEntries(
+                    userId, stream, boundedRows, streamState
+            );
+            queryCalls++;
+            fetchedRows += fetch.entries().size();
+            UserChallengeCollectionBuffer buffer = new UserChallengeCollectionBuffer(
+                    stream, fetch.entries(), fetch.continuation()
+            );
+            buffers.add(buffer);
+            if (buffer.empty() && buffer.exhausted()) {
+                progress.put(stream, doneState());
+            } else if (!buffer.empty()) {
+                heads.add(buffer);
+            }
+        }
+
+        List<UserChallengeCollectionCandidate> candidates = new ArrayList<>(boundedRows);
+        int rowsExamined = 0;
+        while (rowsExamined < boundedRows) {
+            boolean refillBlocked = false;
+            for (UserChallengeCollectionBuffer buffer : buffers) {
+                while (buffer.empty() && !buffer.exhausted()) {
+                    int remainingFetchBudget = MAX_FILTER_CANDIDATES - fetchedRows;
+                    if (remainingFetchBudget < 1 || queryCalls >= 100) {
+                        refillBlocked = true;
+                        break;
+                    }
+                    UserChallengeCollectionFetch fetch = fetchUserChallengeCollectionEntries(
+                            userId,
+                            buffer.name(),
+                            Math.min(boundedRows, remainingFetchBudget),
+                            buffer.fetchContinuation()
+                    );
+                    queryCalls++;
+                    fetchedRows += fetch.entries().size();
+                    buffer.refill(fetch.entries(), fetch.continuation());
+                }
+                if (refillBlocked) {
+                    break;
+                }
+                if (!buffer.empty() && !heads.contains(buffer)) {
+                    heads.add(buffer);
+                }
+            }
+            if (refillBlocked || heads.isEmpty()) {
+                break;
+            }
+            UserChallengeCollectionBuffer selected = heads.remove();
+            UserChallengeCollectionEntry entry = selected.advance();
+            rowsExamined++;
+            Map<String, AttributeValue> next = selected.empty() && selected.exhausted()
+                    ? doneState()
+                    : entry.continuation();
+            progress.put(selected.name(), next);
+            if (!selected.empty()) {
+                heads.add(selected);
+            }
+            if (entry.emit() && entry.challenge() != null) {
+                Map<String, Map<String, AttributeValue>> continuation =
+                        immutableShardState(progress);
+                candidates.add(new UserChallengeCollectionCandidate(
+                        entry.challenge(),
+                        continuation,
+                        hasRemainingUserCollection(buffers, continuation),
+                        rowsExamined
+                ));
+            }
+        }
+
+        Map<String, Map<String, AttributeValue>> continuation = immutableShardState(progress);
+        return new UserChallengeCollectionPage(
+                candidates,
+                continuation,
+                hasRemainingUserCollection(buffers, continuation),
+                rowsExamined
+        );
+    }
+
+    private UserChallengeCollectionFetch fetchUserChallengeCollectionEntries(
+            String userId,
+            String stream,
+            int limit,
+            Map<String, AttributeValue> exclusiveStartKey
+    ) {
+        if (USER_STREAM_CREATED.equals(stream)) {
+            DynamoPage<Challenge> page = challengeRepository.findByCreatorIdPage(
+                    userId, limit, exclusiveStartKey
+            );
+            List<UserChallengeCollectionEntry> entries = page.items().stream()
+                    .map(challenge -> new UserChallengeCollectionEntry(
+                            challenge,
+                            challenge.getCreatedAt(),
+                            challenge.getId(),
+                            continuationKey(
+                                    ChallengeRepositoryKeys.challengeCreatorPk(userId),
+                                    ChallengeRepositoryKeys.createdSk(
+                                            challenge.getCreatedAt(), challenge.getId()
+                                    )
+                            ),
+                            true
+                    ))
+                    .toList();
+            return new UserChallengeCollectionFetch(entries, page.lastEvaluatedKey());
+        }
+        if (USER_STREAM_OWNED.equals(stream)) {
+            DynamoPage<Challenge> page = challengeRepository.findByCurrentOwnerIdPage(
+                    userId, limit, exclusiveStartKey
+            );
+            List<UserChallengeCollectionEntry> entries = page.items().stream()
+                    .map(challenge -> new UserChallengeCollectionEntry(
+                            challenge,
+                            challenge.getCreatedAt(),
+                            challenge.getId(),
+                            continuationKey(
+                                    ChallengeRepositoryKeys.challengeOwnerPk(userId),
+                                    ChallengeRepositoryKeys.createdSk(
+                                            challenge.getCreatedAt(), challenge.getId()
+                                    )
+                            ),
+                            !userId.equals(challenge.getCreatorId())
+                    ))
+                    .toList();
+            return new UserChallengeCollectionFetch(entries, page.lastEvaluatedKey());
+        }
+        if (!USER_STREAM_JOINED.equals(stream)) {
+            throw new IllegalArgumentException("Unknown user challenge stream " + stream);
+        }
+        DynamoPage<UserChallenge> page = userChallengeRepository.findActiveByUserIdPage(
+                userId, limit, exclusiveStartKey
+        );
+        Map<String, Challenge> challengesById = challengeRepository.findAllById(
+                        page.items().stream()
+                                .map(UserChallenge::getChallengeId)
+                                .distinct()
+                                .toList()
+                ).stream()
+                .collect(Collectors.toMap(Challenge::getId, challenge -> challenge));
+        List<UserChallengeCollectionEntry> entries = page.items().stream()
+                .map(membership -> {
+                    Challenge challenge = challengesById.get(membership.getChallengeId());
+                    boolean emit = challenge != null
+                            && !userId.equals(challenge.getCreatorId())
+                            && !userId.equals(challenge.getCurrentOwnerId());
+                    return new UserChallengeCollectionEntry(
+                            challenge,
+                            membership.getJoinedAt(),
+                            membership.getId(),
+                            continuationKey(
+                                    ChallengeRepositoryKeys.userPk(userId),
+                                    ChallengeRepositoryKeys.membershipStatusSk(
+                                            "ACTIVE", membership.getJoinedAt(), membership.getId()
+                                    )
+                            ),
+                            emit
+                    );
+                })
+                .toList();
+        return new UserChallengeCollectionFetch(entries, page.lastEvaluatedKey());
+    }
+
+    private Map<String, Map<String, AttributeValue>> decodeUserCollectionContinuation(
+            String cursor,
+            String queryBinding,
+            String userId
+    ) throws ChallengeSphereException {
+        Map<String, Map<String, AttributeValue>> state = decodeShardContinuation(
+                cursor, queryBinding
+        );
+        if (state.isEmpty()) {
+            return Map.of();
+        }
+        try {
+            if (!state.keySet().equals(Set.of(
+                    USER_STREAM_CREATED, USER_STREAM_OWNED, USER_STREAM_JOINED
+            ))) {
+                throw new IllegalArgumentException("Unexpected user challenge cursor streams");
+            }
+            validateStreamState(
+                    state.get(USER_STREAM_CREATED),
+                    ChallengeRepositoryKeys.challengeCreatorPk(userId),
+                    ChallengeRepositoryKeys.CREATED_PREFIX
+            );
+            validateStreamState(
+                    state.get(USER_STREAM_OWNED),
+                    ChallengeRepositoryKeys.challengeOwnerPk(userId),
+                    ChallengeRepositoryKeys.CREATED_PREFIX
+            );
+            validateStreamState(
+                    state.get(USER_STREAM_JOINED),
+                    ChallengeRepositoryKeys.userPk(userId),
+                    ChallengeRepositoryKeys.membershipStatusPrefix("ACTIVE") + '#'
+            );
+            return state;
+        } catch (IllegalArgumentException invalidState) {
+            throw new ChallengeSphereException("Invalid cursor", HttpStatus.BAD_REQUEST, logger);
+        }
+    }
+
+    private Map<String, Map<String, AttributeValue>> decodeShardContinuation(
+            String cursor,
+            String queryBinding
+    ) throws ChallengeSphereException {
+        if (cursor == null || cursor.isBlank()) {
+            return Map.of();
+        }
+        try {
+            DynamoDbCursorCodec.CursorState state = cursorCodec.decode(cursor, queryBinding);
+            if (!state.lastEvaluatedKey().isEmpty()) {
+                throw new IllegalArgumentException("Cursor has unexpected single-partition state");
+            }
+            return state.shardState();
+        } catch (IllegalArgumentException exception) {
+            throw new ChallengeSphereException("Invalid cursor", HttpStatus.BAD_REQUEST, logger);
+        }
+    }
+
+    private String encodeShardContinuation(
+            String queryBinding,
+            Map<String, Map<String, AttributeValue>> continuation,
+            boolean hasMore
+    ) {
+        if (!hasMore || continuation == null || continuation.isEmpty()) {
+            return null;
+        }
+        return cursorCodec.encode(
+                queryBinding,
+                new DynamoDbCursorCodec.CursorState(Map.of(), continuation)
+        );
+    }
+
+    private static Map<String, Map<String, AttributeValue>> initialUserCollectionState(
+            Map<String, Map<String, AttributeValue>> suppliedState
+    ) {
+        Map<String, Map<String, AttributeValue>> state = new LinkedHashMap<>();
+        state.put(
+                USER_STREAM_CREATED,
+                suppliedState == null
+                        ? Map.of()
+                        : suppliedState.getOrDefault(USER_STREAM_CREATED, Map.of())
+        );
+        state.put(
+                USER_STREAM_OWNED,
+                suppliedState == null
+                        ? Map.of()
+                        : suppliedState.getOrDefault(USER_STREAM_OWNED, Map.of())
+        );
+        state.put(
+                USER_STREAM_JOINED,
+                suppliedState == null
+                        ? Map.of()
+                        : suppliedState.getOrDefault(USER_STREAM_JOINED, Map.of())
+        );
+        return state;
+    }
+
+    private static void validateStreamState(
+            Map<String, AttributeValue> state,
+            String partitionKey,
+            String sortKeyPrefix
+    ) {
+        if (state == null || state.isEmpty() || done(state)) {
+            return;
+        }
+        AttributeValue partition = state.get(DynamoDbKeys.PARTITION_KEY);
+        AttributeValue sort = state.get(DynamoDbKeys.SORT_KEY);
+        if (partition == null
+                || !partitionKey.equals(partition.s())
+                || sort == null
+                || sort.s() == null
+                || !sort.s().startsWith(sortKeyPrefix)) {
+            throw new IllegalArgumentException("Cursor stream key is invalid");
+        }
+    }
+
+    private static int compareUserCollectionEntries(
+            UserChallengeCollectionEntry left,
+            UserChallengeCollectionEntry right
+    ) {
+        return compareCreatedAtDesc(
+                left.activityAt(), left.tieBreaker(),
+                right.activityAt(), right.tieBreaker()
+        );
+    }
+
+    private static Map<String, AttributeValue> continuationKey(
+            String partitionKey,
+            String sortKey
+    ) {
+        return Map.of(
+                DynamoDbKeys.PARTITION_KEY, AttributeValue.fromS(partitionKey),
+                DynamoDbKeys.SORT_KEY, AttributeValue.fromS(sortKey)
+        );
+    }
+
+    private static boolean hasRemainingUserCollection(
+            Collection<UserChallengeCollectionBuffer> buffers,
+            Map<String, Map<String, AttributeValue>> state
+    ) {
+        return buffers.stream().anyMatch(UserChallengeCollectionBuffer::hasRemaining)
+                || state.values().stream().anyMatch(value -> !done(value));
+    }
+
+    private static boolean done(Map<String, AttributeValue> state) {
+        AttributeValue marker = state == null ? null : state.get(CURSOR_DONE);
+        return marker != null && "1".equals(marker.s());
+    }
+
+    private static Map<String, AttributeValue> doneState() {
+        return Map.of(CURSOR_DONE, AttributeValue.fromS("1"));
+    }
+
+    private static Map<String, Map<String, AttributeValue>> immutableShardState(
+            Map<String, Map<String, AttributeValue>> state
+    ) {
+        Map<String, Map<String, AttributeValue>> copy = new LinkedHashMap<>();
+        state.forEach((name, key) -> copy.put(
+                name,
+                key == null || key.isEmpty() ? Map.of() : Map.copyOf(key)
+        ));
+        return Map.copyOf(copy);
+    }
+
+    private record UserChallengeCollectionEntry(
+            Challenge challenge,
+            Timestamp activityAt,
+            String tieBreaker,
+            Map<String, AttributeValue> continuation,
+            boolean emit
+    ) {
+    }
+
+    private record UserChallengeCollectionFetch(
+            List<UserChallengeCollectionEntry> entries,
+            Map<String, AttributeValue> continuation
+    ) {
+    }
+
+    private record UserChallengeCollectionCandidate(
+            Challenge challenge,
+            Map<String, Map<String, AttributeValue>> continuation,
+            boolean hasMore,
+            int rowsExaminedThrough
+    ) {
+    }
+
+    private record UserChallengeCollectionPage(
+            List<UserChallengeCollectionCandidate> candidates,
+            Map<String, Map<String, AttributeValue>> continuation,
+            boolean hasMore,
+            int rowsExamined
+    ) {
+    }
+
+    private static final class UserChallengeCollectionBuffer {
+        private final String name;
+        private final ArrayDeque<UserChallengeCollectionEntry> entries = new ArrayDeque<>();
+        private Map<String, AttributeValue> fetchContinuation;
+        private boolean exhausted;
+
+        private UserChallengeCollectionBuffer(
+                String name,
+                List<UserChallengeCollectionEntry> entries,
+                Map<String, AttributeValue> pageContinuation
+        ) {
+            this.name = name;
+            if (entries != null) {
+                this.entries.addAll(entries);
+            }
+            this.fetchContinuation = pageContinuation == null
+                    ? Map.of()
+                    : Map.copyOf(pageContinuation);
+            this.exhausted = this.fetchContinuation.isEmpty();
+        }
+
+        private static UserChallengeCollectionBuffer done(String name) {
+            return new UserChallengeCollectionBuffer(name, List.of(), Map.of());
+        }
+
+        private String name() {
+            return name;
+        }
+
+        private UserChallengeCollectionEntry head() {
+            return entries.getFirst();
+        }
+
+        private UserChallengeCollectionEntry advance() {
+            return entries.removeFirst();
+        }
+
+        private boolean exhausted() {
+            return exhausted;
+        }
+
+        private boolean empty() {
+            return entries.isEmpty();
+        }
+
+        private boolean hasRemaining() {
+            return !entries.isEmpty() || !exhausted;
+        }
+
+        private Map<String, AttributeValue> fetchContinuation() {
+            return fetchContinuation;
+        }
+
+        private void refill(
+                List<UserChallengeCollectionEntry> fetched,
+                Map<String, AttributeValue> nextFetchContinuation
+        ) {
+            if (!entries.isEmpty()) {
+                throw new IllegalStateException(
+                        "User challenge collection buffer must be empty before refill"
+                );
+            }
+            if (fetched != null) {
+                entries.addAll(fetched);
+            }
+            fetchContinuation = nextFetchContinuation == null
+                    ? Map.of()
+                    : Map.copyOf(nextFetchContinuation);
+            exhausted = fetchContinuation.isEmpty();
+        }
+    }
+
+    private ChallengeDiscoveryPage findPublicDiscoveryPage(
+            String currentUserId,
+            int limit,
+            Map<String, AttributeValue> exclusiveStartKey,
+            LocalDate startDate,
+            LocalDate endDate
+    ) {
+        List<Challenge> visible = new ArrayList<>(limit);
+        Map<String, AttributeValue> continuation = exclusiveStartKey == null
+                ? Map.of()
+                : Map.copyOf(exclusiveStartKey);
+        int pageReads = 0;
+        while (visible.size() < limit && pageReads++ < MAX_FILTER_PAGE_READS) {
+            DynamoPage<Challenge> page = challengeRepository.findPublicActivePage(
+                    limit - visible.size(),
+                    continuation
+            );
+            page.items().stream()
+                    .filter(challenge -> Boolean.TRUE.equals(challenge.getActive()))
+                    .filter(challenge -> !Boolean.TRUE.equals(challenge.getIsPrivate()))
+                    .filter(challenge -> !isExpiredChallenge(challenge))
+                    .filter(challenge -> canViewChallengeDiscovery(challenge, currentUserId))
+                    .filter(challenge -> withinStartDateRange(challenge, startDate, endDate))
+                    .limit(limit - visible.size())
+                    .forEach(visible::add);
+            continuation = page.lastEvaluatedKey();
+            if (continuation.isEmpty() || page.items().isEmpty()) {
+                break;
+            }
+        }
+        return new ChallengeDiscoveryPage(
+                List.copyOf(visible),
+                continuation,
+                !continuation.isEmpty()
+        );
+    }
+
+    private static boolean withinStartDateRange(
+            Challenge challenge,
+            LocalDate startDate,
+            LocalDate endDate
+    ) {
+        if (startDate == null && endDate == null) {
+            return true;
+        }
+        LocalDate challengeStartDate = challenge.getStartDate();
+        return challengeStartDate != null
+                && (startDate == null || !challengeStartDate.isBefore(startDate))
+                && (endDate == null || !challengeStartDate.isAfter(endDate));
+    }
+
+    private Map<String, AttributeValue> decodeContinuation(
+            String cursor,
+            String queryBinding
+    ) throws ChallengeSphereException {
+        if (cursor == null || cursor.isBlank()) {
+            return Map.of();
+        }
+        try {
+            DynamoDbCursorCodec.CursorState state = cursorCodec.decode(cursor, queryBinding);
+            if (!state.shardState().isEmpty()) {
+                throw new IllegalArgumentException("Cursor has unexpected shard state");
+            }
+            return state.lastEvaluatedKey();
+        } catch (IllegalArgumentException exception) {
+            throw new ChallengeSphereException("Invalid cursor", HttpStatus.BAD_REQUEST, logger);
+        }
+    }
+
+    private String encodeContinuation(
+            String queryBinding,
+            Map<String, AttributeValue> continuation
+    ) {
+        if (continuation == null || continuation.isEmpty()) {
+            return null;
+        }
+        return cursorCodec.encode(
+                queryBinding,
+                new DynamoDbCursorCodec.CursorState(continuation)
+        );
+    }
+
+    private record ChallengeDiscoveryPage(
+            List<Challenge> challenges,
+            Map<String, AttributeValue> continuation,
+            boolean hasMore
+    ) {
+    }
+
+    private void ensureFollowAccess(String ownerUserId, String viewerUserId, String contentType)
             throws ChallengeSphereException {
         if (ownerUserId == null) {
             return;
@@ -2586,14 +3660,14 @@ public class ChallengeServiceImpl implements ChallengeService {
         }
     }
 
-    private boolean canViewChallengeDiscovery(Challenge challenge, Long currentUserId) {
+    private boolean canViewChallengeDiscovery(Challenge challenge, String currentUserId) {
         return canViewChallenge(challenge, currentUserId);
     }
 
     private boolean canKeepFavoriteChallenge(
             Challenge challenge,
             UserChallenge membership,
-            Long userId
+            String userId
     ) {
         if (challenge == null
                 || membership == null
@@ -2618,7 +3692,7 @@ public class ChallengeServiceImpl implements ChallengeService {
     private boolean canViewInactiveChallengeHistory(
             Challenge challenge,
             UserChallenge membership,
-            Long userId
+            String userId
     ) {
         if (challenge == null
                 || membership == null
@@ -2641,7 +3715,7 @@ public class ChallengeServiceImpl implements ChallengeService {
     private boolean canViewArchivedChallenge(
             Challenge challenge,
             UserChallenge membership,
-            Long userId
+            String userId
     ) {
         return canViewInactiveChallengeHistory(challenge, membership, userId)
                 || (membership != null
@@ -2649,11 +3723,11 @@ public class ChallengeServiceImpl implements ChallengeService {
                         && canKeepFavoriteChallenge(challenge, membership, userId));
     }
 
-    private boolean canViewChallenge(Challenge challenge, Long currentUserId) {
+    private boolean canViewChallenge(Challenge challenge, String currentUserId) {
         if (challenge == null || currentUserId == null || !Boolean.TRUE.equals(challenge.getActive())) {
             return false;
         }
-        Long ownerUserId = challenge.getCurrentOwnerId() != null ? challenge.getCurrentOwnerId() : challenge.getCreatorId();
+        String ownerUserId = challenge.getCurrentOwnerId() != null ? challenge.getCurrentOwnerId() : challenge.getCreatorId();
         if (currentUserId.equals(ownerUserId) || currentUserId.equals(challenge.getCreatorId())) {
             return true;
         }
@@ -2671,8 +3745,8 @@ public class ChallengeServiceImpl implements ChallengeService {
 
     private boolean canJoinChallenge(
             Challenge challenge,
-            Long ownerUserId,
-            Long userId,
+            String ownerUserId,
+            String userId,
             boolean verifiedInvitation) {
         if (challenge == null || userId == null) {
             return false;
@@ -2689,12 +3763,12 @@ public class ChallengeServiceImpl implements ChallengeService {
         return verifiedInvitation;
     }
 
-    private boolean isBlockedChallengeOwner(Challenge challenge, Long viewerUserId) {
+    private boolean isBlockedChallengeOwner(Challenge challenge, String viewerUserId) {
         if (challenge == null || viewerUserId == null) {
             return false;
         }
-        Long creatorUserId = challenge.getCreatorId();
-        Long currentOwnerUserId = challenge.getCurrentOwnerId();
+        String creatorUserId = challenge.getCreatorId();
+        String currentOwnerUserId = challenge.getCurrentOwnerId();
         if (viewerUserId.equals(creatorUserId) || viewerUserId.equals(currentOwnerUserId)) {
             return false;
         }
@@ -2707,8 +3781,8 @@ public class ChallengeServiceImpl implements ChallengeService {
                 && userBlockRepository.existsActiveBlockBetween(viewerUserId, currentOwnerUserId));
     }
 
-    private void notifyChallengeOwnersOfJoins(Challenge challenge, List<Long> successfulUserIds) {
-        Set<Long> recipientUserIds = new HashSet<>();
+    private void notifyChallengeOwnersOfJoins(Challenge challenge, List<String> successfulUserIds) {
+        Set<String> recipientUserIds = new HashSet<>();
         if (challenge.getCreatorId() != null) {
             recipientUserIds.add(challenge.getCreatorId());
         }
@@ -2719,10 +3793,10 @@ public class ChallengeServiceImpl implements ChallengeService {
             return;
         }
 
-        Set<Long> recipients = Set.copyOf(recipientUserIds);
-        List<Long> joinedUsers = List.copyOf(successfulUserIds);
+        Set<String> recipients = Set.copyOf(recipientUserIds);
+        List<String> joinedUsers = List.copyOf(successfulUserIds);
         runAfterCommit(() -> {
-            for (Long joinedUserId : joinedUsers) {
+            for (String joinedUserId : joinedUsers) {
                 try {
                     notificationService.notifyChallengeJoinedAsync(challenge, joinedUserId, recipients);
                 } catch (Exception e) {
@@ -2735,13 +3809,13 @@ public class ChallengeServiceImpl implements ChallengeService {
 
     private void notifyChallengeInvitesAfterCommit(
             Challenge challenge,
-            Long actorUserId,
-            Collection<Long> requestedRecipientUserIds
+            String actorUserId,
+            Collection<String> requestedRecipientUserIds
     ) {
         if (requestedRecipientUserIds == null || requestedRecipientUserIds.isEmpty()) {
             return;
         }
-        List<Long> recipients = new ArrayList<>(requestedRecipientUserIds);
+        List<String> recipients = new ArrayList<>(requestedRecipientUserIds);
         runAfterCommit(() -> {
             try {
                 notificationService.notifyChallengeInvitesAsync(challenge, actorUserId, recipients);

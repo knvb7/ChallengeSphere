@@ -26,7 +26,7 @@ public class SubscriptionController {
             @AuthenticationPrincipal UserPrincipal principal
     ) throws ChallengeSphereException {
         return ResponseEntity.ok(
-                subscriptionService.getStatus(SecurityAccess.requireUserId(principal))
+                subscriptionService.getStatus(SecurityAccess.requireUserId(principal).toString())
         );
     }
 
@@ -35,7 +35,7 @@ public class SubscriptionController {
             @AuthenticationPrincipal UserPrincipal principal
     ) throws ChallengeSphereException {
         return ResponseEntity.ok(
-                subscriptionService.sync(SecurityAccess.requireUserId(principal))
+                subscriptionService.sync(SecurityAccess.requireUserId(principal).toString())
         );
     }
 

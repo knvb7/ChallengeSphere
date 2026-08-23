@@ -13,5 +13,5 @@ public class RedeemInviteRequest {
     @Pattern(regexp = "[A-Za-z0-9]+", message = "Invite code is invalid")
     private String inviteCode;
 
-    private Long userId;
+    private String userId;
 }

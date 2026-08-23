@@ -10,14 +10,13 @@ import lombok.Data;
 @Data
 public class GetFeedRequest {
 
-    private Long userId;
+    private String userId;
 
-    @Min(value = 1, message = "Page must be at least 1")
-    private int page = 1;
+    private String cursor;
 
-    @Min(value = 1, message = "Page size must be at least 1")
-    @Max(value = 50, message = "Page size cannot exceed 50")
-    private int pageSize = 20;
+    @Min(value = 1, message = "Limit must be at least 1")
+    @Max(value = 50, message = "Limit cannot exceed 50")
+    private int limit = 20;
 
     /**
      * Feed type: FOLLOWING, TRENDING, EXPLORE

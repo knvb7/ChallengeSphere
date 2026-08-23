@@ -2,6 +2,7 @@ package com.ironside.challengesphere.api.response;
 
 import com.ironside.challengesphere.model.User;
 import lombok.AllArgsConstructor;
+import lombok.EqualsAndHashCode;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
@@ -10,45 +11,44 @@ import java.util.List;
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
-public class FollowersFollowingResponse {
+@EqualsAndHashCode(callSuper = true)
+public class FollowersFollowingResponse extends CursorResponse {
 
-    private Long userId;
+    private String userId;
     private List<PublicUserResponse> users;
-    private Integer currentPage;
-    private Integer pageSize;
-    private Integer totalCount;
-    private Integer totalPages;
     private String type; // "followers" or "following"
-    private Boolean hasNext;
-    private Boolean hasPrevious;
 
-    public static FollowersFollowingResponse followers(Long userId, List<User> followers, int currentPage, int pageSize, int totalCount) {
-        int totalPages = (int) Math.ceil((double) totalCount / pageSize);
-        return new FollowersFollowingResponse(
-            userId,
-            PublicUserResponse.fromUsers(followers),
-            currentPage,
-            pageSize,
-            totalCount,
-            totalPages,
-            "followers",
-            currentPage < totalPages,
-            currentPage > 1
-        );
+    public static FollowersFollowingResponse followers(
+            String userId,
+            List<User> followers,
+            String nextCursor,
+            boolean hasMore
+    ) {
+        return create(userId, followers, "followers", nextCursor, hasMore);
     }
 
-    public static FollowersFollowingResponse following(Long userId, List<User> following, int currentPage, int pageSize, int totalCount) {
-        int totalPages = (int) Math.ceil((double) totalCount / pageSize);
-        return new FollowersFollowingResponse(
-            userId,
-            PublicUserResponse.fromUsers(following),
-            currentPage,
-            pageSize,
-            totalCount,
-            totalPages,
-            "following",
-            currentPage < totalPages,
-            currentPage > 1
-        );
+    public static FollowersFollowingResponse following(
+            String userId,
+            List<User> following,
+            String nextCursor,
+            boolean hasMore
+    ) {
+        return create(userId, following, "following", nextCursor, hasMore);
+    }
+
+    private static FollowersFollowingResponse create(
+            String userId,
+            List<User> users,
+            String type,
+            String nextCursor,
+            boolean hasMore
+    ) {
+        FollowersFollowingResponse response = new FollowersFollowingResponse();
+        response.setUserId(userId);
+        response.setUsers(PublicUserResponse.fromUsers(users));
+        response.setType(type);
+        response.setNextCursor(nextCursor);
+        response.setHasMore(hasMore);
+        return response;
     }
 }
